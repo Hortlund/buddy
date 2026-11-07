@@ -19,6 +19,7 @@ const DevicePool = "any"
 const DeviceAttachmentUpgrade = "Update buddyworker on this device to run jobs with attachments."
 
 type Handoff struct {
+	ExecutionPlan
 	DeviceID              string `json:"device_id"`
 	AgentID               string `json:"agent_id"`
 	Title                 string `json:"title"`
@@ -98,6 +99,8 @@ type routineSummary struct {
 }
 
 type WorkItem struct {
+	ExecutionPlan
+	ProjectName      string            `json:"project_name,omitempty"`
 	ChatArchived     bool              `json:"conversation_archived,omitempty"`
 	ConversationID   string            `json:"conversation_id"`
 	ConversationName string            `json:"conversation_name"`
@@ -120,6 +123,7 @@ type WorkItem struct {
 
 type workRequest struct {
 	origin, title, brief, parent, routine, device string
+	plan                                          ExecutionPlan
 	timeout                                       int
 }
 
@@ -234,6 +238,9 @@ func saveHandoffs(ctx context.Context, tx *sql.Tx, id string, handoffs []Handoff
 
 func enqueueHandoff(ctx context.Context, tx *sql.Tx, key, chat string, agent Agent, request workRequest) (Task, string, error) {
 	request.device = strings.TrimSpace(request.device)
+	if err := routeExecution(ctx, tx, &agent, &request); err != nil {
+		return Task{}, "", err
+	}
 	var destination string
 	pool := request.device == DevicePool
 	if pool {
@@ -259,6 +266,9 @@ func enqueueHandoff(ctx context.Context, tx *sql.Tx, key, chat string, agent Age
 	if err != nil {
 		return Task{}, "", err
 	}
+	if err := saveExecutionPlan(ctx, tx, job.ID, request.plan); err != nil {
+		return Task{}, "", err
+	}
 	if pool {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO pooled_work VALUES (?)", job.ID); err != nil {
 			return Task{}, "", err
@@ -277,12 +287,14 @@ const workSelect = `SELECT t.id,td.agent_id,ct.agent_name,td.title,t.status,
 		ORDER BY e.seq DESC LIMIT 1),''),` + steeringJSON + `,
 	COALESCE(d.name,CASE WHEN p.task_id IS NOT NULL THEN 'Worker pool' ELSE '' END),ct.conversation_id,
 	COALESCE(g.name,owner.name),(EXISTS(SELECT 1 FROM removed_buds WHERE agent_id=c.agent_id) OR EXISTS(SELECT 1 FROM archived_groups WHERE conversation_id=c.id)),t.created,t.started,t.finished,
-	COALESCE((SELECT q.task_id FROM work_inputs q WHERE q.job_id=t.id AND q.answer_key IS NULL AND t.status='needs_input'),'')
+	COALESCE((SELECT q.task_id FROM work_inputs q WHERE q.job_id=t.id AND q.answer_key IS NULL AND t.status='needs_input'),''),
+	COALESCE(we.project_id,''),COALESCE(pr.name,''),COALESCE(we.role,'general'),COALESCE(we.requirements,'[]'),COALESCE(we.environment,'')
 	FROM chat_turns ct JOIN tasks t ON t.id=ct.task_id JOIN turn_details td ON td.task_id=t.id
 	JOIN conversations c ON c.id=ct.conversation_id JOIN agents owner ON owner.id=c.agent_id
 	LEFT JOIN group_chats g ON g.conversation_id=c.id
 	LEFT JOIN device_runs dr ON dr.task_id=t.id LEFT JOIN devices d ON d.id=dr.device_id
 	LEFT JOIN pooled_work p ON p.task_id=t.id
+	LEFT JOIN work_execution we ON we.task_id=t.id LEFT JOIN projects pr ON pr.id=we.project_id
 	WHERE t.kind='background_work'`
 
 const workOrder = " ORDER BY (t.status IN ('queued','running','needs_input','cancelling')) DESC,t.rowid DESC LIMIT ?"
@@ -353,12 +365,15 @@ func readWork(ctx context.Context, db queryer, query string, args ...any) ([]Wor
 	var work []WorkItem
 	for rows.Next() {
 		var item WorkItem
-		var corrections string
+		var corrections, requirements string
 		var created int64
 		var started, finished sql.NullInt64
 		if err := rows.Scan(&item.ID, &item.AgentID, &item.AgentName, &item.Title, &item.Status,
 			&item.Activity, &item.Update, &corrections, &item.Device, &item.ConversationID,
-			&item.ConversationName, &item.ChatArchived, &created, &started, &finished, &item.InputID); err != nil {
+			&item.ConversationName, &item.ChatArchived, &created, &started, &finished, &item.InputID, &item.ProjectID, &item.ProjectName, &item.Role, &requirements, &item.Environment); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(requirements), &item.Requirements); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(corrections), &item.Steering); err != nil {

@@ -731,6 +731,7 @@ func (a *desktop) connections(c *ui.Context) {
 		a.hosting(c)
 		a.mobileDevices(c)
 		a.runtimes(c)
+		a.executionSettings(c)
 		a.mcpSettings(c)
 		a.integrationSettings(c)
 	})

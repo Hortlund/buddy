@@ -560,9 +560,9 @@ func (r *voiceRoom) buddyContext(member *roomMember) string {
 	if title == "" {
 		title = chat.Agent.Name
 	}
-	devices, _ := r.store.Devices(r.ctx)
+	devices, _ := r.store.Hosts(r.ctx)
 	data, _ := json.Marshal(object{"chat": title, "agents": agents, "primary_bud_id": r.primaryID, "lead_bud_id": r.leadID, "buddy_team": r.team,
-		"your_workspace_entries": files, "work": work, "routines": routines, "watches": watches, "connected_devices": devices[:min(len(devices), 30)]})
+		"projects": mustVoiceProjects(r), "your_workspace_entries": files, "work": work, "routines": routines, "watches": watches, "connected_devices": devices[:min(len(devices), 30)]})
 	return string(data)
 }
 
@@ -617,4 +617,9 @@ func (r *voiceRoom) buddyWork(member *roomMember, id string) string {
 	}
 	data, _ := json.Marshal(list)
 	return string(data)
+}
+
+func mustVoiceProjects(r *voiceRoom) []tasks.Project {
+	projects, _ := r.store.Projects(r.ctx)
+	return projects
 }

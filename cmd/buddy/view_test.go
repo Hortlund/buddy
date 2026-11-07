@@ -325,7 +325,7 @@ func TestDesktopPagesAlignAtEveryWindowSize(t *testing.T) {
 				{"buds", "Manage your Buds and choose which one Buddy opens first.", "Back to menu"},
 				{"agent", "Update this Bud’s profile, instructions, and workspace.", "Back to Buds"},
 				{"skills", "Reusable workflows for all your Buds. Type / in chat to choose one.", "Back to menu"},
-				{"work", "Follow what your Buds are doing and revisit finished jobs.", "Back to menu"},
+				{"work", "Your team at work. Follow assignments, workers, and deliverables.", "Back to menu"},
 				{"preferences", "Choose how Buddy looks and which languages it uses.", "Back to menu"},
 				{"autonomy", "Review what your Buds do and remember between chats.", "Back to menu"},
 				{"connections", "Choose where Buddy lives and what it can use.", "Back to menu"},
@@ -349,6 +349,33 @@ func TestDesktopPagesAlignAtEveryWindowSize(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWorkKeepsItsListWidthAndExposesWorkerRelationships(t *testing.T) {
+	a := &desktop{online: true, section: "work", serverProtocol: api.DesktopProtocol}
+	item := tasks.WorkItem{ID: "tsk_build", AgentID: "builder", AgentName: "Builder", Title: "Build service", Status: tasks.Running,
+		ExecutionPlan: tasks.ExecutionPlan{ProjectID: "prj_service", Role: "implementation"}, ProjectName: "Service"}
+	a.work.items = []tasks.WorkItem{item}
+	view := ui.NewTester(a.view, 1200, 800)
+	before, ok := view.Find("Open Build service")
+	if !ok || !view.HasText("Your team at work") {
+		t.Fatal("work overview did not display the owning team")
+	}
+	a.work.selectItem(item)
+	a.work.detail = tasks.WorkDetails{WorkItem: item, Brief: "Build the service.",
+		Sessions:  []tasks.WorkerSession{{ID: "session", Host: "server", Workspace: "/projects/.buddy-worktrees/service/job", Branch: "buddy/tsk_build", Status: tasks.Running}},
+		Delegated: []tasks.TeamAssignment{{ID: "tsk_review", AgentName: "Reviewer", Title: "Review service", Status: tasks.Queued}},
+		Artifacts: []tasks.WorkArtifact{{ID: "report", Name: "report.md"}}}
+	view.Frame()
+	after, ok := view.Find("Open Build service")
+	if !ok || before.X != after.X || before.W != after.W {
+		t.Fatalf("selecting a worker resized its assignment list: %v -> %v", before, after)
+	}
+	for _, text := range []string{"Worker sessions", "Delegated work", "Deliverables", "buddy/tsk_build", "Builder · Implementation worker"} {
+		if !view.HasText(text) {
+			t.Errorf("missing worker detail %q: %v", text, view.Texts())
+		}
 	}
 }
 

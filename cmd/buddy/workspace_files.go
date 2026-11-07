@@ -27,6 +27,8 @@ type workspaceFilesPane struct {
 	profile       tasks.Agent
 	relative      string
 	originTask    string
+	artifactID    string
+	artifactJob   string
 	item          tasks.WorkspaceItem
 	source        editor.State
 	image         *ui.Bitmap
@@ -89,7 +91,7 @@ func (a *desktop) openWorkspaceFile(profile tasks.Agent, relative string, source
 	show := func() {
 		a.showWorkspaceFile(chatID)
 	}
-	if b.sameItem(profile, relative) && b.originTask == origin {
+	if b.artifactID == "" && b.sameItem(profile, relative) && b.originTask == origin {
 		show()
 		b.refresh(profile, relative)
 		return
@@ -142,6 +144,9 @@ func (b *workspaceFilesPane) hide() {
 }
 
 func (b *workspaceFilesPane) refresh(profile tasks.Agent, relative string) {
+	if b.artifactID != "" {
+		return
+	}
 	if b.loading || b.saving || b.dirty() || b.app.window == nil || b.app.confirmingFileDiscard || !b.app.canBrowseWorkspace(profile) {
 		return
 	}
@@ -337,6 +342,7 @@ func (a *desktop) confirmWorkspaceDiscard(message string, action func()) {
 }
 
 func (b *workspaceFilesPane) load(profile tasks.Agent, relative string) {
+	b.artifactID, b.artifactJob = "", ""
 	if b.cancelLoad != nil {
 		b.cancelLoad()
 	}
@@ -377,7 +383,7 @@ func (b *workspaceFilesPane) finishLoad(request uint64, item tasks.WorkspaceItem
 		return
 	}
 	b.cancelLoad, b.loading = nil, false
-	if !b.app.showingWorkspaceFiles() || b.app.currentWorkspaceFiles() != b {
+	if b.artifactID == "" && (!b.app.showingWorkspaceFiles() || b.app.currentWorkspaceFiles() != b) {
 		b.refreshOnShow = true
 		return
 	}
@@ -487,7 +493,7 @@ func (b *workspaceFilesPane) toolbar(c *ui.Context) {
 	t := c.Theme()
 	ui.Row(c).FillWidth().MinWidth(0).MinHeight(40).Padding(4, 16).Gap(8).AlignItems(ui.Center).
 		Background(t.Surface).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
-		if b.relative != "." && b.relative != "" {
+		if b.artifactID == "" && b.relative != "." && b.relative != "" {
 			quietIcon(c.Key("file-up"), "Go to parent folder", backMark, busy,
 				func() { b.afterDiscard(func() { b.load(b.profile, path.Dir(b.relative)) }) })
 		}
@@ -496,6 +502,9 @@ func (b *workspaceFilesPane) toolbar(c *ui.Context) {
 			parent = path.Dir(parent)
 		}
 		breadcrumb := "Workspace"
+		if b.artifactID != "" {
+			breadcrumb = "Deliverable"
+		}
 		if b.app.chat.Name != "" {
 			breadcrumb = b.profile.Name + "’s workspace"
 		}
@@ -512,6 +521,19 @@ func (b *workspaceFilesPane) toolbar(c *ui.Context) {
 		}
 		btn := ui.ButtonBase(c.Key("file-actions")).Size(26, 26).Shrink(0).Radius(6).Label("File actions").
 			Tooltip("File actions").Disabled(busy).PopoverMenuButton(func(menu *ui.Menu) {
+			if b.artifactID != "" {
+				if menu.Item("Reload deliverable").Chosen() {
+					b.app.openWorkArtifact(b.artifactJob, b.artifactID)
+				}
+				if menu.Item("Save a copy…").Disabled(b.app.savingFile || !b.app.online).Chosen() {
+					client, job, id := b.app.client, b.artifactJob, b.artifactID
+					b.app.downloadAttachment(b.relative, func() (tasks.Attachment, error) {
+						file, err := client.WorkArtifact(b.app.ctx, job, id)
+						return tasks.Attachment{Name: file.Name, Data: file.Data, Type: file.MediaType, Size: file.Bytes}, err
+					})
+				}
+				return
+			}
 			if menu.Item("Reload").Chosen() {
 				b.afterDiscard(func() { b.load(b.profile, b.relative) })
 			}

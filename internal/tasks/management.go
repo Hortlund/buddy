@@ -780,8 +780,10 @@ func (w *Worker) signalManagedStops(ids []string) {
 	lane := w.background
 	lane.mu.Lock()
 	defer lane.mu.Unlock()
-	for _, id := range ids {
-		if run := lane.runs[id]; run != nil {
+	for id, run := range lane.runs {
+		// A stopped assignment can also have delegated descendants in this lane.
+		task, err := w.store.Get(context.Background(), id)
+		if slices.Contains(ids, id) || (err == nil && task.Status == Cancelling) {
 			run.cancel()
 		}
 	}

@@ -72,6 +72,13 @@ func (r *CodexRuntime) openWorkspaceItem(ctx context.Context, s *Store, id, work
 	if agent.Workspace == "" {
 		return nil, &InputError{"This Bud doesn’t have a working folder."}
 	}
+	return r.openReferencedRoot(s, agent.Workspace, relative)
+}
+
+func (r *CodexRuntime) openReferencedRoot(s *Store, workspace, relative string) (*os.Root, error) {
+	if relative != "." && !validWorkspaceItemPath(relative) {
+		return nil, &InputError{"Choose a file inside the referenced workspace."}
+	}
 	protected := slices.Concat(r.protected, r.readOnly, []string{r.migrationDir, r.snapshotDir, s.profilesRoot})
 	codexHome := os.Getenv("CODEX_HOME")
 	if codexHome == "" {
@@ -82,7 +89,7 @@ func (r *CodexRuntime) openWorkspaceItem(ctx context.Context, s *Store, id, work
 	if resolved, err := filepath.EvalSymlinks(codexHome); codexHome != "" && err == nil {
 		protected = append(protected, resolved)
 	}
-	parent, _, err := openQuickWorkspace(agent.Workspace, protected)
+	parent, _, err := openQuickWorkspace(workspace, protected)
 	if err != nil {
 		return nil, err
 	}
@@ -118,18 +125,29 @@ func openWorkspaceFolder(root *os.Root, name string) (*os.Root, error) {
 
 func (r *CodexRuntime) WorkspaceItem(ctx context.Context, s *Store, id, workspace, relative string, source ...string) (WorkspaceItem, error) {
 	var item WorkspaceItem
+	projectReference := false
 	if len(source) != 0 && source[0] != "" {
 		bound, err := s.ReferenceWorkspace(ctx, id, source[0])
 		if err != nil {
 			return item, err
 		}
-		if workspace != "" && workspace != bound {
+		projectReference, err = s.projectFileReference(ctx, id, source[0], bound)
+		if err != nil {
+			return item, err
+		}
+		if !projectReference && workspace != "" && workspace != bound {
 			return item, ErrWorkspaceFolderChanged
 		}
 		workspace = bound
 		item.SourceTask = source[0]
 	}
-	parent, err := r.openWorkspaceItem(ctx, s, id, workspace, relative)
+	var parent *os.Root
+	var err error
+	if projectReference {
+		parent, err = r.openReferencedRoot(s, workspace, relative)
+	} else {
+		parent, err = r.openWorkspaceItem(ctx, s, id, workspace, relative)
+	}
 	if err != nil {
 		return item, err
 	}
@@ -177,7 +195,7 @@ func (r *CodexRuntime) WorkspaceItem(ctx context.Context, s *Store, id, workspac
 		item.Kind, item.Text = "text", string(data)
 		item.Revision = workspaceRevision(id, relative, info, data)
 		writable, err := openWorkspaceEditSource(parent, name, info)
-		item.ReadOnly = err != nil
+		item.ReadOnly = projectReference || err != nil
 		if writable != nil {
 			writable.Close()
 		}

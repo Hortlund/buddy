@@ -47,6 +47,11 @@ func Parse(raw string) (Target, bool) {
 	}
 	t := Target{Kind: u.Host, ID: id}
 	switch t.Kind {
+	case "artifacts":
+		t.Job = u.Query().Get("file")
+		if !validID(t.Job) {
+			return Target{}, false
+		}
 	case "files":
 		t.Path = u.Query().Get("path")
 		t.Task = u.Query().Get("task")

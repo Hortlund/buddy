@@ -35,6 +35,10 @@ type TeamContext struct {
 }
 
 type TeamAssignment struct {
+	ProjectID      string    `json:"project_id,omitempty"`
+	ProjectName    string    `json:"project_name,omitempty"`
+	WorkerRole     string    `json:"worker_role,omitempty"`
+	Host           string    `json:"host,omitempty"`
 	ID             string    `json:"id"`
 	AgentID        string    `json:"bud_id"`
 	AgentName      string    `json:"bud_name"`
@@ -96,9 +100,10 @@ func readTeamContext(ctx context.Context, db queryer, chat, self string) (TeamCo
 	if team.Members, err = groupMembers(ctx, db, chat); err != nil {
 		return team, err
 	}
-	rows, err = db.QueryContext(ctx, `SELECT t.id,td.agent_id,a.name,td.title,t.status,t.created,ct.conversation_id
+	rows, err = db.QueryContext(ctx, `SELECT t.id,td.agent_id,a.name,td.title,t.status,t.created,ct.conversation_id,COALESCE(we.project_id,''),COALESCE(p.name,''),COALESCE(we.role,'general'),COALESCE(d.name,'Buddy server')
 		FROM tasks t JOIN turn_details td ON td.task_id=t.id JOIN chat_turns ct ON ct.task_id=t.id
 		JOIN agents a ON a.id=td.agent_id
+ LEFT JOIN work_execution we ON we.task_id=t.id LEFT JOIN projects p ON p.id=we.project_id LEFT JOIN device_runs dr ON dr.task_id=t.id LEFT JOIN devices d ON d.id=dr.device_id
 		WHERE t.kind='background_work' AND (t.status IN ('queued','running','needs_input','cancelling')
 			OR ct.conversation_id=? AND t.finished>=?)
 		ORDER BY (t.status IN ('queued','running','needs_input','cancelling')) DESC,(ct.conversation_id=?) DESC,t.rowid DESC LIMIT 41`,
@@ -109,7 +114,7 @@ func readTeamContext(ctx context.Context, db queryer, chat, self string) (TeamCo
 	for rows.Next() {
 		var job TeamAssignment
 		var created int64
-		if err := rows.Scan(&job.ID, &job.AgentID, &job.AgentName, &job.Title, &job.Status, &created, &job.ConversationID); err != nil {
+		if err := rows.Scan(&job.ID, &job.AgentID, &job.AgentName, &job.Title, &job.Status, &created, &job.ConversationID, &job.ProjectID, &job.ProjectName, &job.WorkerRole, &job.Host); err != nil {
 			rows.Close()
 			return team, err
 		}

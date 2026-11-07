@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct InboxList: View {
     let api: BuddyAPI
@@ -134,19 +135,35 @@ struct WorkList: View {
     @State private var loadingHistory = false
     @State private var error: String?
 
+    @State private var search = ""
+ @State private var owner = ""
+ @State private var project = ""
+ @State private var host = ""
+
     private let activeStatuses = ["queued", "running", "needs_input", "cancelling"]
 
     var body: some View {
         List {
             if let items {
-                let active = items.filter { activeStatuses.contains($0.status) }
-                let recent = items.filter { !activeStatuses.contains($0.status) }
+                let filtered = items.filter(matches)
+                let needs = filtered.filter { $0.status == "needs_input" }
+                let active = filtered.filter { activeStatuses.contains($0.status) && $0.status != "needs_input" }
+                Section {
+                    HStack { summary("Needs you", needs.count); Spacer(); summary("Active", active.count); Spacer(); summary("Recent", filtered.count-needs.count-active.count) }
+                    Menu("Filter team and projects") {
+                        Picker("Bud", selection: $owner) { Text("All Buds").tag(""); ForEach(Array(Set(items.map(\.agentName))).sorted(), id: \.self) { Text($0).tag($0) } }
+                        Picker("Project", selection: $project) { Text("All projects").tag(""); ForEach(Array(Set(items.compactMap(\.projectName))).sorted(), id: \.self) { Text($0).tag($0) } }
+                        Picker("Host", selection: $host) { Text("All hosts").tag(""); ForEach(Array(Set(items.map { $0.device?.nilIfEmpty ?? "Buddy server" })).sorted(), id: \.self) { Text($0).tag($0) } }
+                    }
+                }.listRowBackground(BuddyStyle.surface)
+                if !needs.isEmpty { Section("Needs you") { ForEach(needs, content: row) } }
+                let recent = filtered.filter { !activeStatuses.contains($0.status) }
                 let seen = Set(items.map(\.id))
                 if !active.isEmpty {
                     Section("Active") { ForEach(active, content: row) }
                 }
                 Section("Recent") {
-                    ForEach(recent + history.filter { !seen.contains($0.id) }, content: row)
+                    ForEach(recent + history.filter { !seen.contains($0.id) && matches($0) }, content: row)
                     if !loadedHistory || next != nil {
                         Button(loadingHistory ? "Loading…" : "Load older jobs") {
                             loadingHistory = true
@@ -166,19 +183,31 @@ struct WorkList: View {
         .overlay { if items == nil && error == nil { ProgressView("Loading work…") } }
         .buddyPage()
         .navigationTitle("Work")
+ .searchable(text: $search, prompt: "Assignments, Buds, projects")
         .task(id: phase) { await refreshWhileActive(phase, load: load) }
         .refreshable { await load() }
+    }
+
+    private func matches(_ item: WorkItem) -> Bool {
+        (owner.isEmpty || item.agentName == owner) && (project.isEmpty || item.projectName == project) &&
+        (host.isEmpty || (item.device?.nilIfEmpty ?? "Buddy server") == host) &&
+        (search.isEmpty || "\(item.title) \(item.agentName) \(item.projectName ?? "")".localizedCaseInsensitiveContains(search))
+    }
+    private func summary(_ label: String, _ count: Int) -> some View {
+        VStack(alignment: .leading, spacing: 5) { Text(count, format: .number).font(.title2.bold()); Text(label).font(.caption).foregroundStyle(.secondary) }
     }
 
     private func row(_ item: WorkItem) -> some View {
         NavigationLink(value: Destination.work(item.conversationId, item.id)) {
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.title).font(.headline)
+ Text("\(item.agentName) · \((item.workerRole ?? "general").capitalized) worker").font(.subheadline.weight(.medium))
+ if let project = item.projectName?.nilIfEmpty { Label(project, systemImage: "folder").font(.caption).foregroundStyle(.secondary) }
                 HStack(spacing: 7) {
                     if item.status == "running" { ProgressView().controlSize(.small) }
                     Text(statusLabel(item.status))
                     Text("·")
-                    Text(item.agentName)
+                    Text(item.device?.nilIfEmpty ?? "Buddy server")
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -226,6 +255,7 @@ struct WorkDetail: View {
     @State private var loadError: String?
     @State private var actionError: String?
     @State private var busy = false
+    @State private var frame: ExecutionFrame?
     private var currentChat: String { detail?.item.conversationId ?? chat }
 
     private struct ReplyRequest {
@@ -246,6 +276,45 @@ struct WorkDetail: View {
                             Label("Open chat", systemImage: "bubble.left")
                         }
                         .font(.callout)
+                    }
+                    if let project = detail.item.projectName?.nilIfEmpty { Label(project, systemImage: "folder").font(.headline) }
+                    if let sessions = detail.sessions, !sessions.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Worker sessions").font(.headline)
+                            ForEach(sessions) { session in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("\((detail.item.workerRole ?? "general").capitalized) · \(session.host) · \(statusLabel(session.status))").font(.subheadline.bold())
+                                    if let branch = session.branch { Text(branch).font(.caption.monospaced()).textSelection(.enabled) }
+                                    Text(session.workspace).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }
+                    if let dependencies = detail.dependencies { ForEach(dependencies) { dependency in
+                        NavigationLink(value: Destination.work(dependency.conversationId, dependency.id)) { Label("\(dependency.budName): \(dependency.title) · \(statusLabel(dependency.status))", systemImage: "arrow.triangle.branch") }
+                    } }
+                    if let children = detail.delegated, !children.isEmpty {
+                        VStack(alignment: .leading, spacing: 9) {
+                            Text("Delegated work").font(.headline)
+                            ForEach(children) { child in
+                                NavigationLink(value: Destination.work(child.conversationId, child.id)) {
+                                    Label("\(child.budName): \(child.title) · \(statusLabel(child.status))", systemImage: "arrow.triangle.branch")
+                                }
+                            }
+                        }
+                    }
+                    if let artifacts = detail.artifacts, !artifacts.isEmpty {
+                        VStack(alignment: .leading, spacing: 9) { Text("Deliverables").font(.headline)
+                            ForEach(artifacts) { artifact in NavigationLink(value: Destination.artifact(id, artifact.id)) { Label(artifact.name, systemImage: "doc") } }
+                        }
+                    }
+                    if detail.item.requirements?.contains(where: { ["browser", "desktop"].contains($0) }) == true {
+                        VStack(alignment: .leading, spacing: 9) {
+                            Text("Automation view").font(.headline)
+                            if let data=frame?.data, let image=UIImage(data:data) { Image(uiImage:image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius:10)) }
+                            else { Text("Screenshots appear as the worker observes its environment.").foregroundStyle(.secondary) }
+                            if detail.item.status == "running" { Button(frame?.paused == true ? "Resume automation" : "Take control") { Task { do {try await api.pauseAutomation(job:id,paused:frame?.paused != true); await load()} catch {actionError=error.localizedDescription} } }.buttonStyle(.bordered) }
+                        }
                     }
                     if let input = detail.item.inputId?.nilIfEmpty, detail.item.status == "needs_input" {
                         VStack(alignment: .leading, spacing: 9) {
@@ -312,6 +381,7 @@ struct WorkDetail: View {
     private func load() async {
         do {
             detail = try await api.referencedWorkDetails(chat: chat, id: id)
+            if detail?.item.requirements?.contains(where: { ["browser", "desktop"].contains($0) }) == true { frame = try? await api.executionFrame(job:id) }
             loadError = nil
         } catch where !Task.isCancelled { loadError = error.localizedDescription } catch {}
     }
@@ -338,4 +408,68 @@ struct WorkDetail: View {
             } catch { actionError = error.localizedDescription }
         }
     }
+}
+
+struct ArtifactPreview: View {
+    let api: BuddyAPI
+    let job: String
+    let file: String
+    @State private var artifact: WorkArtifact?
+    @State private var error: String?
+    @State private var exporting = false
+    var body: some View {
+        ScrollView { VStack(alignment: .leading, spacing: 14) {
+            if let artifact, let data=artifact.data {
+                if let image=UIImage(data:data) { Image(uiImage:image).resizable().scaledToFit() }
+                else if let text=String(data:data,encoding:.utf8) {
+                    if ["md","markdown"].contains((artifact.name as NSString).pathExtension) { RichText(text) }
+                    else { CodeBlock(language:(artifact.name as NSString).pathExtension,code:text) }
+                } else { ContentUnavailableView("Preview unavailable",systemImage:"doc",description:Text("This file is available in the desktop Work view.")) }
+            }
+            if let error { ConnectionError(message:error) }
+        }.padding(20) }
+        .navigationTitle(artifact?.name ?? "Deliverable").navigationBarTitleDisplayMode(.inline).buddyPage()
+        .toolbar {
+            Button("Save a copy", systemImage: "square.and.arrow.up") { exporting = true }
+                .disabled(artifact?.data == nil)
+        }
+        .fileExporter(isPresented: $exporting, document: ArtifactDocument(data: artifact?.data ?? Data()), contentType: .data, defaultFilename: artifact?.name) { result in
+            if case .failure(let failure) = result { error = failure.localizedDescription }
+        }
+        .overlay { if artifact == nil && error == nil {ProgressView("Opening deliverable…")} }
+        .task { do {artifact=try await api.workArtifact(job:job,file:file)} catch {self.error=error.localizedDescription} }
+    }
+}
+
+struct ArtifactDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.data] }
+    let data: Data
+    init(data: Data) { self.data = data }
+    init(configuration: ReadConfiguration) throws { data = configuration.file.regularFileContents ?? Data() }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
+}
+
+struct HostCapabilities: View {
+    let api: BuddyAPI
+    @State private var hosts: [ExecutionHost]?
+    @State private var error: String?
+    var body: some View {
+        List {
+            ForEach(hosts ?? []) { host in
+                Section { VStack(alignment: .leading, spacing: 8) {
+                    HStack {Text(host.name).font(.headline);Spacer();Text(host.online ? "Online" : "Offline").foregroundStyle(.secondary)}
+                    if let profile=host.profile {
+                        Text("\(profile.os) · \(profile.architecture) · \(profile.environment)").font(.caption).foregroundStyle(.secondary)
+                        ForEach(profile.capabilities.filter(\.installed)) { capability in
+                            LabeledContent(capability.id, value: capability.ready ? "Ready" : capability.enabled ? "Needs setup" : "Disabled").font(.subheadline)
+                        }
+                    } else {Text("Update the worker to discover capabilities.").foregroundStyle(.secondary)}
+                }.padding(.vertical,5) }.listRowBackground(BuddyStyle.surface)
+            }
+            if let error {ConnectionError(message:error)}
+        }.navigationTitle("Hosts and tools").buddyPage()
+        .task {await load()}.refreshable {await load()}
+        .overlay {if hosts == nil && error == nil {ProgressView("Discovering hosts…")}}
+    }
+    private func load() async {do {hosts=try await api.hosts();error=nil} catch {self.error=error.localizedDescription}}
 }

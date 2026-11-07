@@ -17,10 +17,14 @@ CREATE TABLE IF NOT EXISTS work_questions (
 
 type WorkDetails struct {
 	WorkItem
-	Brief    string  `json:"brief"`
-	Result   string  `json:"result,omitempty"`
-	Question string  `json:"question,omitempty"`
-	Events   []Event `json:"events,omitempty"`
+	Sessions     []WorkerSession  `json:"sessions,omitempty"`
+	Artifacts    []WorkArtifact   `json:"artifacts,omitempty"`
+	Dependencies []TeamAssignment `json:"dependencies,omitempty"`
+	Delegated    []TeamAssignment `json:"delegated,omitempty"`
+	Brief        string           `json:"brief"`
+	Result       string           `json:"result,omitempty"`
+	Question     string           `json:"question,omitempty"`
+	Events       []Event          `json:"events,omitempty"`
 }
 
 func (s *Store) WorkDetails(ctx context.Context, chat, id string) (WorkDetails, error) {
@@ -48,6 +52,22 @@ func (s *Store) workDetails(ctx context.Context, chat, id string, reference bool
 		return WorkDetails{}, ErrNotFound
 	}
 	detail := WorkDetails{WorkItem: items[0]}
+	detail.Sessions, err = workerSessions(ctx, tx, id)
+	if err != nil {
+		return WorkDetails{}, err
+	}
+	detail.Artifacts, err = workArtifacts(ctx, tx, id)
+	if err != nil {
+		return WorkDetails{}, err
+	}
+	detail.Dependencies, err = workDependencies(ctx, tx, id)
+	if err != nil {
+		return WorkDetails{}, err
+	}
+	detail.Delegated, err = delegatedWork(ctx, tx, id)
+	if err != nil {
+		return WorkDetails{}, err
+	}
 	err = tx.QueryRowContext(ctx, `SELECT td.brief,COALESCE((SELECT m.text FROM messages m WHERE m.task_id=td.task_id
 		AND m.role='assistant' ORDER BY m.id DESC LIMIT 1),''),
 		COALESCE((SELECT m.text FROM messages m WHERE m.task_id=? AND m.role='assistant'),'')

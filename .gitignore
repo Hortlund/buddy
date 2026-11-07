@@ -19,6 +19,8 @@ __pycache__/
 /buddy-state/
 /buddy-workspaces/
 /buddy-worker/
+.buddy-worktrees/
+.buddy-work/
 /backups/
 *.db
 *.db-*

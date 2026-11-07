@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -18,12 +20,31 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "setup-automation" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := tasks.RunAutomationSetup(ctx, os.Args[2:], os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "automation-proxy" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := tasks.RunAutomationProxy(ctx, os.Args[2:]); err != nil {
+			log.Print(err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	path := flag.String("connection", "", "path to the worker connection file")
 	enroll := flag.String("enroll", "", "owner connection file used to create a worker credential")
 	name := flag.String("name", "", "device name when enrolling")
 	server := flag.String("server", "", "override the HTTPS origin after a server move")
 	workspace := flag.String("workspace", "", "local folder available to assigned jobs")
 	edits := flag.Bool("allow-edits", false, "allow jobs to write in the local workspace")
+	configFile := flag.String("config", "", "host-local execution JSON with projects and automation providers")
 	pool := flag.Bool("accept-pool", false, "claim portable jobs from the shared worker pool")
 	codex := flag.String("codex", "codex", "Codex CLI executable")
 	flag.Parse()
@@ -36,7 +57,7 @@ func main() {
 	if *enroll != "" {
 		err = enrollWorker(ctx, *enroll, *path, *name)
 	} else {
-		err = serveWorker(ctx, *path, *server, *workspace, *codex, *edits, *pool)
+		err = serveWorker(ctx, *path, *server, *workspace, *codex, *edits, *pool, *configFile)
 	}
 	if err != nil {
 		log.Fatal(err)
@@ -73,7 +94,7 @@ func enrollWorker(ctx context.Context, ownerPath, path, name string) error {
 	return nil
 }
 
-func serveWorker(ctx context.Context, path, server, workspace, codex string, edits, pool bool) error {
+func serveWorker(ctx context.Context, path, server, workspace, codex string, edits, pool bool, configFile string) error {
 	connection, err := localconfig.ReadConnection(path)
 	if err != nil {
 		return err
@@ -117,6 +138,16 @@ func serveWorker(ctx context.Context, path, server, workspace, codex string, edi
 	if err != nil {
 		return err
 	}
+	if configFile == "" {
+		configFile = filepath.Join(dir, "execution.json")
+	}
+	cfg, err := tasks.LoadExecutionConfig(configFile)
+	if err != nil {
+		return err
+	}
+	if err = runtime.LoadHostExecution(ctx, cfg); err != nil {
+		return err
+	}
 	if pool {
 		_, source, err := runtime.Key.Read()
 		if err != nil {
@@ -137,8 +168,17 @@ func serveWorker(ctx context.Context, path, server, workspace, codex string, edi
 	} else {
 		log.Print("Buddy worker is polling for assigned jobs.")
 	}
+	var nextProfile time.Time
 	for ctx.Err() == nil {
 		start := time.Now()
+		if time.Now().After(nextProfile) {
+			nextProfile = time.Now().Add(30 * time.Second)
+			if err := client.ReportHostProfile(ctx, connection.DeviceID, runtime.DiscoverHost(ctx)); err != nil {
+				log.Printf("host report: %v", err)
+			} else {
+				nextProfile = time.Now().Add(time.Minute)
+			}
+		}
 		job, err := client.ClaimDeviceWork(ctx, connection.DeviceID, pool, edits)
 		switch {
 		case unauthorized(err):
@@ -153,7 +193,87 @@ func serveWorker(ctx context.Context, path, server, workspace, codex string, edi
 					continue
 				}
 			}
-			runJob(ctx, client, runtime.Run, connection.DeviceID, *job, start, workspace, edits)
+			run := func(jobCtx context.Context, turn tasks.Turn, emit tasks.Emit) (string, error) {
+				turn.ExecutionPlan = job.ExecutionPlan
+				if job.ControlToken != "" {
+					turn.ControlForward = func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+						return client.ForwardWorkControl(ctx, job.ID, job.ControlToken, raw)
+					}
+				}
+				if job.ProjectID != "" {
+					found := false
+					for _, binding := range runtime.ExecutionConfig().Projects {
+						if binding.ProjectID == job.ProjectID && binding.Path == job.Workspace {
+							turn.Agent.Workspace = binding.Path
+							found = true
+							break
+						}
+					}
+					if !found {
+						return "", errors.New("The assigned project has no matching checkout in this worker's local configuration.")
+					}
+				}
+				dir, branch, err := tasks.PrepareProjectWorkspace(jobCtx, turn.Agent.Workspace, job.ID, job.ProjectID, turn.Agent.AllowEdits)
+				if err != nil {
+					return "", err
+				}
+				turn.Agent.Workspace = dir
+				if err = client.ReportWorkerSession(jobCtx, connection.DeviceID, job.ID, job.Lease, dir, branch); err != nil {
+					return "", err
+				}
+				if turn.Agent.AllowEdits {
+					turn.OutputDirectory, err = tasks.ArtifactOutbox(dir, job.ID)
+					if err != nil {
+						return "", err
+					}
+				}
+				monitorCtx, stopMonitor := context.WithCancel(jobCtx)
+				defer stopMonitor()
+				automation := slices.Contains(turn.Requirements, "desktop") || slices.Contains(turn.Requirements, "browser")
+				if automation {
+					go func() {
+						ticker := time.NewTicker(2 * time.Second)
+						defer ticker.Stop()
+						var last time.Time
+						for {
+							select {
+							case <-monitorCtx.Done():
+								return
+							case <-ticker.C:
+								paused, err := client.AutomationControl(monitorCtx, connection.DeviceID, job.ID, job.Lease)
+								if err == nil {
+									_ = runtime.PauseAutomation(job.ID, paused)
+								}
+								frame, err := runtime.ExecutionFrame(job.ID)
+								if err == nil && len(frame.Data) > 0 && frame.At.After(last) {
+									if client.UploadExecutionFrame(monitorCtx, connection.DeviceID, job.ID, job.Lease, frame) == nil {
+										last = frame.At
+									}
+								}
+							}
+						}
+					}()
+				}
+				reply, err := runtime.Run(jobCtx, turn, emit)
+				if automation {
+					if frame, frameErr := runtime.ExecutionFrame(job.ID); frameErr == nil && len(frame.Data) > 0 {
+						_ = client.UploadExecutionFrame(jobCtx, connection.DeviceID, job.ID, job.Lease, frame)
+					}
+				}
+				if err == nil && turn.OutputDirectory != "" {
+					items, collectErr := tasks.CollectWorkArtifacts(turn.OutputDirectory)
+					if collectErr != nil {
+						_ = emit("commentary", "Couldn't collect deliverables: "+collectErr.Error())
+					}
+					for _, artifact := range items {
+						if err := client.UploadWorkArtifact(jobCtx, connection.DeviceID, job.ID, job.Lease, artifact); err != nil {
+							_ = emit("commentary", "Couldn't return artifact: "+artifact.Name)
+						}
+					}
+				}
+				return reply, err
+			}
+			runJob(ctx, client, run, connection.DeviceID, *job, start, workspace, edits)
 			continue
 		}
 		select {

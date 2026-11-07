@@ -36,6 +36,8 @@ func (a *desktop) openReference(raw, bud string, openWeb func(string), source ..
 	}
 	if target, ok := references.Parse(raw); ok {
 		switch target.Kind {
+		case "artifacts":
+			a.openWorkArtifact(target.ID, target.Job)
 		case "work":
 			a.openWork(tasks.WorkItem{ID: target.Job, ConversationID: target.ID})
 		case "chat":

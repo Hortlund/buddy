@@ -129,7 +129,7 @@ func enqueueAssignments(ctx context.Context, tx *sql.Tx, source assignmentSource
 		}
 		queued++
 		job, destination, err := enqueueHandoff(ctx, tx, assignmentKey(source.key, i), source.chat, agent, workRequest{
-			origin: "handoff", title: title, brief: brief, parent: source.parent, device: assignment.DeviceID,
+			origin: "handoff", title: title, brief: brief, parent: source.parent, device: assignment.DeviceID, plan: assignment.ExecutionPlan,
 		})
 		if err != nil {
 			return nil, err
@@ -167,6 +167,11 @@ func enqueueAssignments(ctx context.Context, tx *sql.Tx, source assignmentSource
 // Exact active repeats reuse the same worker. Different briefs, owners, devices,
 // attachments, or prerequisites remain separate assignments, including reviews.
 func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Agent, assignment Handoff, after []string) (AssignedWork, error) {
+	routing := workRequest{device: strings.TrimSpace(assignment.DeviceID), plan: assignment.ExecutionPlan}
+	if err := routeExecution(ctx, tx, &agent, &routing); err != nil {
+		return AssignedWork{}, err
+	}
+	assignment.DeviceID, assignment.ExecutionPlan = routing.device, routing.plan
 	rows, err := tx.QueryContext(ctx, `SELECT t.id,td.title,td.brief FROM tasks t
 		JOIN chat_turns ct ON ct.task_id=t.id JOIN turn_details td ON td.task_id=t.id
 		LEFT JOIN device_runs d ON d.task_id=t.id LEFT JOIN pooled_work p ON p.task_id=t.id
@@ -199,6 +204,20 @@ func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Age
 	wanted := slices.Clone(after)
 	slices.Sort(wanted)
 	for _, id := range candidates {
+		plan, err := readExecutionPlan(ctx, tx, id)
+		if err != nil {
+			return AssignedWork{}, err
+		}
+		want := assignment.ExecutionPlan
+		if err := validateExecution(&want); err != nil {
+			return AssignedWork{}, err
+		}
+		if plan.Role == "" {
+			plan.Role = "general"
+		}
+		if plan.ProjectID != want.ProjectID || plan.Role != want.Role || plan.Environment != want.Environment || !slices.Equal(plan.Requirements, want.Requirements) {
+			continue
+		}
 		rows, err := tx.QueryContext(ctx, "SELECT prerequisite_id FROM work_dependencies WHERE task_id=? ORDER BY prerequisite_id", id)
 		if err != nil {
 			return AssignedWork{}, err

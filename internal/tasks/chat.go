@@ -156,6 +156,11 @@ type Conversation struct {
 }
 
 type Turn struct {
+	ExecutionPlan
+	ControlForward  func(context.Context, json.RawMessage) (json.RawMessage, error)
+	OutputDirectory string
+	Projects        []Project
+
 	Skill              *SkillInvocation
 	WatchSignal        *StandingSignal
 	Memories           []MemoryNote
@@ -714,6 +719,15 @@ func (s *Store) SendMessage(ctx context.Context, conversation, key string, input
 
 func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 	var turn Turn
+	var planErr error
+	turn.ExecutionPlan, planErr = readExecutionPlan(ctx, s.db, task.ID)
+	if planErr != nil {
+		return turn, planErr
+	}
+	turn.Projects, planErr = s.Projects(ctx)
+	if planErr != nil {
+		return turn, planErr
+	}
 	var conv string
 	turn.Agent.Workspace = task.Repository
 	var parent string
@@ -820,7 +834,7 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 				turn.watches = append(turn.watches, watch)
 			}
 		}
-		turn.Devices, err = s.Devices(ctx)
+		turn.Devices, err = s.Hosts(ctx)
 		if err != nil {
 			return Turn{}, err
 		}
@@ -975,13 +989,24 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 func addReply(ctx context.Context, db writeQueryer, id, text string) error {
 	if strings.Contains(text, "`") {
 		var bud, workspace string
-		err := db.QueryRowContext(ctx, `SELECT COALESCE(td.agent_id,c.agent_id),t.repo
-			FROM tasks t JOIN chat_turns ct ON ct.task_id=t.id JOIN conversations c ON c.id=ct.conversation_id
+		err := db.QueryRowContext(ctx, `SELECT COALESCE(td.agent_id,c.agent_id),CASE WHEN EXISTS(SELECT 1 FROM device_runs dr WHERE dr.task_id=t.id) THEN ''
+                ELSE COALESCE((SELECT f.workspace FROM file_reference_workspaces f
+                WHERE f.task_id=t.id AND f.bud_id=COALESCE(td.agent_id,c.agent_id)),t.repo) END
+            FROM tasks t JOIN chat_turns ct ON ct.task_id=t.id JOIN conversations c ON c.id=ct.conversation_id
 			LEFT JOIN turn_details td ON td.task_id=t.id WHERE t.id=?`, id).Scan(&bud, &workspace)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		text = references.LinkFiles(text, bud, workspace, id)
+	}
+	artifacts, artifactErr := workArtifacts(ctx, db, id)
+	if artifactErr != nil {
+		return artifactErr
+	}
+	for _, artifact := range artifacts {
+		if !strings.Contains(text, artifact.URL) {
+			text += "\n\n[" + escapeTitle(artifact.Name) + "](" + artifact.URL + ")"
+		}
 	}
 	if err := captureFileReferences(ctx, db, id, text); err != nil {
 		return err

@@ -51,6 +51,11 @@ func mobileRoutes(owner *http.ServeMux, store *tasks.Store, pushTopic string) *h
 		"GET /v1/work",
 		"GET /v1/work/history",
 		"GET /v1/work/{job}",
+		"GET /v1/work/{job}/artifacts/{file}",
+		"GET /v1/work/{job}/frame",
+		"POST /v1/work/{job}/control",
+		"GET /v1/hosts",
+		"GET /v1/projects",
 		"GET /v1/conversations/{chat}/work/{job}",
 		"POST /v1/conversations/{chat}/work-inputs/{input}/answer",
 	} {

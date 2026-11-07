@@ -228,6 +228,11 @@ final class BuddyAPI: Sendable {
         try await load("/v1/conversations/\(chat)/work/\(id)")
     }
 
+    func workArtifact(job: String, file: String) async throws -> WorkArtifact { try await load("/v1/work/\(job)/artifacts/\(file)") }
+    func executionFrame(job: String) async throws -> ExecutionFrame { try await load("/v1/work/\(job)/frame") }
+    func pauseAutomation(job: String, paused: Bool) async throws { _ = try await data("/v1/work/\(job)/control", method: "POST", body: ["paused": paused]) }
+    func hosts() async throws -> [ExecutionHost] { try await load("/v1/hosts") }
+
     func referencedWorkDetails(chat: String, id: String) async throws -> WorkDetails {
         do { return try await load("/v1/work/\(id)") }
         catch let error as BuddyError where error.status == 404 {

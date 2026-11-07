@@ -58,6 +58,7 @@ enum Destination: Hashable {
     case inbox(String)
     case work(String, String)
     case file(String, String, String?)
+ case artifact(String, String)
 }
 
 enum BuddyTab: Hashable { case chats, inbox, work, settings }
@@ -226,7 +227,7 @@ struct BuddyTabs: View {
             case .inbox: inbox = [route.destination]; selected = .inbox
             case .work: work = [route.destination]; selected = .work
             case .chat: chats = [route.destination]; selected = .chats
-            case .file: chats = [route.destination]; selected = .chats
+            case .file, .artifact: chats = [route.destination]; selected = .chats
             }
         }
         .task(id: PushSync(token: push.token, enabled: alerts, work: workAlerts, phase: phase)) {
@@ -265,6 +266,7 @@ struct BuddyTabs: View {
         case let .inbox(id): InboxDetail(api: api, id: id)
         case let .work(chat, id): WorkDetail(api: api, chat: chat, id: id)
         case let .file(bud, path, task): WorkspacePreview(api: api, bud: bud, path: path, sourceTask: task)
+ case let .artifact(job,file): ArtifactPreview(api:api,job:job,file:file)
         }
     }
 }
@@ -295,7 +297,8 @@ struct PhoneSettings: View {
                 .accessibilityIdentifier("appearance-picker")
             }
             .listRowBackground(BuddyStyle.surface)
-            Section("Buddy home") {
+            Section("Execution") { NavigationLink("Hosts and capabilities") { HostCapabilities(api: api) } }.listRowBackground(BuddyStyle.surface)
+ Section("Buddy home") {
                 if let credentials = api.credentials {
                     LabeledContent("This iPhone", value: credentials.name)
                     LabeledContent("Server", value: credentials.server.host() ?? credentials.server.absoluteString)

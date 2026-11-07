@@ -58,15 +58,19 @@ func writeMCPConfig(home string, servers []MCPServerConfig) error {
 // mcpForRun takes one configuration snapshot per turn. Local installation
 // paths stay read-only even while their servers are disabled.
 func (r *CodexRuntime) mcpForRun(ctx context.Context, turn Turn) ([]MCPServerConfig, []string, error) {
+	automation, automationRoots, err := r.executionMCP(ctx, turn)
+	if err != nil {
+		return nil, nil, err
+	}
 	if r.MCPStore == nil || turn.DeviceExecution || turn.Origin == "peer_reply" {
-		return nil, nil, nil
+		return automation, automationRoots, nil
 	}
 	configs, err := r.MCPStore.mcpServers(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	var enabled []MCPServerConfig
-	var roots []string
+	enabled := automation
+	roots := automationRoots
 	for _, config := range configs {
 		if config.Transport == MCPStdio {
 			protected, err := config.verifyMCPLaunch(ctx)

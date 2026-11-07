@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -76,7 +78,7 @@ func OpenStore(ctx context.Context, path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("configure database: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, schema+chatSchema+workspaceSchema+cardsSchema+deviceSchema+attachmentSchema+voiceSchema+voiceTeamSchema+preferencesSchema+workQuestionsSchema+workInputSchema+standingSchema+skillSchema+removedBudSchema+connectionSchema+mcpSchema+assignmentSchema+managementSchema+historySchema+budMemorySchema+reactionSchema+githubWriteSchema+teamSchema); err != nil {
+	if _, err := db.ExecContext(ctx, schema+chatSchema+workspaceSchema+cardsSchema+deviceSchema+attachmentSchema+voiceSchema+voiceTeamSchema+preferencesSchema+workQuestionsSchema+workInputSchema+standingSchema+skillSchema+removedBudSchema+connectionSchema+mcpSchema+assignmentSchema+managementSchema+historySchema+budMemorySchema+reactionSchema+githubWriteSchema+teamSchema+executionSchema+workControlSchema+automationStateSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize database: %w", err)
 	}
@@ -234,20 +236,58 @@ func (s *Store) claimLane(ctx context.Context, background bool, occupied ...stri
 	if err != nil {
 		return Task{}, err
 	}
-	var id string
+	type queuedCandidate struct{ id, repo string }
+	var candidates []queuedCandidate
 	for rows.Next() {
-		var candidate, repo string
-		if err := rows.Scan(&candidate, &repo); err != nil {
+		var candidate queuedCandidate
+		if err := rows.Scan(&candidate.id, &candidate.repo); err != nil {
 			rows.Close()
 			return Task{}, err
 		}
-		if repo == "" || !workspaceOccupied(repo, occupied) {
-			id = candidate
-			break
-		}
+		candidates = append(candidates, candidate)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return Task{}, err
+	}
+	var id string
+	for _, candidate := range candidates {
+		plan, err := readExecutionPlan(ctx, tx, candidate.id)
+		if err != nil {
+			return Task{}, err
+		}
+		workspace, reason, err := executionWorkspace(ctx, tx, "server", plan)
+		if err != nil {
+			return Task{}, err
+		}
+		if reason != "" {
+			if _, err := tx.ExecContext(ctx, "UPDATE tasks SET summary=? WHERE id=?", reason, candidate.id); err != nil {
+				return Task{}, err
+			}
+			continue
+		}
+		if plan.ProjectID != "" && workspace != candidate.repo {
+			if _, err := tx.ExecContext(ctx, "UPDATE tasks SET summary=? WHERE id=?", "The project's checkout changed. Stop this assignment and start it again for the new checkout.", candidate.id); err != nil {
+				return Task{}, err
+			}
+			continue
+		}
+		if slices.Contains(plan.Requirements, "desktop") {
+			var busy bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_execution e JOIN tasks t ON t.id=e.task_id
+                WHERE t.status IN ('running','cancelling') AND NOT EXISTS(SELECT 1 FROM device_runs dr WHERE dr.task_id=t.id)
+                AND EXISTS(SELECT 1 FROM json_each(e.requirements) WHERE value='desktop'))`).Scan(&busy); err != nil {
+				return Task{}, err
+			}
+			if busy {
+				continue
+			}
+		}
+		_, gitErr := os.Stat(filepath.Join(candidate.repo, ".git"))
+		isolatedProject := plan.ProjectID != "" && gitErr == nil
+		if isolatedProject || candidate.repo == "" || !workspaceOccupied(candidate.repo, occupied) {
+			id = candidate.id
+			break
+		}
 	}
 	if id == "" {
 		return Task{}, ErrNotFound
@@ -295,6 +335,42 @@ func (s *Store) cancel(ctx context.Context, id string, queuedOnly bool) (Task, e
 }
 
 func cancelTask(ctx context.Context, tx *sql.Tx, id string, queuedOnly bool) (Task, error) {
+	t, err := cancelSingleTask(ctx, tx, id, queuedOnly)
+	if err != nil {
+		return t, err
+	}
+	rows, err := tx.QueryContext(ctx, `WITH RECURSIVE children(id) AS (
+		SELECT task_id FROM turn_details WHERE parent_id=? UNION
+		SELECT d.task_id FROM turn_details d JOIN children c ON d.parent_id=c.id)
+		SELECT t.id FROM tasks t JOIN children c ON c.id=t.id WHERE t.status IN ('queued','running','needs_input')`, id)
+	if err != nil {
+		return t, err
+	}
+	var children []string
+	for rows.Next() {
+		var child string
+		if err = rows.Scan(&child); err != nil {
+			rows.Close()
+			return t, err
+		}
+		children = append(children, child)
+	}
+	rowErr := rows.Err()
+	if err = rows.Close(); err != nil {
+		return t, err
+	}
+	if rowErr != nil {
+		return t, rowErr
+	}
+	for _, child := range children {
+		if _, err = cancelSingleTask(ctx, tx, child, false); err != nil {
+			return t, err
+		}
+	}
+	return t, nil
+}
+
+func cancelSingleTask(ctx context.Context, tx *sql.Tx, id string, queuedOnly bool) (Task, error) {
 	t, err := scanTask(tx.QueryRowContext(ctx, "SELECT "+fields+" FROM tasks WHERE id = ?", id))
 	if err != nil {
 		return t, err

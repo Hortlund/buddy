@@ -81,8 +81,12 @@ func (w *Worker) cancelTask(ctx context.Context, id string, queuedOnly bool) (Ta
 		return Task{}, ErrInactive
 	}
 	t, err := w.store.cancel(ctx, id, queuedOnly)
-	if err == nil && run != nil {
-		run.cancel()
+	if err == nil {
+		for job, running := range w.runs {
+			if task, lookupErr := w.store.Get(ctx, job); lookupErr == nil && task.Status == Cancelling {
+				running.cancel()
+			}
+		}
 	}
 	return t, err
 }
@@ -235,6 +239,22 @@ func (w *Worker) execute(ctx context.Context, t Task, run *workerRun, emit Emit,
 	if err != nil {
 		return "", err
 	}
+	if t.Kind == BackgroundWork && turn.WatchSignal == nil {
+		var branch string
+		turn.Agent.Workspace, branch, err = PrepareProjectWorkspace(ctx, turn.Agent.Workspace, t.ID, turn.ProjectID, turn.Agent.AllowEdits)
+		if err != nil {
+			return "", err
+		}
+		if err = w.store.StartWorkerSession(ctx, t.ID, "server", turn.Agent.Workspace, branch); err != nil {
+			return "", err
+		}
+		if turn.Agent.AllowEdits && turn.Agent.Workspace != "" {
+			turn.OutputDirectory, err = ArtifactOutbox(turn.Agent.Workspace, t.ID)
+			if err != nil {
+				return "", err
+			}
+		}
+	}
 	turn.action = action
 	turn.steering = &turnSteering{
 		wake: run.steerWake,
@@ -249,6 +269,17 @@ func (w *Worker) execute(ctx context.Context, t Task, run *workerRun, emit Emit,
 		mark: w.store.markSteering,
 	}
 	reply, err := w.agent(ctx, turn, emit)
+	if err == nil && turn.OutputDirectory != "" {
+		artifacts, collectErr := CollectWorkArtifacts(turn.OutputDirectory)
+		if collectErr != nil {
+			_ = emit("system", "Could not collect artifacts: "+collectErr.Error())
+		}
+		for _, artifact := range artifacts {
+			if saveErr := w.store.SaveWorkArtifact(ctx, t.ID, "", "", artifact); saveErr != nil {
+				_ = emit("system", "Could not save artifact: "+artifact.Name)
+			}
+		}
+	}
 	for _, plan := range append(slices.Clone(action.ManagementChoices), action.Manage) {
 		for i := range plan {
 			if plan[i].Operation == "edit_soul" {

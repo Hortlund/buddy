@@ -21,6 +21,7 @@ import (
 // MyGo's main thread owns the view state. Network and dialog results are
 // applied through Window.Update.
 type desktop struct {
+	execution                                          executionView
 	history                                            historyView
 	historyChanging                                    bool
 	historyNotice                                      ui.Toast

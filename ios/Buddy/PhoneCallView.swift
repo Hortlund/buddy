@@ -59,6 +59,7 @@ struct PhoneCallView: View {
                             case let .chat(id, name): ChatView(api: api, id: id, name: name)
                             case let .inbox(id): InboxDetail(api: api, id: id)
                             case let .file(bud, path, task): WorkspacePreview(api: api, bud: bud, path: path, sourceTask: task)
+ case let .artifact(job,file): ArtifactPreview(api:api,job:job,file:file)
                             }
                         }
                         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showWork = false } } }

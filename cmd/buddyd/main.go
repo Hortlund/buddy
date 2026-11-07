@@ -23,6 +23,24 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "setup-automation" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := tasks.RunAutomationSetup(ctx, os.Args[2:], os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "automation-proxy" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := tasks.RunAutomationProxy(ctx, os.Args[2:]); err != nil {
+			log.Print(err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	defaultDir, err := localconfig.DataDir()
 	if err != nil {
 		log.Fatal(err)
@@ -187,6 +205,31 @@ func serve(ctx context.Context, addr, dir, codex, runtimeDir, sourceDir, workspa
 	}
 	defer store.Close()
 	runtime.MCPStore = store
+	executionConfig, err := tasks.LoadExecutionConfig(filepath.Join(dir, "execution.json"))
+	if err != nil {
+		return err
+	}
+	if err := runtime.LoadHostExecution(ctx, executionConfig); err != nil {
+		return err
+	}
+	if err := store.SaveHostProfile(ctx, "server", runtime.DiscoverHost(ctx)); err != nil {
+		return err
+	}
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := store.SaveHostProfile(ctx, "server", runtime.DiscoverHost(ctx)); err != nil && ctx.Err() == nil {
+					log.Printf("host discovery: %v", err)
+				}
+			}
+		}
+	}()
+
 	if err := store.EnableProfiles(ctx, filepath.Join(dir, "profiles")); err != nil {
 		return err
 	}

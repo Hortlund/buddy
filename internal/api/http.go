@@ -28,7 +28,7 @@ const WatchDraftProtocol = 38
 const MCPProtocol = 40
 const MobileProtocol = 42
 const ReferenceProtocol = 57
-const DesktopProtocol = ReferenceProtocol
+const DesktopProtocol = ExecutionProtocol
 const AttachmentProtocol = 11
 const attachmentTransferTimeout = 2 * time.Minute
 
@@ -67,6 +67,7 @@ func Handler(token string, store *tasks.Store, worker *tasks.Worker, codex *task
 	}
 	standingRoutes(mux, store, integrations)
 	skillRoutes(mux, store)
+	executionRoutes(mux, store, codex)
 	devices := deviceRoutes(mux, store)
 	if codex != nil {
 		codexRoutes(mux, codex)
@@ -268,7 +269,7 @@ func Handler(token string, store *tasks.Store, worker *tasks.Worker, codex *task
 			services[0].GitHubWebhook(w, r)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/v1/worker/") {
+		if strings.HasPrefix(r.URL.Path, "/v1/worker/") || strings.HasPrefix(r.URL.Path, "/v1/execution/work/") {
 			devices.ServeHTTP(w, r)
 			return
 		}

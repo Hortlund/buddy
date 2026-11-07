@@ -28,14 +28,18 @@ around the clock.
   chats, or invite them into a live voice call on desktop or iPhone. Buds share
   team roles, leadership, and job status to coordinate their work.
 - **Work that keeps going.** Hand off development or research, keep chatting, and
-  get results or questions back in the conversation. Review progress in Work.
+  get results or questions back in the conversation. Review assignments, worker
+  sessions, project branches, and returned files in Work on desktop or iPhone.
 - **A workspace for each Bud.** Open files beside the chat, preview Markdown and
   code, inspect diffs, and edit text in the desktop app. Follow file and job links
   in messages, with native file previews on iPhone too.
 - **Routines and watches.** Schedule recurring tasks or ask Buds to watch specific
   activity in connected services.
 - **Connections and tools.** Connect GitHub, Gmail, Grafana, Prometheus, and custom
-  MCP servers. Add worker devices so jobs can run on other machines.
+  MCP servers. Add worker devices and route projects to hosts with the right tools.
+- **Browser and desktop work.** Enable isolated Playwright browsers on headless
+  hosts, or Cua Driver on a desktop or paired Lume guest. Follow screenshots,
+  pause automation, and stop assignments. See [execution setup](docs/execution.md).
 - **Reusable skills.** Use slash commands for common workflows or import a custom
   `SKILL.md`. Share files and images in desktop chat and generate images with a
   configured OpenAI API key.

@@ -14,27 +14,30 @@ import (
 var workMark = svg(`<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M3 12a22 22 0 0 0 18 0m-9 1v2"/>`)
 
 type workBrowser struct {
-	scope            string
-	scopeVersion     uint64
-	selectionVersion uint64
-	pollVersion      uint64
-	items            []tasks.WorkItem
-	selected         tasks.WorkItem
-	detail           tasks.WorkDetails
-	scroll           ui.ScrollState
-	filter           string
-	err              string
-	detailErr        string
-	stopErr          string
-	loading          bool
-	reading          bool
-	nextPoll         time.Time
-	nextRead         time.Time
-	older            []tasks.WorkItem
-	olderCursor      string
-	olderLoaded      bool
-	olderBusy        bool
-	olderErr         string
+	frame                                  tasks.ExecutionFrame
+	frameImage                             *ui.Bitmap
+	scope                                  string
+	scopeVersion                           uint64
+	selectionVersion                       uint64
+	pollVersion                            uint64
+	items                                  []tasks.WorkItem
+	selected                               tasks.WorkItem
+	detail                                 tasks.WorkDetails
+	scroll                                 ui.ScrollState
+	filter                                 string
+	budFilter, projectFilter, deviceFilter string
+	err                                    string
+	detailErr                              string
+	stopErr                                string
+	loading                                bool
+	reading                                bool
+	nextPoll                               time.Time
+	nextRead                               time.Time
+	older                                  []tasks.WorkItem
+	olderCursor                            string
+	olderLoaded                            bool
+	olderBusy                              bool
+	olderErr                               string
 }
 
 func (a *desktop) openWork(item tasks.WorkItem) {
@@ -57,6 +60,7 @@ func (work *workBrowser) selectItem(item tasks.WorkItem) {
 	work.stopErr = ""
 	work.scroll.X, work.scroll.Y = 0, 0
 	work.reading, work.nextRead = false, time.Time{}
+	work.frame, work.frameImage = tasks.ExecutionFrame{}, nil
 }
 
 func (a *desktop) stopWork(work *workBrowser, id string) {
@@ -152,7 +156,18 @@ func (a *desktop) refreshWork(c *ui.Context, work *workBrowser, scope string) {
 		} else {
 			detail, err = client.WorkDetails(a.ctx, selected.ConversationID, selected.ID)
 		}
+		var frame tasks.ExecutionFrame
+		var picture *ui.Bitmap
+		if err == nil && a.serverProtocol >= api.ExecutionProtocol && (slices.Contains(detail.Requirements, "desktop") || slices.Contains(detail.Requirements, "browser")) {
+			frame, _ = client.ExecutionFrame(a.ctx, selected.ID)
+			if len(frame.Data) > 0 {
+				picture = decodeWorkspaceImage(frame.Data)
+			}
+		}
 		win.Update(func() {
+			if work.scopeVersion == version && work.pollVersion == poll && work.selectionVersion == selection {
+				work.frame, work.frameImage = frame, picture
+			}
 			work.finishDetailRead(version, poll, selection, detail, err)
 		})
 	}()
@@ -174,7 +189,7 @@ func (work *workBrowser) finishDetailRead(scope, poll, selection uint64, detail 
 func (a *desktop) workPage(c *ui.Context) {
 	work := &a.work
 	a.refreshWork(c, work, work.scope)
-	controlPageLayout(c, "Work", "Follow what your Buds are doing and revisit finished jobs.", func() {
+	controlPageLayout(c, "Work", "Your team at work. Follow assignments, workers, and deliverables.", func() {
 		if a.online && a.serverProtocol != 0 && a.serverProtocol < api.WorkbenchProtocol {
 			controlPageScroll(c.Key("work-unavailable"), func() {
 				ui.Text(c, "Update the Buddy server to open the work overview.").TextColor(c.Theme().TextMuted)
@@ -183,12 +198,13 @@ func (a *desktop) workPage(c *ui.Context) {
 		}
 		ui.Row(c).Grow(1).MinHeight(0).FillWidth().Padding(0, controlPageInset, controlPageBottom).
 			Gap(13).AlignItems(ui.Stretch).Children(func() {
-			ui.Column(c).Width(270).Shrink(0).MinHeight(0).Gap(7).Children(func() {
+			ui.Column(c).Width(300).Shrink(0).MinHeight(0).Gap(7).Children(func() {
 				if work.scope != "" {
 					ui.Button(c.Key("all-work"), "Show jobs from all chats").AlignSelf(ui.Start).Height(28).
 						OnClick(func() { a.openWork(tasks.WorkItem{}) })
 				}
-				ui.TextInput(c.Key("work-filter"), &work.filter).Label("Filter jobs").Placeholder("Search jobs…").Height(33)
+				ui.TextInput(c.Key("work-filter"), &work.filter).Label("Filter jobs").Placeholder("Search assignments…").Height(33)
+				workFilters(c, work)
 				ui.Scroll(c.Key("work-list")).Grow(1).MinHeight(0).FillWidth().Children(func() {
 					ui.Column(c).FillWidth().Padding(0, 11, 5, 0).Gap(8).Children(func() {
 						workList(c, work, work.scope == "")
@@ -219,14 +235,14 @@ func workList(c *ui.Context, work *workBrowser, showChat bool) {
 		name string
 		show func(tasks.Status) bool
 	}{
-		{"Waiting for input", func(s tasks.Status) bool { return s == tasks.NeedsInput }},
-		{"In progress", tasks.Status.Active},
+		{"Needs you", func(s tasks.Status) bool { return s == tasks.NeedsInput }},
+		{"Active", tasks.Status.Active},
 		{"Recent", func(s tasks.Status) bool { return !s.Active() && s != tasks.NeedsInput }},
 	} {
 		shown := false
 		for _, item := range items {
-			search := strings.ToLower(item.Title + " " + item.AgentName + " " + item.ConversationName + " " + workerLocation(item))
-			if !group.show(item.Status) || !strings.Contains(search, filter) {
+			search := strings.ToLower(item.Title + " " + item.AgentName + " " + item.ConversationName + " " + workerLocation(item) + " " + item.ProjectName + " " + item.Role)
+			if !workMatches(work, item) || !group.show(item.Status) || !strings.Contains(search, filter) {
 				continue
 			}
 			if !shown {
@@ -367,7 +383,10 @@ func workRow(c *ui.Context, item tasks.WorkItem, selected, showChat bool, open f
 				text := workStatus(item.Status) + " · " + workerLocation(item)
 				ui.Text(c, text).FontSize(11).TextColor(c.Theme().TextMuted).SingleLine()
 			})
-			worker := item.AgentName + "’s worker"
+			worker := item.AgentName + " · " + workerRole(item)
+			if item.ProjectName != "" {
+				worker += " · " + item.ProjectName
+			}
 			if showChat && item.ConversationName != "" && item.ConversationName != item.AgentName {
 				worker += " · " + item.ConversationName
 			}
@@ -379,7 +398,7 @@ func workRow(c *ui.Context, item tasks.WorkItem, selected, showChat bool, open f
 func (a *desktop) workDetail(c *ui.Context, work *workBrowser, compact bool) {
 	item := work.selected
 	if item.ID == "" {
-		ui.Text(c, "Choose a job to see its progress and result.").TextColor(c.Theme().TextMuted).FontSize(13)
+		a.workOverview(c, work)
 		return
 	}
 	detail := work.detail
@@ -396,7 +415,7 @@ func (a *desktop) workDetail(c *ui.Context, work *workBrowser, compact bool) {
 				}
 			}
 			if item.AgentName != "" {
-				ui.Text(c, item.AgentName+"’s worker").FontSize(12).FontWeight(620).SingleLine()
+				ui.Text(c, item.AgentName+" · "+workerRole(item)).FontSize(12).FontWeight(620).SingleLine()
 			}
 		})
 		ui.Text(c, workStatus(item.Status)+" · "+workerLocation(item)).FontSize(12).TextColor(jobColor(c, item.Status))
@@ -446,6 +465,8 @@ func (a *desktop) workDetail(c *ui.Context, work *workBrowser, compact bool) {
 			ui.Text(c, "Loading details…").FontSize(12).TextColor(c.Theme().TextMuted)
 			return
 		}
+		a.executionWorkDetail(c, detail)
+		a.automationWorkView(c, work, item)
 		if progress := workActivity(item); progress != "" && !slices.ContainsFunc(detail.Events, func(event tasks.Event) bool {
 			return event.Text == progress
 		}) {

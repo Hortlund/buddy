@@ -44,12 +44,14 @@ const deviceLeaseDuration = 25 * time.Second
 const deviceDeliveryDuration = 150 * time.Second
 
 type Device struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Online    bool   `json:"online"`
-	Seen      bool   `json:"seen,omitempty"`
-	Pool      bool   `json:"pool,omitempty"`
-	PoolEdits bool   `json:"pool_edits,omitempty"`
+	Profile   *HostProfile `json:"profile,omitempty"`
+	Busy      int          `json:"busy"`
+	ID        string       `json:"id"`
+	Name      string       `json:"name"`
+	Online    bool         `json:"online"`
+	Seen      bool         `json:"seen,omitempty"`
+	Pool      bool         `json:"pool,omitempty"`
+	PoolEdits bool         `json:"pool_edits,omitempty"`
 }
 
 type DeviceCredential struct {
@@ -58,6 +60,9 @@ type DeviceCredential struct {
 }
 
 type DeviceJob struct {
+	ExecutionPlan
+	Workspace       string           `json:"workspace,omitempty"`
+	ControlToken    string           `json:"control_token,omitempty"`
 	BuddyTeam       TeamContext      `json:"buddy_team"`
 	Skill           *SkillInvocation `json:"skill,omitempty"`
 	Language        string           `json:"language,omitempty"`
@@ -135,7 +140,22 @@ func (s *Store) Devices(ctx context.Context) ([]Device, error) {
 		}
 		devices = append(devices, device)
 	}
-	return devices, rows.Err()
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	for i := range devices {
+		profile, err := s.HostProfile(ctx, devices[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		if profile.OS != "" {
+			devices[i].Profile = &profile
+		}
+		if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM device_runs d JOIN tasks t ON t.id=d.task_id WHERE d.device_id=? AND t.status IN ('running','cancelling')", devices[i].ID).Scan(&devices[i].Busy); err != nil {
+			return nil, err
+		}
+	}
+	return devices, nil
 }
 
 func (s *Store) AuthenticateDevice(ctx context.Context, id, token string) bool {
@@ -170,7 +190,7 @@ func touchDevice(ctx context.Context, tx *sql.Tx, id string, now time.Time) erro
 }
 
 func (s *Store) ClaimDeviceJob(ctx context.Context, id string) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, false, false, false, false)
+	return s.claimDeviceJob(ctx, id, false, false, false, false, false)
 }
 
 func (s *Store) ReserveDeviceJob(ctx context.Context, id string) (*DeviceJob, error) {
@@ -178,14 +198,18 @@ func (s *Store) ReserveDeviceJob(ctx context.Context, id string) (*DeviceJob, er
 }
 
 func (s *Store) ReserveDeviceWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, false)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, false, false)
 }
 
 func (s *Store) ReserveDeviceSkillWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, true)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, false)
 }
 
-func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, pool, edits, supportsSkills bool) (*DeviceJob, error) {
+func (s *Store) ReserveExecutionWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true)
+}
+
+func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, pool, edits, supportsSkills, supportsExecution bool) (*DeviceJob, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -235,6 +259,23 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 		return nil, err
 	}
 	for _, item := range queued {
+		plan, err := readExecutionPlan(ctx, tx, item.id)
+		if err != nil {
+			return nil, err
+		}
+		if !supportsExecution && (plan.ProjectID != "" || len(plan.Requirements) != 0 || plan.Environment != "") {
+			continue
+		}
+		workspace, reason, err := executionWorkspace(ctx, tx, id, plan)
+		if err != nil {
+			return nil, err
+		}
+		if reason != "" {
+			if _, err := tx.ExecContext(ctx, "UPDATE tasks SET summary=? WHERE id=?", reason, item.id); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		skill, err := skillForTurn(ctx, tx, item.id, item.parent)
 		if err != nil {
 			return nil, err
@@ -261,7 +302,7 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 			}
 			continue
 		}
-		job := &DeviceJob{ID: item.id, Lease: rand.Text(), NeedsStart: reserveDelivery && (len(files) != 0 || skill != nil),
+		job := &DeviceJob{ExecutionPlan: plan, Workspace: workspace, ID: item.id, Lease: rand.Text(), NeedsStart: reserveDelivery && (len(files) != 0 || skill != nil),
 			Attachments: files, CanRequestInput: reserveDelivery, Skill: skill}
 		var conversation string
 		if err := tx.QueryRowContext(ctx, `
@@ -316,6 +357,12 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 		if _, err := tx.ExecContext(ctx, "UPDATE device_runs SET lease=?,expires=? WHERE task_id=?",
 			job.Lease, now.Add(duration).UnixMicro(), item.id); err != nil {
 			return nil, err
+		}
+		if supportsExecution {
+			job.ControlToken = rand.Text() + rand.Text()
+			if _, err := tx.ExecContext(ctx, `INSERT INTO work_control_tokens VALUES (?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET device_id=excluded.device_id,lease=excluded.lease,token_hash=excluded.token_hash`, job.ID, id, job.Lease, tokenHash(job.ControlToken)); err != nil {
+				return nil, err
+			}
 		}
 		return job, tx.Commit()
 	}

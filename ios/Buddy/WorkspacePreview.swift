@@ -37,6 +37,9 @@ func referenceDestination(_ url: URL) -> Destination? {
     queryParts.percentEncodedQuery = parts.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%20")
     let query = queryParts.queryItems ?? []
     switch url.host {
+ case "artifacts":
+ guard let file=query.first(where: {$0.name=="file"})?.value, validID(file) else {return nil}
+ return .artifact(id,file)
     case "files":
         guard let path = query.first(where: { $0.name == "path" })?.value,
               path == "." || validReferencePath(path) else { return nil }
