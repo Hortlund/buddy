@@ -167,8 +167,8 @@ go vet ./...
 
 With the Codex CLI signed in, `python3 script/smoke_desktop.py` exercises the native
 desktop against a temporary Buddy home. The hosting smoke tests use local Docker. Run
-`python3 script/smoke_install_server.py --full-build` to check a fresh server
-install, downloaded toolchains, private access, pairing, and restart persistence.
+`python3 script/smoke_install_server.py --full-build --user-install` to check a fresh server
+install through sudo, toolchain access, chat execution, pairing, and restart persistence.
 Tailscale and the service manager use local fixtures; no account sign-in is needed.
 See the guide for details.
 

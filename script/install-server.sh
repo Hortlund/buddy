@@ -40,6 +40,10 @@ case "$host_os" in
     if [ -e "$service_file" ] || [ -e "$install_dir" ] || [ -e "$command_file" ] || [ -L "$command_file" ]; then
       [ -f "$install_dir/managed-install" ] && [ -x "$command_file" ] || fail 'An unmanaged Buddy installation already exists. No files were changed.'
       info 'Buddy is already installed. Keeping its binaries, service, and data.'
+      # Repair Go trees extracted by older installers under umask 077.
+      if [ -d "$install_dir/go" ] && [ ! -L "$install_dir/go" ]; then
+        admin chmod -R a+rX,go-w "$install_dir/go"
+      fi
       "$command_file" status
       "$command_file" connect
       exit 0
@@ -93,7 +97,9 @@ if [ -z "$binary" ]; then
   esac
   fetch "https://go.dev/dl/go1.27.3.$host_os-$arch.tar.gz" "$scratch/go.tar.gz"
   verify "$scratch/go.tar.gz" "$go_sha"
-  tar -xzf "$scratch/go.tar.gz" -C "$scratch"
+  # This archive was checksum-verified. Retain its readable/executable modes
+  # when handing the toolchain to the dedicated service account on Linux.
+  tar -xzpf "$scratch/go.tar.gz" -C "$scratch"
   (cd "$source_dir" && env CGO_ENABLED=0 "$scratch/go/bin/go" build -p 2 -trimpath -o "$scratch/buddyd" ./cmd/buddyd)
   binary="$scratch/buddyd"
 fi

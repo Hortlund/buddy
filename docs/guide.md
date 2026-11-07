@@ -284,7 +284,8 @@ Linux data lives in `/var/lib/buddy`, binaries in `/opt/buddy`. Mac data lives i
 account. Use `sudo journalctl -u buddyd.service` for Linux startup diagnostics.
 
 Rerunning the installer detects an existing managed install and preserves its
-binaries, credentials, data, and running jobs. It does **not** upgrade it. To move
+binaries, credentials, data, and running jobs. It also repairs toolchain permissions
+from older Linux installers. It does **not** upgrade it. To move
 an existing home, use the [move flow](#move-the-home-server), which prevents two
 hosts from running the same home. Back up before manually replacing binaries;
 stop the service first and retain the existing data directory.

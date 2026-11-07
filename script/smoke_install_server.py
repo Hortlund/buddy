@@ -2,6 +2,7 @@
 """Test the Linux installer in Docker, with real TLS Buddy and a service-manager fixture.
 
 No Tailscale account, model credentials, host service, or public port is used.
+Use --full-build --user-install to exercise sudo installation and the shared Go tree.
 The fixture starts/stops the generated unit; it does not simulate an OS reboot.
 """
 import json
@@ -18,7 +19,7 @@ def run(*args, **kwargs):
     return subprocess.run(args, cwd=ROOT, check=True, **kwargs)
 
 
-def smoke(folder, full_build=False):
+def smoke(folder, full_build=False, user_install=False):
     arch = run('docker', 'info', '--format', '{{.Architecture}}', capture_output=True,
                text=True).stdout.strip()
     arch = {'aarch64': 'arm64', 'arm64': 'arm64', 'x86_64': 'amd64'}[arch]
@@ -38,7 +39,15 @@ def smoke(folder, full_build=False):
                 dest.write_bytes(src.read_bytes())
     for name in ('install-server.sh', 'buddy-server.sh'):
         (folder / 'source/script' / name).write_bytes((ROOT / 'script' / name).read_bytes())
-    (folder / 'codex').write_text('#!/bin/sh\n[ "$1" = "--version" ] && echo "codex-cli 0.167.0"\nexit 0\n')
+    (folder / 'codex').write_text('''#!/usr/bin/python3
+import json, sys
+if '--version' in sys.argv:
+    print('codex-cli 0.167.0')
+elif 'exec' in sys.argv:
+    sys.stdin.read()
+    reply = json.dumps({'reply': 'Installer smoke reply.'})
+    print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': reply}}))
+''')
     (folder / 'codex').chmod(0o755)
     (folder / 'systemctl').write_text('''#!/bin/bash
 set -eu
@@ -82,7 +91,8 @@ class API(BaseHTTPRequestHandler):
 HTTPServer(('127.0.0.1',48791),API).serve_forever()
 ''')
     (folder / 'Dockerfile').write_text('''FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends bash curl ca-certificates git python3 systemd && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends bash curl ca-certificates git python3 systemd sudo && rm -rf /var/lib/apt/lists/*
+RUN useradd --create-home --shell /bin/bash installer && printf 'installer ALL=(ALL) NOPASSWD:ALL\\n' > /etc/sudoers.d/buddy-fixture && chmod 440 /etc/sudoers.d/buddy-fixture
 COPY systemctl /usr/local/bin/systemctl
 COPY tailscale /usr/local/bin/tailscale
 COPY . /fixture
@@ -96,28 +106,49 @@ assert pathlib.Path('/tmp/buddy-enabled').exists()
 assert p.stat().st_mode & 0o777 == 0o700
 assert (p/'state/server.token').stat().st_mode & 0o777 == 0o600
 assert (p/'state').stat().st_uid != 0
-owner = json.loads(pathlib.Path('/root/.buddy-server-access/owner.json').read_text())
+owner_path = pathlib.Path('OWNER_HOME/.buddy-server-access/owner.json')
+owner = json.loads(owner_path.read_text())
 assert owner['server'] == 'https://100.80.1.2:7331'
 forward = json.loads(pathlib.Path('/tmp/tailnet-config.json').read_text())['TCP']
 assert forward['7331']['TCPForward'] == '127.0.0.1:7331'
 assert forward['8443']['TCPForward'] == '127.0.0.1:8000'
-assert pathlib.Path('/root/.buddy-server-access/owner.json').stat().st_mode & 0o777 == 0o600
+assert owner_path.stat().st_mode & 0o777 == 0o600
 ctx = ssl.create_default_context(cafile=str(p/'state/server.crt'))
 def request(path, data=None):
-    req = urllib.request.Request('https://127.0.0.1:7331'+path, data=None if data is None else json.dumps(data).encode(), headers={'Authorization': 'Bearer '+(p/'state/server.token').read_text().strip(), 'Content-Type': 'application/json'})
+    req = urllib.request.Request('https://127.0.0.1:7331'+path, data=None if data is None else json.dumps(data).encode(), headers={'Authorization': 'Bearer '+(p/'state/server.token').read_text().strip(), 'Content-Type': 'application/json', 'Idempotency-Key': str(time.monotonic_ns())})
     with urllib.request.urlopen(req, context=ctx, timeout=5) as result: return json.load(result)
 assert request('/healthz')['service'] == 'buddy'
 agent = request('/v1/agents', {'name': 'Installer smoke Bud'})
+# A health check alone misses unreadable files in the trusted runtime tree.
+def check_chat():
+    chat = request('/v1/conversations/conv_buddy/messages', {'text': 'Test a reply'})
+    for _ in range(100):
+        task = request('/v1/tasks/' + chat['id'])
+        if task['status'] == 'succeeded': break
+        assert task['status'] not in ('failed', 'interrupted'), task
+        time.sleep(.1)
+    else: raise AssertionError('chat did not finish')
+    assert any(m['text'] == 'Installer smoke reply.' for m in request('/v1/conversations/conv_buddy')['messages'])
+check_chat()
+# Reproduce the old installation's root-owned 0700 toolchain, then repair it.
+go = pathlib.Path('/opt/buddy/go')
+if go.exists():
+    subprocess.run(['chmod', '-R', 'go-rwx', str(go)], check=True)
+
 # Rerunning must not restart the service, rotate credentials, or lose state.
 pid = (p/'pid').read_text()
-subprocess.run(['bash', '/fixture/source/script/install-server.sh', '--source-dir', '/fixture/source', '--binary', '/fixture/buddyd', '--codex', '/fixture/codex', '--no-tailscale'], check=True)
+install = ['bash', '/fixture/source/script/install-server.sh', '--source-dir', '/fixture/source', '--binary', '/fixture/buddyd', '--codex', '/fixture/codex', '--no-tailscale']
+subprocess.run(INSTALL_PREFIX + install, check=True)
 assert (p/'pid').read_text() == pid
 assert (p/'state/server.token').read_text().strip() == owner['token']
 assert any(a['id'] == agent['id'] for a in request('/v1/workspace')['agents'])
+if go.exists():
+    subprocess.run(['runuser', '-u', 'buddy', '--', str(go/'bin/go'), 'version'], check=True)
+check_chat()
 # Remote address export keeps the server pin; the private credentials never go to stdout.
 (p/'server-url').write_text('https://100.80.1.3:7331\\n')
-subprocess.run(['buddy-server', 'connect'], check=True)
-updated = json.loads(pathlib.Path('/root/.buddy-server-access/owner.json').read_text())
+subprocess.run(INSTALL_PREFIX + ['buddy-server', 'connect'], check=True)
+updated = json.loads(owner_path.read_text())
 assert updated['server'] == 'https://100.80.1.3:7331' and updated['token'] == owner['token']
 assert updated['certificate'] == owner['certificate']
 paired = subprocess.run(['buddy-server', 'pair'], capture_output=True, text=True, check=True).stdout
@@ -135,17 +166,26 @@ for _ in range(30):
     except Exception: pass
     time.sleep(.1)
 else: raise AssertionError('state lost on service restart')
-print('Verified: non-root service, private TLS access, idempotent install, phone pairing, and state across restart.')
-''')
+print('Verified: service chat reply, private TLS access, permission repair, idempotent install, phone pairing, and state across restart.')
+'''.replace('OWNER_HOME', '/home/installer' if user_install else '/root').replace('INSTALL_PREFIX', repr(['runuser', '-u', 'installer', '--'] if user_install else [])))
     install_flags = '' if full_build else '--binary /fixture/buddyd --codex /fixture/codex'
+    install_prefix = 'runuser -u installer --' if user_install else ''
     (folder / 'run.sh').write_text('''#!/bin/bash
 set -euo pipefail
 python3 /fixture/tailnet.py &
 sleep .3
-bash /fixture/source/script/install-server.sh --source-dir /fixture/source INSTALL_FLAGS
+INSTALL_PREFIX bash /fixture/source/script/install-server.sh --source-dir /fixture/source INSTALL_FLAGS
+if [ -d /opt/buddy/go ]; then
+  runuser -u buddy -- /opt/buddy/go/bin/go version
+  printf 'package main\\nimport "fmt"\\nfunc main() { fmt.Println("Go toolchain accessible") }\\n' > /var/lib/buddy/permission-check.go
+  chown buddy:buddy /var/lib/buddy/permission-check.go
+  runuser -u buddy -- env HOME=/var/lib/buddy /opt/buddy/go/bin/go run /var/lib/buddy/permission-check.go
+fi
+# Exercise Buddy's real runtime validation without using model credentials.
+install -m 755 /fixture/codex /opt/buddy/codex
 /usr/bin/systemd-analyze verify /etc/systemd/system/buddyd.service
 python3 /fixture/verify.py
-'''.replace('INSTALL_FLAGS', install_flags))
+'''.replace('INSTALL_FLAGS', install_flags).replace('INSTALL_PREFIX', install_prefix))
     image = folder.name.lower()
     try:
         run('docker', 'build', '-q', '-t', image, str(folder), stdout=subprocess.DEVNULL)
@@ -156,4 +196,4 @@ python3 /fixture/verify.py
 
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory(prefix='buddy-install-', dir='/tmp') as tmp:
-        smoke(Path(tmp), full_build='--full-build' in sys.argv)
+        smoke(Path(tmp), full_build='--full-build' in sys.argv, user_install='--user-install' in sys.argv)
