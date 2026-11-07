@@ -24,6 +24,8 @@ start, automatic = int(sys.argv[1]), sys.argv[2] == '1'
 for port in range(start, min(start + (64 if automatic else 1), 65536)):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            # Match Go's listener so closed connections in TIME_WAIT can be reused.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(('127.0.0.1', port))
         print(port)
         break
@@ -98,7 +100,7 @@ case "$host_os" in
       command -v "$dependency" >/dev/null 2>&1 || fail "Required dependency still missing: $dependency."
     done
     python3 -c 'import socket' || fail 'Python 3 cannot load its standard library.'
-    admin install -d -m 755 /usr/local/bin
+    if [ ! -d /usr/local/bin ]; then admin install -d -m 755 /usr/local/bin; fi
     check_write /opt
     check_write /var/lib
     check_write /usr/local/bin

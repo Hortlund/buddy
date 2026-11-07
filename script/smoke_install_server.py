@@ -112,7 +112,9 @@ if [ "$1" = install ] && [ -f /usr/bin/gzip.fixture ]; then mv /usr/bin/gzip.fix
 ''')
     for tool in ('curl', 'df', 'apt-get'):
         (folder / tool).chmod(0o755)
-    (folder / 'preflight.py').write_text('''import os, pathlib, socket, subprocess, time
+    (folder / 'preflight.py').write_text('''import errno, os, pathlib, socket, stat, subprocess, time
+shared_bin = pathlib.Path('/usr/local/bin')
+shared_bin.chmod(0o2775)
 for _ in range(100):
     try:
         with socket.create_connection(('127.0.0.1',7331), timeout=1): break
@@ -125,11 +127,31 @@ def rejected(flags, environment, message):
     assert not pathlib.Path('/opt/buddy').exists(), 'failed preflight changed the install'
     assert not pathlib.Path('/etc/systemd/system/buddyd.service').exists(), 'failed preflight created a service'
     assert subprocess.run(['id', 'buddy'], capture_output=True).returncode != 0, 'failed preflight created an account'
+    assert stat.S_IMODE(shared_bin.stat().st_mode) == 0o2775, 'preflight changed existing shared directory permissions'
 rejected(['--source-dir', '/fixture/source'], {'BUDDY_SMOKE_NO_SYSTEMD':'1'}, 'systemd is installed but not running')
 rejected(['--source-dir', '/fixture/source', '--port', '7331'], {}, 'Port 7331 is unavailable')
 rejected([], {'BUDDY_SMOKE_OFFLINE':'1'}, 'Cannot reach Buddy source on GitHub')
 rejected(['--source-dir', '/fixture/source'], {'BUDDY_SMOKE_NO_SPACE':'1'}, 'Not enough free space')
-print('Verified preflight: stopped systemd, occupied explicit port, offline download, and low disk all fail before installation.')
+# Close a Go-style listener with a server-initiated FIN to leave TIME_WAIT behind.
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(('127.0.0.1', 0))
+    listener.listen()
+    address = listener.getsockname()
+    with socket.create_connection(address) as client:
+        accepted, _ = listener.accept()
+        accepted.close()
+        assert client.recv(1) == b''
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    try:
+        probe.bind(address)
+    except OSError as problem:
+        assert problem.errno == errno.EADDRINUSE, problem
+    else:
+        raise AssertionError('TIME_WAIT fixture did not reserve the port')
+# A reusable port must pass the port check and reach the later disk check.
+rejected(['--source-dir', '/fixture/source', '--port', str(address[1])], {'BUDDY_SMOKE_NO_SPACE':'1'}, 'Not enough free space')
+print('Verified preflight: failure isolation, shared directory permissions, busy ports, and TIME_WAIT port reuse.')
 ''')
     (folder / 'Dockerfile').write_text('''FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends bash curl ca-certificates git python3 systemd sudo && rm -rf /var/lib/apt/lists/*
@@ -139,8 +161,9 @@ COPY tailscale /usr/local/bin/tailscale
 COPY curl df apt-get /usr/local/bin/
 COPY . /fixture
 ''')
-    (folder / 'verify.py').write_text('''import json, os, pathlib, ssl, subprocess, time, urllib.request, urllib.parse
+    (folder / 'verify.py').write_text('''import json, os, pathlib, ssl, stat, subprocess, time, urllib.request, urllib.parse
 p = pathlib.Path('/var/lib/buddy')
+assert stat.S_IMODE(pathlib.Path('/usr/local/bin').stat().st_mode) == 0o2775, 'installation changed existing shared directory permissions'
 unit = pathlib.Path('/etc/systemd/system/buddyd.service').read_text()
 assert 'User=buddy' in unit and 'UMask=0077' in unit
 server_port = urllib.parse.urlparse((p/'server-url').read_text().strip()).port
@@ -186,6 +209,7 @@ if go.exists():
 pid = (p/'pid').read_text()
 install = ['bash', '/fixture/source/script/install-server.sh', '--source-dir', '/fixture/source', '--binary', '/fixture/buddyd', '--codex', '/fixture/codex', '--no-tailscale']
 subprocess.run(INSTALL_PREFIX + install, check=True)
+assert stat.S_IMODE(pathlib.Path('/usr/local/bin').stat().st_mode) == 0o2775, 'reinstallation changed existing shared directory permissions'
 bad_port = subprocess.run(INSTALL_PREFIX + install + ['--port', str(server_port+1)], capture_output=True, text=True)
 assert bad_port.returncode != 0 and 'already has a port' in bad_port.stderr
 assert (p/'pid').read_text() == pid
