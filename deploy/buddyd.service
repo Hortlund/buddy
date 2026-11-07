@@ -1,0 +1,19 @@
+[Unit]
+Description=Buddy home server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=buddy
+Group=buddy
+StateDirectory=buddy
+StateDirectoryMode=0700
+Environment=HOME=/var/lib/buddy
+UMask=0077
+ExecStart=/opt/buddy/buddyd -addr 127.0.0.1:7331 -data-dir /var/lib/buddy/state -workspaces-dir /var/lib/buddy/workspaces -codex /opt/buddy/bin/codex
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

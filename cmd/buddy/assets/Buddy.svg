@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Buddy app icon</title>
+  <defs>
+    <linearGradient id="tile" x1="12%" y1="0%" x2="86%" y2="100%">
+      <stop stop-color="#323451"/>
+      <stop offset=".46" stop-color="#222438"/>
+      <stop offset="1" stop-color="#12131f"/>
+    </linearGradient>
+    <linearGradient id="edge" x2="0%" y2="100%">
+      <stop stop-color="#9e9bd5" stop-opacity=".46"/>
+      <stop offset="1" stop-color="#6d6f9d" stop-opacity=".18"/>
+    </linearGradient>
+    <linearGradient id="back" x1="10%" y1="2%" x2="83%" y2="97%">
+      <stop stop-color="#b7aaff"/>
+      <stop offset="1" stop-color="#7462e6"/>
+    </linearGradient>
+    <linearGradient id="front" x1="19%" y1="7%" x2="80%" y2="98%">
+      <stop stop-color="#faf8ff"/>
+      <stop offset="1" stop-color="#ccc7ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="85" y="92" width="854" height="854" rx="202" fill="#111222" opacity=".09"/>
+  <rect x="89" y="86" width="846" height="854" rx="199" fill="#111222" opacity=".14"/>
+  <rect x="92" y="81" width="840" height="850" rx="197" fill="#111222" opacity=".21"/>
+  <rect x="92" y="76" width="840" height="840" rx="196" fill="url(#tile)"/>
+  <rect x="94" y="78" width="836" height="836" rx="194" fill="none" stroke="url(#edge)" stroke-width="4"/>
+
+  <path fill="url(#back)" d="M592 417h19c84 0 147 53 147 129 0 52-30 95-78 115l11 42c3 12-10 21-21 14l-68-43h-10c-85 0-149-54-149-128 0-76 64-129 149-129Z"/>
+  <path fill="url(#front)" stroke="#26283e" stroke-width="14" stroke-linejoin="round"
+    d="M412 281h62c89 0 155 58 155 140 0 83-66 141-155 141h-66l-65 42c-11 7-24-3-21-15l10-40c-49-23-79-68-79-128 0-82 66-140 159-140Z"/>
+  <g fill="#26283e" transform="rotate(-18 451 421)">
+    <rect x="404" y="390" width="31" height="67" rx="15.5"/>
+    <rect x="467" y="390" width="29" height="55" rx="14.5"/>
+  </g>
+</svg>

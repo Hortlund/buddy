@@ -1,0 +1,148 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 77;
+	objects = {
+		B00000000000000000000001 = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2720;
+			};
+			buildConfigurationList = B00000000000000000000010;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en, Base);
+			mainGroup = B00000000000000000000002;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = B00000000000000000000004;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (B00000000000000000000006);
+		};
+		B00000000000000000000002 = {
+			isa = PBXGroup;
+			children = (B00000000000000000000003, B00000000000000000000005, B00000000000000000000004);
+			sourceTree = "<group>";
+		};
+		B00000000000000000000003 = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Buddy;
+			sourceTree = "<group>";
+		};
+		B00000000000000000000004 = {
+			isa = PBXGroup;
+			children = (B00000000000000000000007);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B00000000000000000000005 = {
+			isa = PBXFileReference;
+			lastKnownFileType = text.plist.entitlements;
+			path = Buddy.entitlements;
+			sourceTree = "<group>";
+		};
+		B00000000000000000000006 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B00000000000000000000011;
+			buildPhases = (B00000000000000000000008, B00000000000000000000009, B0000000000000000000000A);
+			buildRules = ();
+			dependencies = ();
+			fileSystemSynchronizedGroups = (B00000000000000000000003);
+			name = Buddy;
+			productName = Buddy;
+			productReference = B00000000000000000000007;
+			productType = "com.apple.product-type.application";
+		};
+		B00000000000000000000007 = {
+			isa = PBXFileReference;
+			explicitFileType = wrapper.application;
+			path = Buddy.app;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		B00000000000000000000008 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
+		B00000000000000000000009 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
+		B0000000000000000000000A = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
+		B00000000000000000000010 = {
+			isa = XCConfigurationList;
+			buildConfigurations = (B00000000000000000000012, B00000000000000000000013, B00000000000000000000016, B00000000000000000000017);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B00000000000000000000011 = {
+			isa = XCConfigurationList;
+			buildConfigurations = (B00000000000000000000014, B00000000000000000000015, B00000000000000000000018, B00000000000000000000019);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B00000000000000000000012 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		B00000000000000000000013 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		B00000000000000000000014 = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = B00000000000000000000003;
+			baseConfigurationReferenceRelativePath = Buddy.xcconfig;
+			buildSettings = {};
+			name = Debug;
+		};
+		B00000000000000000000015 = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = B00000000000000000000003;
+			baseConfigurationReferenceRelativePath = Buddy.xcconfig;
+			buildSettings = {};
+			name = Release;
+		};
+		B00000000000000000000016 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = "Debug Push";
+		};
+		B00000000000000000000017 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = "Release Push";
+		};
+		B00000000000000000000018 = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = B00000000000000000000003;
+			baseConfigurationReferenceRelativePath = Buddy.xcconfig;
+			buildSettings = {CODE_SIGN_ENTITLEMENTS = Buddy.entitlements; BUDDY_PUSH_ENABLED = YES; APS_ENVIRONMENT = development;};
+			name = "Debug Push";
+		};
+		B00000000000000000000019 = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = B00000000000000000000003;
+			baseConfigurationReferenceRelativePath = Buddy.xcconfig;
+			buildSettings = {CODE_SIGN_ENTITLEMENTS = Buddy.entitlements; BUDDY_PUSH_ENABLED = YES; APS_ENVIRONMENT = production;};
+			name = "Release Push";
+		};
+	};
+	rootObject = B00000000000000000000001;
+}
