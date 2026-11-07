@@ -1,4 +1,4 @@
-package main
+package tailnet
 
 import (
 	"bytes"
@@ -22,7 +22,7 @@ type tailnetLocalAPI struct {
 	token  string
 }
 
-var errTailscaleMissing = errors.New("Install and connect Tailscale on this Mac and your iPhone, then check again.")
+var errTailscaleMissing = errors.New("Install and connect Tailscale on this machine and your other devices, then check again.")
 
 func findRunningTailnet(ctx context.Context, candidates []string) (tailnetLocalAPI, netip.Addr, error) {
 	found := false
@@ -43,7 +43,7 @@ func findRunningTailnet(ctx context.Context, candidates []string) (tailnetLocalA
 	if !found {
 		return tailnetLocalAPI{}, netip.Addr{}, errTailscaleMissing
 	}
-	return tailnetLocalAPI{}, netip.Addr{}, errors.New("Couldn’t reach a connected Tailscale client. Open Tailscale on this Mac and check again.")
+	return tailnetLocalAPI{}, netip.Addr{}, errors.New("Couldn’t reach a connected Tailscale client. Open Tailscale on this machine and check again.")
 }
 
 func runningTailnet(ctx context.Context, binary string) (tailnetLocalAPI, netip.Addr, error) {

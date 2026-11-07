@@ -192,19 +192,20 @@ func (a *desktop) applyHostButton(c *ui.Context) {
 		OnClick(func() { a.afterWorkspaceDiscard(mygo.App.Relaunch) })
 }
 
+const hostInstallCommand = "curl -fsSL https://raw.githubusercontent.com/Hortlund/buddy/main/script/install-server.sh | bash\n"
+
 func (a *desktop) newHostGuide(c *ui.Context) {
 	ui.Column(c).Padding(13).Gap(8).Background(c.Theme().SurfaceHover).Radius(8).Children(func() {
-		ui.Text(c, "On the machine that will host Buddy, install buddyd and Codex. Start buddyd on a private network, then export a server access file in a second terminal.").FontSize(12)
-		ui.Text(c, "The access file contains the server’s address and private owner sign-in. Transfer it privately, then choose Connect to server in Buddy.").FontSize(12)
-		ui.Row(c).Gap(8).Children(func() {
-			ui.Button(c.Key("copy-host-start"), "Copy start command").Height(28).OnClick(func() {
-				mygo.Clipboard.WriteText("umask 077\nmkdir -p \"$HOME/buddy-state\"\nbuddyd -allow-remote -addr PRIVATE_IP:7331 -data-dir \"$HOME/buddy-state\"\n")
-			})
-			ui.Button(c.Key("copy-host-access"), "Copy access file command").Height(28).OnClick(func() {
-				mygo.Clipboard.WriteText("buddyd -data-dir \"$HOME/buddy-state\" -export-connection \"$HOME/buddy-state/owner.json\" -server-url https://PRIVATE_IP:7331\n")
-			})
+		ui.Text(c, "1. Run the installer on your Linux server or always-on Mac. It installs Buddy, Codex, and Go, starts the service, and sets up Tailscale.").FontSize(12)
+		ui.PrimaryButton(c.Key("copy-host-start"), "Copy install command").Height(28).OnClick(func() {
+			mygo.Clipboard.WriteText(hostInstallCommand)
 		})
-		ui.Text(c, "Replace PRIVATE_IP with the server’s reachable private address. Use your host’s service manager to keep Buddy running after you log out.").
+		ui.Text(c, "2. Follow the Tailscale sign-in link. Connect this desktop and your phone to the same Tailscale account. Then run buddy-server login on the host, or add an API key here after connecting.").FontSize(12)
+		ui.Text(c, "3. The installer prints a private access file and a command to copy it to this desktop. Choose that file in Connect to server. On iPhone, scan the QR from buddy-server pair.").FontSize(12)
+		ui.Button(c.Key("copy-host-access"), "Copy connection command").Height(28).OnClick(func() {
+			mygo.Clipboard.WriteText("buddy-server connect\n")
+		})
+		ui.Text(c, "Linux starts Buddy at boot. A Mac must stay awake and signed in. Rerunning setup preserves existing data. Keep the access file private; it grants owner access.").
 			FontSize(11).TextColor(c.Theme().TextMuted)
 	})
 }

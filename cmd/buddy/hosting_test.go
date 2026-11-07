@@ -157,8 +157,11 @@ func TestFirstLaunchSetupResumesAndFinishes(t *testing.T) {
 	if err := view.Click("Set up a server on another machine"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := view.Find("Copy access file command"); !ok {
-		t.Fatal("hosted setup did not explain how to export a server access file")
+	if _, ok := view.Find("Copy connection command"); !ok {
+		t.Fatal("hosted setup did not explain how to connect to the installed home")
+	}
+	if _, ok := view.Find("Copy install command"); !ok || !view.HasText("Linux starts Buddy at boot.") {
+		t.Fatal("hosted setup did not offer the installer and explain host lifetime")
 	}
 	if err := recordSetup(dir, "desktop-setup-started"); err != nil {
 		t.Fatal(err)

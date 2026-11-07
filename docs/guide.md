@@ -212,43 +212,98 @@ Buddy uses one active home server for the conversation database, schedules, and
 queues. The server can run on your Mac or a Linux machine that stays on. Desktop
 clients can share that home, and additional machines can run assigned jobs as workers.
 
-Build `buddyd` with `go build -o buddyd ./cmd/buddyd` on the host and install Codex there. Run it as a dedicated user
-with an owner-only state directory and a separate workspace directory. Sign in to
-Codex as that user or configure its API key. The local launcher keeps using
-loopback by default. For a VPS, bind to an address reachable from your clients,
-such as its private VPN address. Buddy uses pinned TLS and owner credentials.
+### One-command setup
+
+On the host, paste:
 
 ```sh
-umask 077
-mkdir -p "$HOME/buddy-state" "$HOME/buddy-workspaces"
-./buddyd -allow-remote -addr 0.0.0.0:7331 \
-  -data-dir "$HOME/buddy-state" -workspaces-dir "$HOME/buddy-workspaces"
+curl -fsSL https://raw.githubusercontent.com/Hortlund/buddy/main/script/install-server.sh | bash
 ```
 
-For unattended Linux hosting, see [buddyd.service](../deploy/buddyd.service).
-Create a dedicated `buddy` user and group, install `buddyd` and Codex at the
-paths in the unit, then install the unit as `/etc/systemd/system/buddyd.service`.
-Run `sudo systemctl daemon-reload` and `sudo systemctl enable --now buddyd`.
-The sample binds to loopback. To connect remote desktops or workers, set
-`-allow-remote -addr` to the host's private network address and restrict access
-to trusted devices in the firewall.
+Use a 64-bit Linux host with systemd (Debian/Ubuntu or Fedora), or a Mac with
+Apple command line tools. Intel/AMD and ARM64 are supported. On Windows, run
+inside WSL2 with systemd enabled. The initial install needs internet access,
+`curl`, and admin access on Linux; it installs missing Linux build prerequisites.
+You can inspect [the installer](../script/install-server.sh) before running it.
+Buddy is still in early development: this installs the current `main` source.
+Use `--ref` with a release tag or commit to select another revision.
 
-From a second shell on the server, export a connection file. Replace
-`buddy.example.net` with the host or IP reachable from your devices.
+The installer downloads checksum-verified Go and Codex binaries and builds the
+Buddy server. It creates a dedicated `buddy` service account on Linux and enables
+`buddyd.service` at boot. On Mac it creates a separate LaunchAgent, which runs
+while you stay signed in and awake. An existing Buddy home using port 7331 must
+be stopped or moved before starting this separate host. This creates a **new
+home**; it does not migrate your desktop's chats automatically.
+
+Tailscale setup opens a sign-in URL. Use the same account on the host, desktops,
+and phones. Buddy stays on loopback; a persistent private TCP forwarding rule
+exposes only Buddy's port on your tailnet. Buddy keeps its pinned TLS and device
+credentials. Setup preserves unrelated Tailscale routes and refuses to replace a
+conflicting route. Tailscale access rules still determine which devices can reach
+it. No public port, DNS setup, or Funnel is needed.
+
+On macOS, install and open [Tailscale](https://tailscale.com/download/mac) first.
+Approve its VPN permission and sign in, then run `buddy-server tailscale` if needed.
+On Linux, the installer can install Tailscale for you. Use a durable server device
+in your Tailscale admin settings so key expiry does not unexpectedly interrupt
+24/7 access. Check your account's device and access policies.
+
+### Connect your apps
+
+1. Run `buddy-server login` on the host and follow the Codex device sign-in flow.
+   Alternatively, connect the desktop and save an OpenAI API key in **Connections**.
+   Device sign-in may need enabling in your ChatGPT account or workspace settings.
+2. The installer prints the private desktop access file and an `scp` command.
+   Run that copy command on your desktop, then select the copied file in
+   **Connections → Connect to server… → Reopen Buddy**. Connect both devices
+   to Tailscale first. `buddy-server connect` refreshes the file and instructions.
+3. Run `buddy-server pair` to display a one-time iPhone QR code. Scan it in Buddy
+   for iPhone, or paste the pairing link. Each phone gets its own revocable access.
+
+The desktop access file is a private sign-in containing the HTTPS address,
+pinned certificate, and owner token. Transfer it privately. It contains no chat
+history or workspace files. Live voice uses its own OpenAI key in **Connections →
+Live voice**, even when Codex is signed in.
+
+### Manage the host
 
 ```sh
-./buddyd -data-dir "$HOME/buddy-state" \
-  -export-connection "$HOME/buddy-state/owner.json" \
-  -server-url https://buddy.example.net:7331
+buddy-server status       # Server health and model sign-in
+buddy-server logs         # Follow server logs
+buddy-server stop         # Stop the service
+buddy-server start        # Start it again
+buddy-server tailscale    # Finish or repair private networking
+buddy-server connect      # Refresh desktop access instructions
+buddy-server pair         # One-time phone invitation
 ```
 
-Transfer the file privately to each trusted desktop. Choose it in
-**Welcome to Buddy** or **Connections → Connect to server…**. After Buddy
-verifies the server, select **Reopen Buddy**. The access file is a private sign-in
-for a specific Buddy server.
-it contains its HTTPS address, its pinned certificate, and your owner token.
-It does not contain chat history or workspace files.
-The CLI also accepts `buddy -connection /path/to/owner.json`.
+On Linux the command is `/usr/local/bin/buddy-server`. On Mac it is
+`~/.local/bin/buddy-server`; use that full path if your shell cannot find it.
+Linux data lives in `/var/lib/buddy`, binaries in `/opt/buddy`. Mac data lives in
+`~/.local/share/buddy-server`. State and credentials are private to the service
+account. Use `sudo journalctl -u buddyd.service` for Linux startup diagnostics.
+
+Rerunning the installer detects an existing managed install and preserves its
+binaries, credentials, data, and running jobs. It does **not** upgrade it. To move
+an existing home, use the [move flow](#move-the-home-server), which prevents two
+hosts from running the same home. Back up before manually replacing binaries;
+stop the service first and retain the existing data directory.
+
+To skip Tailscale (for an existing private network), download the script, then run:
+
+```sh
+bash install-server.sh --no-tailscale
+```
+
+This leaves Buddy accessible only on the host's loopback address. A separately
+configured private TCP tunnel is needed for other devices. You can also build
+`buddyd` yourself and adapt [the sample unit](../deploy/buddyd.service).
+For a local checkout use `bash script/install-server.sh --source-dir "$PWD"`.
+Advanced flags `--binary PATH` and `--codex PATH` use executables you supply.
+
+To remove only Buddy's Tailscale forwarding, check `tailscale serve status`, then
+run `sudo tailscale serve --tcp=7331 off` on Linux, or the equivalent command
+without sudo on Mac. This does not delete your Buddy home or unpair devices.
 
 ## Buddy for iPhone
 

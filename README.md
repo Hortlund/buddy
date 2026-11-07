@@ -117,15 +117,22 @@ Closing the app leaves the server running while the Mac is awake and signed in.
 
 ### Always-on server and other devices
 
-Run the Go server on a Mac or Linux host that stays online, then connect clients
-and worker devices to that home. Tailscale can provide a private route between
-devices.
+Paste this into a terminal on a Linux server, always-on PC, or Mac:
 
 ```sh
-go build -o buddyd ./cmd/buddyd
+curl -fsSL https://raw.githubusercontent.com/Hortlund/buddy/main/script/install-server.sh | bash
 ```
 
-Follow the guide to configure the host, model runtime, and client access.
+The installer builds Buddy, installs Codex and Go, creates a managed service,
+and sets up private access through Tailscale. Follow the Tailscale sign-in link,
+then run `buddy-server login` or add an API key from the desktop. Setup prints a
+private connection file for your desktop; `buddy-server pair` shows an iPhone QR.
+Install Tailscale on your client devices using the same account.
+
+Linux starts at boot and runs under a dedicated `buddy` account. On macOS,
+Buddy starts at login; keep that Mac awake and signed in. Windows hosting uses
+WSL2 with systemd. Re-running the installer preserves the existing installation.
+See the guide for requirements, setup options, and maintenance commands.
 
 - [Host a Buddy server](docs/guide.md#host-buddy-on-another-machine)
 - [Connect the iPhone app](docs/guide.md#buddy-for-iphone)
@@ -159,7 +166,10 @@ go vet ./...
 ```
 
 With the Codex CLI signed in, `python3 script/smoke_desktop.py` exercises the native
-desktop against a temporary Buddy home. The hosting smoke test uses local Docker.
+desktop against a temporary Buddy home. The hosting smoke tests use local Docker. Run
+`python3 script/smoke_install_server.py --full-build` to check a fresh server
+install, downloaded toolchains, private access, pairing, and restart persistence.
+Tailscale and the service manager use local fixtures; no account sign-in is needed.
 See the guide for details.
 
 The main components are `cmd/buddy` for the Go/MyGo desktop, `cmd/buddyd` for the

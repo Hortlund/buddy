@@ -1,4 +1,4 @@
-package main
+package tailnet
 
 import (
 	"crypto/tls"
@@ -194,3 +194,5 @@ func tailnetTestAPI(t *testing.T, handle http.HandlerFunc) (tailnetLocalAPI, str
 	t.Cleanup(local.client.CloseIdleConnections)
 	return local, creds
 }
+
+func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }

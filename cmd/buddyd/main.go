@@ -18,6 +18,7 @@ import (
 	"buddy/internal/api"
 	"buddy/internal/automations"
 	"buddy/internal/localconfig"
+	"buddy/internal/tailnet"
 	"buddy/internal/tasks"
 )
 
@@ -43,10 +44,35 @@ func main() {
 	sourceDir := flag.String("source-dir", "", "Buddy source checkout to keep read-only")
 	upgradeService := flag.String("stop-idle-service", "", "launchd service to stop for an upgrade when the queue is empty")
 	moveService := flag.String("stop-service-for-move", "", "stop a launchd service when no work is running, keeping queued work")
+	tailnetStatus := flag.Bool("tailscale-status", false, "check whether this host is connected to Tailscale")
+	tailnetSetup := flag.Bool("setup-tailscale", false, "configure private Tailscale forwarding and print its HTTPS address")
+	hostInfo := flag.Bool("host-access", false, "refresh the private desktop access file for this server")
+	phonePair := flag.Bool("pair-phone", false, "print a one-time iPhone pairing QR code")
+	status := flag.Bool("host-status", false, "check the running home and model sign-in")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	switch {
+	case *tailnetStatus:
+		if err := tailnet.Connected(ctx); err != nil {
+			log.Fatal(err)
+		}
+		return
+	case *tailnetSetup:
+		if err := setupTailnet(ctx, *addr); err != nil {
+			log.Fatal(err)
+		}
+		return
+	case *hostInfo || *phonePair:
+		if err := hostAccess(ctx, *dir, *addr, *serverURL, *phonePair); err != nil {
+			log.Fatal(err)
+		}
+		return
+	case *status:
+		if err := hostStatus(ctx, *dir, *addr); err != nil {
+			log.Fatal(err)
+		}
+		return
 	case *backupFile != "":
 		if err := exportBackup(ctx, *dir, *backupFile, *retire); err != nil {
 			log.Fatal(err)

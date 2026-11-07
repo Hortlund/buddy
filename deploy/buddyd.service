@@ -9,9 +9,11 @@ User=buddy
 Group=buddy
 StateDirectory=buddy
 StateDirectoryMode=0700
+WorkingDirectory=/var/lib/buddy
 Environment=HOME=/var/lib/buddy
+Environment=PATH=/opt/buddy:/opt/buddy/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 UMask=0077
-ExecStart=/opt/buddy/buddyd -addr 127.0.0.1:7331 -data-dir /var/lib/buddy/state -workspaces-dir /var/lib/buddy/workspaces -codex /opt/buddy/bin/codex
+ExecStart=/opt/buddy/buddyd -addr 127.0.0.1:7331 -data-dir /var/lib/buddy/state -workspaces-dir /var/lib/buddy/workspaces -codex /opt/buddy/codex
 Restart=on-failure
 RestartSec=5s
 
