@@ -14,7 +14,7 @@ struct PairingView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    BudFace(color: .indigo, size: 76)
+                    BudFace(appearance: BudAppearance(color: "cobalt", shape: "cloud"), size: 76)
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Your Buds, anywhere.").font(.largeTitle.bold())
                         Text("Connect this iPhone to your Buddy home to chat, check work, and catch up on your inbox.")

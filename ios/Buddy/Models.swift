@@ -36,6 +36,7 @@ struct Conversation: Decodable {
     let active: ActiveReply?
     let before: Int64?
     let members: [Bud]?
+    let profiles: [Bud]?
     let reactionOptions: [ReactionOption]?
     let reactionRevision: Int64?
     let reactionUpdates: [ReactionUpdate]?

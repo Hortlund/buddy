@@ -69,48 +69,6 @@ private var unreadDot: some View {
     Circle().fill(.indigo).frame(width: 8, height: 8).accessibilityLabel("Unread activity")
 }
 
-struct BudFace: View {
-    let color: Color
-    let shape: String?
-    let size: CGFloat
-
-    init(appearance: BudAppearance? = nil, size: CGFloat = 36) {
-        self.size = size
-        shape = appearance?.shape
-        switch appearance?.color {
-        case "blue", "cobalt": color = .blue
-        case "green", "mint": color = .mint
-        case "pink", "rose": color = .pink
-        case "orange", "peach", "amber": color = .orange
-        case "purple", "violet", "lavender": color = .purple
-        case "teal": color = .teal
-        default: color = Color(white: 0.19)
-        }
-    }
-
-    init(color: Color, size: CGFloat) {
-        self.color = color
-        shape = nil
-        self.size = size
-    }
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: shape == "squircle" ? size * 0.31 : size / 2)
-            .fill(color.gradient)
-            .overlay {
-                HStack(spacing: size * 0.08) {
-                    Capsule().frame(width: size * 0.08, height: size * 0.19)
-                    Capsule().frame(width: size * 0.075, height: size * 0.15)
-                }
-                .foregroundStyle(.white)
-                .rotationEffect(.degrees(-15))
-                .offset(x: size * 0.12, y: -size * 0.1)
-            }
-            .frame(width: size, height: size)
-            .accessibilityHidden(true)
-    }
-}
-
 struct ConnectionError: View {
     let message: String
 
@@ -242,7 +200,8 @@ struct ChatView: View {
     private func avatar(for message: ChatMessage) -> BudAppearance? {
         guard let conversation else { return nil }
         guard let sender = message.agentId, sender != conversation.agent.id else { return conversation.agent.avatar }
-        return conversation.members?.first { $0.id == sender }?.avatar
+        return conversation.profiles?.first { $0.id == sender }?.avatar
+            ?? conversation.members?.first { $0.id == sender }?.avatar
     }
 
     private func load() async {
