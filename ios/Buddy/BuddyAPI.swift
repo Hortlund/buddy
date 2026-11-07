@@ -93,6 +93,7 @@ final class BuddyAPI: Sendable {
     let credentials: BuddyCredentials?
     private let server: URL
     private let session: URLSession
+    private let voiceSession: URLSession
 
     private init(server: URL, pin: String, credentials: BuddyCredentials? = nil) {
         self.credentials = credentials
@@ -104,13 +105,18 @@ final class BuddyAPI: Sendable {
         config.timeoutIntervalForResource = 15
         config.tlsMinimumSupportedProtocolVersion = .TLSv13
         session = URLSession(configuration: config, delegate: ServerTrust(pin: pin), delegateQueue: nil)
+        let voiceConfig = URLSessionConfiguration.ephemeral
+        voiceConfig.timeoutIntervalForRequest = 60
+        voiceConfig.timeoutIntervalForResource = 60 * 60
+        voiceConfig.tlsMinimumSupportedProtocolVersion = .TLSv13
+        voiceSession = URLSession(configuration: voiceConfig, delegate: ServerTrust(pin: pin), delegateQueue: nil)
     }
 
     convenience init(credentials: BuddyCredentials) {
         self.init(server: credentials.server, pin: credentials.pin, credentials: credentials)
     }
 
-    deinit { session.invalidateAndCancel() }
+    deinit { session.invalidateAndCancel(); voiceSession.invalidateAndCancel() }
 
     static func pair(_ link: PairingLink, name: String) async throws -> BuddyCredentials {
         struct Receipt: Decodable {
@@ -125,6 +131,33 @@ final class BuddyAPI: Sendable {
 
     func directory() async throws -> BuddyDirectory {
         try await load("/v1/workspace")
+    }
+
+    func voiceAvailable() async throws -> Bool {
+        struct Status: Decodable { let source: String }
+        do {
+            let status: Status = try await load("/v1/runtime/voice/key")
+            return !status.source.isEmpty
+        } catch let error as BuddyError where error.status == 403 || error.status == 404 {
+            throw BuddyError("Update the Buddy server to enable iPhone calls.")
+        }
+    }
+
+    func openVoice(chat: String, agent: String) throws -> URLSessionWebSocketTask {
+        guard let credentials, var url = URLComponents(url: server, resolvingAgainstBaseURL: false) else {
+            throw BuddyError("Pair this iPhone with a Buddy server before calling.")
+        }
+        url.scheme = "wss"
+        url.path = "/v1/voice/call"
+        url.queryItems = [URLQueryItem(name: "chat", value: chat), URLQueryItem(name: "agent", value: agent)]
+        guard let address = url.url else { throw BuddyError("The Buddy server address is invalid.") }
+        var request = URLRequest(url: address)
+        request.timeoutInterval = 30
+        request.setValue("Bearer " + credentials.token, forHTTPHeaderField: "Authorization")
+        let call = voiceSession.webSocketTask(with: request)
+        call.maximumMessageSize = 256 << 10
+        call.resume()
+        return call
     }
 
     func chat(_ id: String, before: Int64? = nil, reactionsAfter: Int64? = nil) async throws -> Conversation {

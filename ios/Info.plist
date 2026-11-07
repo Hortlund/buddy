@@ -4,6 +4,8 @@
 <dict>
     <key>BuddyPushEnabled</key>
     <string>$(BUDDY_PUSH_ENABLED)</string>
+    <key>UIBackgroundModes</key>
+    <array><string>audio</string></array>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

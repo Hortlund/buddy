@@ -19,7 +19,7 @@ struct ChatList: View {
                                         HStack {
                                             Text(bud.name).font(.headline)
                                             if bud.id == directory.primaryAgentId {
-                                                Image(systemName: "star.fill").font(.caption).foregroundStyle(.indigo)
+                                            Image(systemName: "star.fill").font(.caption).foregroundStyle(BuddyStyle.accent)
                                                     .accessibilityLabel("Primary Bud")
                                             }
                                         }
@@ -32,6 +32,7 @@ struct ChatList: View {
                                 }
                                 .padding(.vertical, 4)
                             }
+                            .listRowBackground(BuddyStyle.surface)
                         }
                     }
                 }
@@ -45,12 +46,14 @@ struct ChatList: View {
                                     if chat.hasNewResult == true { unreadDot }
                                 }
                             }
+                            .listRowBackground(BuddyStyle.surface)
                         }
                     }
                 }
             }
             if let error { ConnectionError(message: error) }
         }
+        .buddyPage()
         .overlay { if directory == nil && error == nil { ProgressView("Connecting to Buddy…") } }
         .navigationTitle("Chats")
         .task(id: phase) { await refreshWhileActive(phase, every: .seconds(12), load: load) }
@@ -66,7 +69,7 @@ struct ChatList: View {
 }
 
 private var unreadDot: some View {
-    Circle().fill(.indigo).frame(width: 8, height: 8).accessibilityLabel("Unread activity")
+    Circle().fill(BuddyStyle.accent).frame(width: 8, height: 8).accessibilityLabel("Unread activity")
 }
 
 struct ConnectionError: View {
@@ -85,6 +88,7 @@ struct ChatView: View {
     let id: String
     let name: String
     @Environment(\.scenePhase) private var phase
+    @Environment(PhoneVoiceSession.self) private var voice
     @State private var conversation: Conversation?
     @State private var older: [ChatMessage] = []
     @State private var cursor: Int64?
@@ -166,8 +170,18 @@ struct ChatView: View {
                 }
             }
         }
+        .buddyPage()
         .navigationTitle(conversation?.name?.nilIfEmpty ?? conversation?.agent.name ?? name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    if let conversation { voice.start(api: api, conversation: conversation, chat: id) }
+                } label: { Image(systemName: "phone") }
+                .accessibilityLabel(voice.active ? "Return to voice call" : "Start voice call")
+                .disabled(conversation == nil || conversation?.archived == true)
+            }
+        }
         .task(id: phase) { await refreshWhileActive(phase, every: .seconds(3), load: load) }
         .refreshable { await load() }
     }
@@ -182,7 +196,7 @@ struct ChatView: View {
                     .lineLimit(1...5)
                     .textFieldStyle(.plain)
                     .padding(11)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
+                    .background(BuddyStyle.raised, in: RoundedRectangle(cornerRadius: 16))
                     .accessibilityIdentifier("chat-composer")
                     .disabled(busy)
                 Button(action: send) {
@@ -194,7 +208,7 @@ struct ChatView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
-        .background(.regularMaterial)
+        .background(BuddyStyle.background)
     }
 
     private func avatar(for message: ChatMessage) -> BudAppearance? {
@@ -367,7 +381,7 @@ private struct MessageBubble: View {
                 if !reactions.isEmpty { reactionChips }
             }
             .padding(12)
-            .background(outgoing ? Color.indigo.opacity(0.14) : Color(uiColor: .secondarySystemGroupedBackground),
+            .background(outgoing ? BuddyStyle.raised : BuddyStyle.surface,
                         in: RoundedRectangle(cornerRadius: 18))
             if !outgoing {
                 if !reactionOptions.isEmpty { reactionPicker }
@@ -422,61 +436,42 @@ private struct MessageBubble: View {
     }
 
     private func choice(_ card: ChoiceCard) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(card.question).font(.headline)
-            if let detail = card.detail { Text(detail).font(.callout).foregroundStyle(.secondary) }
-            if let confirmation = card.confirmation, !confirmation.isEmpty, card.options.count == 2 {
-                if let choice = card.choice {
-                    Text(choice == 1 ? "Cancelled" : "Confirmed").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    HStack {
-                        Spacer(minLength: 0)
-                        Button(card.options[1]) { onChoice(1) }
-                            .buttonStyle(.bordered)
-                        Button(card.options[0], role: confirmation == "destructive" ? .destructive : nil) { onChoice(0) }
-                            .buttonStyle(.bordered)
-                    }
-                    .disabled(busy)
-                }
-            } else {
-                ForEach(card.options.indices, id: \.self) { index in
-                    Button { onChoice(index) } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(card.options[index])
-                                if let notes = card.optionDetails, notes.indices.contains(index), !notes[index].isEmpty {
-                                    Text(notes[index]).font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer()
-                            if card.choice == index { Image(systemName: "checkmark") }
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(busy || card.choice != nil)
-                }
-            }
-        }
+        ChatChoiceCard(card: card, busy: busy, onChoice: onChoice)
     }
 
     private func evidence(title: String, detail: String?, body: String?, url: URL?, items: [ConnectionItem]?) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.headline)
-            if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+            if let detail { Text(detail).font(.subheadline).foregroundStyle(BuddyStyle.muted) }
             if let body { RichText(body) }
             if let items {
                 ForEach(items.indices, id: \.self) { index in
                     let item = items[index]
                     Divider()
-                    if let link = safeWebURL(item.url) { Link(item.title, destination: link) }
-                    else { Text(item.title).font(.callout.bold()) }
-                    if let detail = item.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
-                    if let body = item.body { RichText(body) }
-                    if let value = item.value { Text(value).font(.system(.caption, design: .monospaced)) }
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline) {
+                            if let link = safeWebURL(item.url) { Link(item.title, destination: link).font(.subheadline.bold()) }
+                            else { Text(item.title).font(.subheadline.bold()) }
+                            Spacer(minLength: 0)
+                            if let badge = item.badge?.nilIfEmpty {
+                                Text(badge).font(.caption2.weight(.medium)).foregroundStyle(BuddyStyle.muted)
+                                    .padding(.horizontal, 7).padding(.vertical, 3)
+                                    .background(BuddyStyle.raised, in: Capsule())
+                            }
+                        }
+                        if let detail = item.detail { Text(detail).font(.caption).foregroundStyle(BuddyStyle.muted) }
+                        if let body = item.body { RichText(body) }
+                        if let value = item.value { Text(value).font(.system(.caption, design: .monospaced)) }
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             }
             if let link = safeWebURL(url) { Link("Open source", destination: link).font(.footnote) }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(BuddyStyle.surface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay { RoundedRectangle(cornerRadius: 16).stroke(BuddyStyle.border, lineWidth: 1) }
     }
 }
 

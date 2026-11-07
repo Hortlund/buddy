@@ -73,7 +73,7 @@ struct CodeBlock: View {
             }
         }
         .padding(10)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 9))
+        .background(BuddyStyle.raised, in: RoundedRectangle(cornerRadius: 9))
     }
 
     private var formattedCode: AttributedString {

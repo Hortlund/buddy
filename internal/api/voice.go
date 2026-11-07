@@ -131,6 +131,27 @@ func voiceRoutes(mux *http.ServeMux, store *tasks.Store, worker *tasks.Worker, k
 		conn.SetReadLimit(16 << 10)
 		ctx, cancel := context.WithTimeout(r.Context(), 55*time.Minute)
 		defer cancel()
+		// An upgraded socket outlives its HTTP authentication check. Disconnect
+		// paired phones when their access is revoked, including during silence.
+		if id := tasks.MobileClientFromContext(ctx); id != "" {
+			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			go func() {
+				ticker := time.NewTicker(time.Second)
+				defer ticker.Stop()
+				for {
+					current, err := store.MobileClientID(ctx, token)
+					if err != nil || current != id {
+						cancel()
+						return
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+					}
+				}
+			}()
+		}
 		room := newVoiceRoom(ctx, conn, store, worker, chat, apiKey, dial)
 		room.run(agent)
 	})

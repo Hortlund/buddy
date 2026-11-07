@@ -27,7 +27,7 @@ const ConnectionChatProtocol = 37
 const WatchDraftProtocol = 38
 const MCPProtocol = 40
 const MobileProtocol = 42
-const DesktopProtocol = 54
+const DesktopProtocol = 55
 const AttachmentProtocol = 11
 const attachmentTransferTimeout = 2 * time.Minute
 

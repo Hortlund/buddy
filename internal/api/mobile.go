@@ -34,6 +34,8 @@ func mobileRoutes(owner *http.ServeMux, store *tasks.Store, pushTopic string) *h
 	// The phone can participate in conversations and review work. New owner
 	// endpoints stay private unless deliberately added to this list.
 	for _, pattern := range []string{
+		"GET " + voiceKeyPath,
+		"GET " + voiceCallPath,
 		"GET /v1/workspace",
 		"GET /v1/conversations/{id}",
 		"GET /v1/tasks/{task}/generated-image",

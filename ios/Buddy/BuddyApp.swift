@@ -5,6 +5,7 @@ import UserNotifications
 @main
 struct BuddyApp: App {
     @State private var home = BuddyHome()
+    @AppStorage("buddy-appearance") private var appearance = "system"
     @UIApplicationDelegateAdaptor(PushDelegate.self) private var push
 
     var body: some Scene {
@@ -21,7 +22,10 @@ struct BuddyApp: App {
             .environment(\.openURL, OpenURLAction { url in
                 safeWebURL(url) == nil ? .discarded : .systemAction
             })
-            .tint(.indigo)
+            .tint(BuddyStyle.accent)
+            .background(BuddyStyle.background)
+            .foregroundStyle(BuddyStyle.text)
+            .preferredColorScheme(appearance == "system" ? nil : appearance == "dark" ? .dark : .light)
         }
     }
 }
@@ -140,6 +144,7 @@ struct BuddyTabs: View {
     @State private var chats: [Destination] = []
     @State private var inbox: [Destination] = []
     @State private var work: [Destination] = []
+    @State private var voice = PhoneVoiceSession()
 
     private struct PushSync: Equatable {
         var token: String?
@@ -149,30 +154,56 @@ struct BuddyTabs: View {
     }
 
     var body: some View {
-        TabView(selection: $selected) {
-            NavigationStack(path: $chats) {
-                ChatList(api: api).navigationDestination(for: Destination.self, destination: show)
+        VStack(spacing: 0) {
+            if voice.active && !voice.presented {
+                Button { voice.presented = true } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "phone.fill")
+                        Text(voice.title).lineLimit(1)
+                        Spacer()
+                        Text("Return to call").font(.caption.weight(.semibold))
+                    }
+                    .font(.subheadline)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(BuddyStyle.success.opacity(0.14))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(BuddyStyle.success)
             }
-            .tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
-            .tag(BuddyTab.chats)
 
-            NavigationStack(path: $inbox) {
-                InboxList(api: api).navigationDestination(for: Destination.self, destination: show)
-            }
-            .tabItem { Label("Inbox", systemImage: "tray") }
-            .tag(BuddyTab.inbox)
+            TabView(selection: $selected) {
+                NavigationStack(path: $chats) {
+                    ChatList(api: api).navigationDestination(for: Destination.self, destination: show)
+                }
+                .tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
+                .tag(BuddyTab.chats)
 
-            NavigationStack(path: $work) {
-                WorkList(api: api).navigationDestination(for: Destination.self, destination: show)
-            }
-            .tabItem { Label("Work", systemImage: "briefcase") }
-            .tag(BuddyTab.work)
+                NavigationStack(path: $inbox) {
+                    InboxList(api: api).navigationDestination(for: Destination.self, destination: show)
+                }
+                .tabItem { Label("Inbox", systemImage: "tray") }
+                .tag(BuddyTab.inbox)
 
-            NavigationStack {
-                PhoneSettings(api: api, issue: push.issue ?? notificationIssue, stopPush: push.stop)
+                NavigationStack(path: $work) {
+                    WorkList(api: api).navigationDestination(for: Destination.self, destination: show)
+                }
+                .tabItem { Label("Work", systemImage: "briefcase") }
+                .tag(BuddyTab.work)
+
+                NavigationStack {
+                    PhoneSettings(api: api, issue: push.issue ?? notificationIssue, stopPush: push.stop)
+                }
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(BuddyTab.settings)
             }
-            .tabItem { Label("Settings", systemImage: "gearshape") }
-            .tag(BuddyTab.settings)
+        }
+        .environment(voice)
+        .fullScreenCover(isPresented: $voice.presented, onDismiss: {
+            guard !voice.chat.isEmpty else { return }
+            chats = [.chat(voice.chat, voice.title)]
+            selected = .chats
+        }) {
+            PhoneCallView(api: api).environment(voice)
         }
         .onChange(of: push.route, initial: true) { _, route in
             guard let route else { return }
@@ -228,6 +259,7 @@ struct PhoneSettings: View {
     let issue: String?
     let stopPush: () -> Void
     @Environment(BuddyHome.self) private var home
+    @Environment(PhoneVoiceSession.self) private var voice
     @AppStorage(PhonePush.preference) private var alerts = false
     @AppStorage("iphone-work-notifications") private var workAlerts = false
     @State private var available: Bool?
@@ -235,9 +267,19 @@ struct PhoneSettings: View {
     @State private var disconnecting = false
     @State private var showDisconnect = false
     @State private var canForget = false
+    @AppStorage("buddy-appearance") private var appearance = "system"
 
     var body: some View {
         Form {
+            Section("Appearance") {
+                Picker("Theme", selection: $appearance) {
+                    Text("System").tag("system")
+                    Text("Light").tag("light")
+                    Text("GitHub Dark").tag("dark")
+                }
+                .accessibilityIdentifier("appearance-picker")
+            }
+            .listRowBackground(BuddyStyle.surface)
             Section("Buddy home") {
                 if let credentials = api.credentials {
                     LabeledContent("This iPhone", value: credentials.name)
@@ -251,6 +293,7 @@ struct PhoneSettings: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .listRowBackground(BuddyStyle.surface)
             Section {
                 Toggle("Allow notifications", isOn: Binding(get: { alerts }, set: changeAlerts))
                     .disabled(!PhonePush.supported || (!alerts && available != true))
@@ -261,10 +304,12 @@ struct PhoneSettings: View {
             } footer: {
                 Text(notificationHelp)
             }
+            .listRowBackground(BuddyStyle.surface)
             if let message = error ?? issue {
                 Text(message).foregroundStyle(.secondary)
             }
         }
+        .buddyPage()
         .navigationTitle("Settings")
         .task { await loadAvailability() }
         .refreshable { await loadAvailability() }
@@ -313,6 +358,7 @@ struct PhoneSettings: View {
     }
 
     private func disconnect() async {
+        voice.hangup()
         defer { disconnecting = false }
         do {
             try await api.disconnect()

@@ -95,7 +95,7 @@ server_ready() {
   local health protocol
   health="$(server_health)" || return 1
   protocol="$(printf '%s' "$health" | plutil -extract desktop_protocol raw -o - - 2>/dev/null)" || return 1
-  [[ "$protocol" == 54 ]]
+  [[ "$protocol" == 55 ]]
 }
 
 if [[ ( "$MODE" == --verify || -f "$DATA_DIR/buddy.db" ) && ! -f "$HOST_FILE" && ! -e "$RETIRED_HOME" && ! -L "$RETIRED_HOME" ]] && ! server_ready; then

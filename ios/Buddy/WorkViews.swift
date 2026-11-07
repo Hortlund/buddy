@@ -15,7 +15,7 @@ struct InboxList: View {
                             HStack {
                                 Text(item.signal.title).font(.headline)
                                 Spacer(minLength: 0)
-                                if !item.seen { Circle().fill(.indigo).frame(width: 8, height: 8).accessibilityLabel("Unread") }
+                                if !item.seen { Circle().fill(BuddyStyle.accent).frame(width: 8, height: 8).accessibilityLabel("Unread") }
                             }
                             Text(item.watch).font(.subheadline).foregroundStyle(.secondary)
                             Label(statusLabel(item.state), systemImage: item.state == "approval" ? "questionmark.circle" : "tray")
@@ -23,6 +23,7 @@ struct InboxList: View {
                         }
                         .padding(.vertical, 4)
                     }
+                    .listRowBackground(BuddyStyle.surface)
                 }
                 if items.isEmpty {
                     ContentUnavailableView("Inbox is clear", systemImage: "tray",
@@ -32,6 +33,7 @@ struct InboxList: View {
             if let error { ConnectionError(message: error) }
         }
         .overlay { if items == nil && error == nil { ProgressView("Loading inbox…") } }
+        .buddyPage()
         .navigationTitle("Inbox")
         .task(id: phase) { await refreshWhileActive(phase, load: load) }
         .refreshable { await load() }
@@ -60,7 +62,7 @@ struct InboxDetail: View {
             VStack(alignment: .leading, spacing: 18) {
                 if let item {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(item.watch).font(.caption.bold()).foregroundStyle(.indigo)
+                        Text(item.watch).font(.caption.bold()).foregroundStyle(BuddyStyle.accent)
                         Text(item.signal.title).font(.title.bold())
                         Text(item.at, format: .dateTime.month().day().hour().minute())
                             .font(.subheadline).foregroundStyle(.secondary)
@@ -89,6 +91,7 @@ struct InboxDetail: View {
             .frame(maxWidth: 700, alignment: .leading)
         }
         .overlay { if item == nil && loadError == nil { ProgressView("Loading update…") } }
+        .buddyPage()
         .navigationTitle("Inbox update")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: phase) { await refreshWhileActive(phase, load: load) }
@@ -150,6 +153,7 @@ struct WorkList: View {
                             Task { await loadHistory() }
                         }
                         .disabled(loadingHistory)
+                        .listRowBackground(BuddyStyle.surface)
                     }
                 }
                 if items.isEmpty && history.isEmpty {
@@ -160,6 +164,7 @@ struct WorkList: View {
             if let error { ConnectionError(message: error) }
         }
         .overlay { if items == nil && error == nil { ProgressView("Loading work…") } }
+        .buddyPage()
         .navigationTitle("Work")
         .task(id: phase) { await refreshWhileActive(phase, load: load) }
         .refreshable { await load() }
@@ -180,6 +185,7 @@ struct WorkList: View {
             }
             .padding(.vertical, 4)
         }
+        .listRowBackground(BuddyStyle.surface)
     }
 
     private func load() async {
@@ -276,6 +282,7 @@ struct WorkDetail: View {
             .frame(maxWidth: 700, alignment: .leading)
         }
         .overlay { if detail == nil && loadError == nil { ProgressView("Loading job…") } }
+        .buddyPage()
         .navigationTitle("Job details")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: phase) { await refreshWhileActive(phase, load: load) }
