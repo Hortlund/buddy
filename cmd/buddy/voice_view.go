@@ -360,7 +360,8 @@ func callTileHeight(c *ui.Context, count int) float32 {
 	_, height := c.Size()
 	cols := callColumns(count)
 	rows := (count + cols - 1) / cols
-	return max(150, min(420, (height-253-float32(rows-1)*10)/float32(rows)))
+	// Leave room for the titlebar, call heading, captions, and controls.
+	return max(150, min(420, (height-293-float32(rows-1)*10)/float32(rows)))
 }
 
 func callAvatarSize(c *ui.Context, call *desktopVoice, count int) float32 {
