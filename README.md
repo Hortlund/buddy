@@ -44,7 +44,8 @@ an eye on an inbox while longer work runs elsewhere.
 
 ## Screenshots
 
-Captured from the running apps with fictional demo conversations, files, and jobs.
+Captured from the running apps with fictional demo conversations, files, jobs,
+and call participants.
 The iPhone screenshots are from the iOS Simulator.
 
 ### Desktop
@@ -77,6 +78,10 @@ it runs. You can return to chat while the call stays connected.
 When a one-to-one call becomes a group, Buddy keeps its participants and transcript
 together in a group chat. Ask the Buds to continue collaborating there after you
 hang up.
+
+The desktop call room with three demo Buds and the caller.
+
+![Buddy desktop group voice call with Buddy, Ada, Scout, shared captions, and call controls](docs/screenshots/desktop-call.png)
 
 <p>
   <img src="docs/screenshots/iphone-call.png" width="340" alt="Live iPhone group voice call with Buddy, Ada, Scout, and the caller, showing the Lead Bud and shared captions">
