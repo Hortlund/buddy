@@ -221,19 +221,44 @@ curl -fsSL https://raw.githubusercontent.com/Hortlund/buddy/main/script/install-
 ```
 
 Use a 64-bit Linux host with systemd (Debian/Ubuntu or Fedora), or a Mac with
-Apple command line tools. Intel/AMD and ARM64 are supported. On Windows, run
+Apple command line tools and Python 3. Intel/AMD and ARM64 are supported. On
+Windows, run
 inside WSL2 with systemd enabled. The initial install needs internet access,
 `curl`, and admin access on Linux; it installs missing Linux build prerequisites.
 You can inspect [the installer](../script/install-server.sh) before running it.
 Buddy is still in early development: this installs the current `main` source.
 Use `--ref` with a release tag or commit to select another revision.
 
+Setup checks the service manager, required commands and CA certificates, available
+disk space, writable install directories, and HTTPS access to its downloads before
+creating the Buddy service. Allow at least 2 GiB of free space when downloading
+and building runtimes, or 512 MiB when supplying both binaries. On Linux it installs
+missing prerequisites through apt or dnf. On Mac it gives instructions for missing command line tools or Python.
+Download failures have bounded timeouts and report DNS, proxy, or certificate checks
+to make before retrying. Model sign-in remains a separate step; the OpenAI network
+probe checks HTTPS connectivity without sending credentials or a model request.
+
+The installer tries loopback port 7331, then selects a free port from the next 63
+ports if needed. It saves the choice in the service, management command, desktop
+access file, and phone pairing link. It rechecks the port after building. You can
+require a particular port when installing a new home:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Hortlund/buddy/main/script/install-server.sh | bash -s -- --port 7441
+```
+
+A busy explicit port stops setup with a clear error. Existing managed homes keep
+their port on reruns. Setup does not stop another app to claim a port or modify
+firewall rules. Tailscale provides the private route; its own access policies and
+your sign-in still apply. An installed but stopped standard Linux Tailscale service
+is started when private networking is configured.
+
 The installer downloads checksum-verified Go and Codex binaries and builds the
 Buddy server. It creates a dedicated `buddy` service account on Linux and enables
 `buddyd.service` at boot. On Mac it creates a separate LaunchAgent, which runs
-while you stay signed in and awake. An existing Buddy home using port 7331 must
-be stopped or moved before starting this separate host. This creates a **new
-home**; it does not migrate your desktop's chats automatically.
+while you stay signed in and awake. An existing home can keep running on
+its own port. This creates a **new home**; it does not migrate your desktop's
+chats automatically.
 
 Tailscale setup opens a sign-in URL. Use the same account on the host, desktops,
 and phones. Buddy stays on loopback; a persistent private TCP forwarding rule
@@ -303,8 +328,8 @@ For a local checkout use `bash script/install-server.sh --source-dir "$PWD"`.
 Advanced flags `--binary PATH` and `--codex PATH` use executables you supply.
 
 To remove only Buddy's Tailscale forwarding, check `tailscale serve status`, then
-run `sudo tailscale serve --tcp=7331 off` on Linux, or the equivalent command
-without sudo on Mac. This does not delete your Buddy home or unpair devices.
+run `sudo tailscale serve --tcp=PORT off` on Linux using the port shown during setup,
+or the equivalent command without sudo on Mac. This does not delete your Buddy home or unpair devices.
 
 ## Buddy for iPhone
 

@@ -5,11 +5,11 @@ No Tailscale account, model credentials, host service, or public port is used.
 Use --full-build --user-install to exercise sudo installation and the shared Go tree.
 The fixture starts/stops the generated unit; it does not simulate an OS reboot.
 """
+import argparse
 import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +19,7 @@ def run(*args, **kwargs):
     return subprocess.run(args, cwd=ROOT, check=True, **kwargs)
 
 
-def smoke(folder, full_build=False, user_install=False):
+def smoke(folder, full_build=False, user_install=False, port=None):
     arch = run('docker', 'info', '--format', '{{.Architecture}}', capture_output=True,
                text=True).stdout.strip()
     arch = {'aarch64': 'arm64', 'arm64': 'arm64', 'x86_64': 'amd64'}[arch]
@@ -52,13 +52,18 @@ elif 'exec' in sys.argv:
     (folder / 'systemctl').write_text('''#!/bin/bash
 set -eu
 case "$1" in
+ show-environment) [ "${BUDDY_SMOKE_NO_SYSTEMD:-0}" = 0 ]; exit $? ;;
  daemon-reload) exit 0 ;;
- enable) touch /tmp/buddy-enabled ;;
+ show) echo loaded; exit 0 ;;
+ enable)
+   if [[ "$*" == *tailscaled.service ]]; then touch /tmp/buddy-tailnet-started; exit 0; fi
+   touch /tmp/buddy-enabled ;;
  start) : ;;
  stop) kill -TERM "$(cat /tmp/buddy-pid)"; exit 0 ;;
  *) exit 2 ;;
 esac
-runuser -u buddy -- env HOME=/var/lib/buddy PATH=/opt/buddy:/usr/local/bin:/usr/bin:/bin bash -c 'echo $$ > /var/lib/buddy/pid; exec /opt/buddy/buddyd -addr 127.0.0.1:7331 -data-dir /var/lib/buddy/state -workspaces-dir /var/lib/buddy/workspaces -codex /opt/buddy/codex' > /var/lib/buddy/server.log 2>&1 &
+address=$(awk '{for(i=1;i<NF;i++) if($i=="-addr") {print $(i+1);exit}}' /etc/systemd/system/buddyd.service)
+runuser -u buddy -- env HOME=/var/lib/buddy PATH=/opt/buddy:/usr/local/bin:/usr/bin:/bin bash -c 'echo $$ > /var/lib/buddy/pid; exec /opt/buddy/buddyd -addr "$1" -data-dir /var/lib/buddy/state -workspaces-dir /var/lib/buddy/workspaces -codex /opt/buddy/codex' fixture "$address" > /var/lib/buddy/server.log 2>&1 &
 sleep .3
 cp /var/lib/buddy/pid /tmp/buddy-pid
 ''')
@@ -66,6 +71,7 @@ cp /var/lib/buddy/pid /tmp/buddy-pid
     (folder / 'tailscale').write_text('''#!/bin/sh
 case "$1 $2" in
  'ip -4') echo 100.80.1.2 ;;
+ 'up ') exit 0 ;;
  'debug local-creds') echo 'curl -u:fixture-local-api http://localhost:48791/localapi/v0/status' ;;
  *) exit 1 ;;
 esac
@@ -77,7 +83,7 @@ config = {'TCP': {'8443': {'TCPForward': '127.0.0.1:8000'}}}
 class API(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
-        if 'status' in self.path: value = {'BackendState':'Running','TailscaleIPs':['100.80.1.2']}
+        if 'status' in self.path: value = {'BackendState':'Running' if pathlib.Path('/tmp/buddy-tailnet-started').exists() else 'Stopped','TailscaleIPs':['100.80.1.2']}
         elif 'prefs' in self.path: value = {'ShieldsUp':False}
         else: value = config
         self.send_response(200); self.send_header('ETag', 'fixture-v1'); self.end_headers()
@@ -90,32 +96,73 @@ class API(BaseHTTPRequestHandler):
         self.send_response(200); self.end_headers()
 HTTPServer(('127.0.0.1',48791),API).serve_forever()
 ''')
+    (folder / 'curl').write_text('''#!/bin/bash
+[ "${BUDDY_SMOKE_OFFLINE:-0}" = 0 ] || exit 6
+exec /usr/bin/curl "$@"
+''')
+    (folder / 'df').write_text('''#!/bin/bash
+if [ "${BUDDY_SMOKE_NO_SPACE:-0}" != 0 ]; then
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfixture 100 100 0 100%% /\\n'
+else exec /usr/bin/df "$@"; fi
+''')
+    (folder / 'apt-get').write_text('''#!/bin/bash
+set -euo pipefail
+printf '%s\\n' "$*" >> /tmp/buddy-package-actions
+if [ "$1" = install ] && [ -f /usr/bin/gzip.fixture ]; then mv /usr/bin/gzip.fixture /usr/bin/gzip; fi
+''')
+    for tool in ('curl', 'df', 'apt-get'):
+        (folder / tool).chmod(0o755)
+    (folder / 'preflight.py').write_text('''import os, pathlib, socket, subprocess, time
+for _ in range(100):
+    try:
+        with socket.create_connection(('127.0.0.1',7331), timeout=1): break
+    except OSError: time.sleep(.05)
+else: raise AssertionError('port blocker did not start')
+base = ['bash', '/fixture/source/script/install-server.sh', '--binary', '/fixture/buddyd', '--codex', '/fixture/codex']
+def rejected(flags, environment, message):
+    output = subprocess.run(base + flags, env=dict(os.environ, **environment), capture_output=True, text=True)
+    assert output.returncode != 0 and message in output.stdout + output.stderr, output.stdout + output.stderr
+    assert not pathlib.Path('/opt/buddy').exists(), 'failed preflight changed the install'
+    assert not pathlib.Path('/etc/systemd/system/buddyd.service').exists(), 'failed preflight created a service'
+    assert subprocess.run(['id', 'buddy'], capture_output=True).returncode != 0, 'failed preflight created an account'
+rejected(['--source-dir', '/fixture/source'], {'BUDDY_SMOKE_NO_SYSTEMD':'1'}, 'systemd is installed but not running')
+rejected(['--source-dir', '/fixture/source', '--port', '7331'], {}, 'Port 7331 is unavailable')
+rejected([], {'BUDDY_SMOKE_OFFLINE':'1'}, 'Cannot reach Buddy source on GitHub')
+rejected(['--source-dir', '/fixture/source'], {'BUDDY_SMOKE_NO_SPACE':'1'}, 'Not enough free space')
+print('Verified preflight: stopped systemd, occupied explicit port, offline download, and low disk all fail before installation.')
+''')
     (folder / 'Dockerfile').write_text('''FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends bash curl ca-certificates git python3 systemd sudo && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --shell /bin/bash installer && printf 'installer ALL=(ALL) NOPASSWD:ALL\\n' > /etc/sudoers.d/buddy-fixture && chmod 440 /etc/sudoers.d/buddy-fixture
 COPY systemctl /usr/local/bin/systemctl
 COPY tailscale /usr/local/bin/tailscale
+COPY curl df apt-get /usr/local/bin/
 COPY . /fixture
 ''')
-    (folder / 'verify.py').write_text('''import json, os, pathlib, ssl, subprocess, time, urllib.request
+    (folder / 'verify.py').write_text('''import json, os, pathlib, ssl, subprocess, time, urllib.request, urllib.parse
 p = pathlib.Path('/var/lib/buddy')
 unit = pathlib.Path('/etc/systemd/system/buddyd.service').read_text()
 assert 'User=buddy' in unit and 'UMask=0077' in unit
-assert '-allow-remote' not in unit and '127.0.0.1:7331' in unit
+server_port = urllib.parse.urlparse((p/'server-url').read_text().strip()).port
+assert '-allow-remote' not in unit and f'127.0.0.1:{server_port}' in unit
+assert server_port != 7331, 'occupied port was not avoided'
+assert pathlib.Path('/tmp/buddy-package-actions').exists(), 'missing dependency was not installed'
+assert pathlib.Path('/usr/bin/gzip').exists()
 assert pathlib.Path('/tmp/buddy-enabled').exists()
+assert pathlib.Path('/tmp/buddy-tailnet-started').exists(), 'stopped Tailscale service was not started'
 assert p.stat().st_mode & 0o777 == 0o700
 assert (p/'state/server.token').stat().st_mode & 0o777 == 0o600
 assert (p/'state').stat().st_uid != 0
 owner_path = pathlib.Path('OWNER_HOME/.buddy-server-access/owner.json')
 owner = json.loads(owner_path.read_text())
-assert owner['server'] == 'https://100.80.1.2:7331'
+assert owner['server'] == f'https://100.80.1.2:{server_port}'
 forward = json.loads(pathlib.Path('/tmp/tailnet-config.json').read_text())['TCP']
-assert forward['7331']['TCPForward'] == '127.0.0.1:7331'
+assert forward[str(server_port)]['TCPForward'] == f'127.0.0.1:{server_port}'
 assert forward['8443']['TCPForward'] == '127.0.0.1:8000'
 assert owner_path.stat().st_mode & 0o777 == 0o600
 ctx = ssl.create_default_context(cafile=str(p/'state/server.crt'))
 def request(path, data=None):
-    req = urllib.request.Request('https://127.0.0.1:7331'+path, data=None if data is None else json.dumps(data).encode(), headers={'Authorization': 'Bearer '+(p/'state/server.token').read_text().strip(), 'Content-Type': 'application/json', 'Idempotency-Key': str(time.monotonic_ns())})
+    req = urllib.request.Request(f'https://127.0.0.1:{server_port}'+path, data=None if data is None else json.dumps(data).encode(), headers={'Authorization': 'Bearer '+(p/'state/server.token').read_text().strip(), 'Content-Type': 'application/json', 'Idempotency-Key': str(time.monotonic_ns())})
     with urllib.request.urlopen(req, context=ctx, timeout=5) as result: return json.load(result)
 assert request('/healthz')['service'] == 'buddy'
 agent = request('/v1/agents', {'name': 'Installer smoke Bud'})
@@ -139,6 +186,8 @@ if go.exists():
 pid = (p/'pid').read_text()
 install = ['bash', '/fixture/source/script/install-server.sh', '--source-dir', '/fixture/source', '--binary', '/fixture/buddyd', '--codex', '/fixture/codex', '--no-tailscale']
 subprocess.run(INSTALL_PREFIX + install, check=True)
+bad_port = subprocess.run(INSTALL_PREFIX + install + ['--port', str(server_port+1)], capture_output=True, text=True)
+assert bad_port.returncode != 0 and 'already has a port' in bad_port.stderr
 assert (p/'pid').read_text() == pid
 assert (p/'state/server.token').read_text().strip() == owner['token']
 assert any(a['id'] == agent['id'] for a in request('/v1/workspace')['agents'])
@@ -146,10 +195,10 @@ if go.exists():
     subprocess.run(['runuser', '-u', 'buddy', '--', str(go/'bin/go'), 'version'], check=True)
 check_chat()
 # Remote address export keeps the server pin; the private credentials never go to stdout.
-(p/'server-url').write_text('https://100.80.1.3:7331\\n')
+(p/'server-url').write_text(f'https://100.80.1.3:{server_port}\\n')
 subprocess.run(INSTALL_PREFIX + ['buddy-server', 'connect'], check=True)
 updated = json.loads(owner_path.read_text())
-assert updated['server'] == 'https://100.80.1.3:7331' and updated['token'] == owner['token']
+assert updated['server'] == f'https://100.80.1.3:{server_port}' and updated['token'] == owner['token']
 assert updated['certificate'] == owner['certificate']
 paired = subprocess.run(['buddy-server', 'pair'], capture_output=True, text=True, check=True).stdout
 assert 'buddy-pair:' in paired and owner['token'] not in paired
@@ -170,10 +219,16 @@ print('Verified: service chat reply, private TLS access, permission repair, idem
 '''.replace('OWNER_HOME', '/home/installer' if user_install else '/root').replace('INSTALL_PREFIX', repr(['runuser', '-u', 'installer', '--'] if user_install else [])))
     install_flags = '' if full_build else '--binary /fixture/buddyd --codex /fixture/codex'
     install_prefix = 'runuser -u installer --' if user_install else ''
+    if port is not None: install_flags += f' --port {port}'
     (folder / 'run.sh').write_text('''#!/bin/bash
 set -euo pipefail
+trap 'cat /var/lib/buddy/server.log >&2 2>/dev/null || true' ERR
 python3 /fixture/tailnet.py &
+python3 -m http.server 7331 --bind 127.0.0.1 > /tmp/port-blocker.log 2>&1 &
 sleep .3
+python3 /fixture/preflight.py
+# Exercise automatic dependency installation, without contacting a package mirror.
+mv /usr/bin/gzip /usr/bin/gzip.fixture
 INSTALL_PREFIX bash /fixture/source/script/install-server.sh --source-dir /fixture/source INSTALL_FLAGS
 if [ -d /opt/buddy/go ]; then
   runuser -u buddy -- /opt/buddy/go/bin/go version
@@ -195,5 +250,10 @@ python3 /fixture/verify.py
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--full-build', action='store_true')
+    parser.add_argument('--user-install', action='store_true')
+    parser.add_argument('--port', type=int)
+    args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='buddy-install-', dir='/tmp') as tmp:
-        smoke(Path(tmp), full_build='--full-build' in sys.argv, user_install='--user-install' in sys.argv)
+        smoke(Path(tmp), full_build=args.full_build, user_install=args.user_install, port=args.port)

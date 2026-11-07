@@ -1,6 +1,7 @@
 # Installed by install-server.sh after a generated configuration header.
 set -euo pipefail
 umask 077
+server_port=${server_port:-7331}
 
 fail() { printf 'Buddy: %s\n' "$*" >&2; exit 1; }
 admin() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
@@ -14,7 +15,7 @@ as_service() {
   fi
 }
 origin() { as_service cat "$service_home/server-url"; }
-daemon() { as_service "$install_dir/buddyd" -addr 127.0.0.1:7331 -data-dir "$service_home/state" "$@"; }
+daemon() { as_service "$install_dir/buddyd" -addr "127.0.0.1:$server_port" -data-dir "$service_home/state" "$@"; }
 manager() {
   if [ "$host_os" = linux ]; then
     admin systemctl "$1" buddyd.service
@@ -50,7 +51,7 @@ connect() {
   if [ "$host_os" = linux ] && [[ "$(origin)" != *127.0.0.1* ]]; then
     server_host=$(origin)
     server_host=${server_host#https://}
-    server_host=${server_host%:7331}
+    server_host=${server_host%:*}
     printf '\nFrom your desktop terminal:\n  scp %s@%s:%s/.buddy-server-access/owner.json ./buddy-access.json\n' "$owner_user" "$server_host" "$owner_home"
   fi
 }
@@ -63,7 +64,7 @@ tailnet() {
     if [ "$host_os" = linux ]; then
       local setup
       setup=$(mktemp)
-      curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://tailscale.com/install.sh -o "$setup"
+      curl --connect-timeout 10 --max-time 90 --retry 2 --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://tailscale.com/install.sh -o "$setup"
       admin sh "$setup"
       rm -f "$setup"
       ts=$(command -v tailscale)
@@ -75,14 +76,19 @@ tailnet() {
   if [ "$host_os" = linux ]; then
     if admin "$install_dir/buddyd" -tailscale-status >/dev/null 2>&1; then connected=1; fi
   elif "$install_dir/buddyd" -tailscale-status >/dev/null 2>&1; then connected=1; fi
+  if [ "$connected" = 0 ] && [ "$host_os" = linux ]; then
+    if [ "$(systemctl show -p LoadState --value tailscaled.service 2>/dev/null)" = loaded ]; then
+      admin systemctl enable --now tailscaled.service
+    fi
+  fi
   if [ "$connected" = 0 ]; then
     printf 'Sign in to Tailscale using the URL below (use the same account on your other devices).\n'
     if [ "$host_os" = linux ]; then admin "$ts" up; else env TAILSCALE_BE_CLI=1 "$ts" up; fi
   fi
   if [ "$host_os" = linux ]; then
-    address=$(admin "$install_dir/buddyd" -setup-tailscale -addr 127.0.0.1:7331)
+    address=$(admin "$install_dir/buddyd" -setup-tailscale -addr "127.0.0.1:$server_port")
   else
-    address=$("$install_dir/buddyd" -setup-tailscale -addr 127.0.0.1:7331)
+    address=$("$install_dir/buddyd" -setup-tailscale -addr "127.0.0.1:$server_port")
   fi
   printf '%s\n' "$address" | as_service tee "$service_home/server-url" >/dev/null
   printf 'Private Tailscale route ready: %s\n' "$address"

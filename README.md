@@ -124,7 +124,9 @@ curl -fsSL https://raw.githubusercontent.com/Hortlund/buddy/main/script/install-
 ```
 
 The installer builds Buddy, installs Codex and Go, creates a managed service,
-and sets up private access through Tailscale. Follow the Tailscale sign-in link,
+checks dependencies, disk space, ports, and download access, and sets up private
+access through Tailscale. It installs missing Linux prerequisites and chooses a
+free local port. Follow the Tailscale sign-in link,
 then run `buddy-server login` or add an API key from the desktop. Setup prints a
 private connection file for your desktop; `buddy-server pair` shows an iPhone QR.
 Install Tailscale on your client devices using the same account.
