@@ -257,6 +257,11 @@ builds the separate iPhone app for iOS 17 and later. Select your development
 team or Xcode Personal Team to install it on a physical iPhone. The Go server
 is shared with the MyGo desktop app.
 
+In **Settings → Appearance**, choose **GitHub Dark**, **Light**, or **System**.
+Chats, native question cards, connection cards, Work, and settings share the
+desktop palette. Tap the phone in a conversation to call a Bud or invite several
+Buds into the same room. See [Live voice calls](#live-voice-calls) for setup.
+
 For a Buddy server on your Mac, install Tailscale on the Mac and iPhone and
 connect both to the same tailnet. In **Connections → iPhone → Pair iPhone**,
 choose **Tailscale**, then **Enable private forwarding** if setup is needed.
@@ -545,8 +550,9 @@ and its own key. Reconfigure the voice key
 if you move to a new server. Microphone audio travels through your Buddy
 server to OpenAI during the call.
 
-Click the phone in a conversation and allow microphone access. Buddy rings
-while connecting, then greets you in the call room. Your tile shows the
+Click the phone in a desktop conversation or tap it on iPhone, then allow
+microphone access. Desktop rings while connecting. Your Bud greets you in the
+call room, your tile shows the
 microphone level and the speaking agent lights up. Use **Invite Buds** to
 add others. The **Lead Bud** answers questions left open to the room. Say a
 Bud’s name, such as “Forge, what do you think?”, or click their tile to give
@@ -564,6 +570,14 @@ for an update. Results appear in the call’s chat. Ask the team to keep
 working after you hang up, or click **Continue after call** to queue a
 read-only discussion. After hang-up, each agent posts an update in the
 same group chat and the lead agent wraps up the round.
+
+On iPhone, **Chat** collapses the call to a **Return to call** banner. Use
+**Invite → Continue collaborating after the call** for a follow-up discussion.
+An active call can continue while the iPhone is locked. A competing phone call
+or audio interruption ends the Buddy call and leaves completed captions in chat.
+Each Buddy home currently supports one active call at a time. Pairing gives the
+phone access to calls without copying the OpenAI key onto it. Revoking the
+pairing closes an active phone call too.
 
 If a call drops or the mic stays quiet, try **Connections → Live voice → Test
 microphone**. On a local install, `.buddy/server.log` and `.buddy/desktop.log`

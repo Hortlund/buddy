@@ -1,5 +1,7 @@
 # Buddy
 
+**Your Buds. Your projects. A conversation that keeps going.**
+
 Buddy is a personal home for AI companions, called **Buds**. Chat through an idea,
 ask for help with everyday tasks, or hand off a project and come back to the result.
 Each Bud has its own role, personality, memory, and workspace.
@@ -9,16 +11,21 @@ the native macOS desktop or the iPhone companion to connect to the same Buddy ho
 Host that home on an always-on machine to keep jobs, routines, and watches running
 around the clock.
 
-**Buddy is in early development.** The interface, APIs, and data formats are still
-evolving. The current way to try it is to build from source. The desktop targets
-macOS, the server supports macOS and Linux, and the iPhone app is built with SwiftUI.
+> [!IMPORTANT]
+> **Early development — expect rough edges.**
+> Buddy is evolving quickly. Interfaces, APIs, and data formats may change.
+> Build from source to try it today, and back up your Buddy home before updating.
+
+**macOS desktop · iPhone companion · Go server for macOS and Linux**
+
+[Features](#what-it-does) · [Screenshots](#screenshots) · [Voice calls](#voice-calls) · [Get started](#install-and-run) · [Full guide](docs/guide.md)
 
 ## What it does
 
 - **Persistent companions.** Give Buds different roles, customize their appearance,
   and let them build useful memories over time.
 - **Conversation and collaboration.** Talk one to one, bring Buds together in group
-  chats, or invite them into a live voice call on desktop.
+  chats, or invite them into a live voice call on desktop or iPhone.
 - **Work that keeps going.** Hand off development or research, keep chatting, and
   get results or questions back in the conversation. Review progress in Work.
 - **A workspace for each Bud.** Open files beside the chat, preview Markdown and
@@ -52,12 +59,31 @@ Inspect a job’s result, rendered code, and progress in Work.
 
 ### iPhone
 
-Connect to the same Buddy home to continue conversations and check work on the go.
+Connect to the same Buddy home to chat, make decisions, and check work on the go.
+Choose Light, GitHub Dark, or your system appearance in Settings.
 
 <p>
   <img src="docs/screenshots/iphone-chats.png" width="270" alt="Buddy for iPhone showing Buds and group chats">
-  <img src="docs/screenshots/iphone-chat.png" width="270" alt="Buddy for iPhone showing a group conversation with matching Bud avatars">
+  <img src="docs/screenshots/iphone-chat.png" width="270" alt="Buddy for iPhone in GitHub Dark with a native choice card and detailed options">
 </p>
+
+## Voice calls
+
+Call a Bud from a conversation on **macOS or iPhone**, then invite others to join.
+Speaking Buds animate, live captions keep everyone in the loop, and naming a Bud
+gives them the next turn. Discuss an idea, hand off work, or ask about a job while
+it runs. You can return to chat while the call stays connected.
+
+When a one-to-one call becomes a group, Buddy keeps its participants and transcript
+together in a group chat. Ask the Buds to continue collaborating there after you
+hang up.
+
+<p>
+  <img src="docs/screenshots/iphone-call.png" width="340" alt="Live iPhone group voice call with Buddy, Ada, Scout, and the caller, showing the Lead Bud and shared captions">
+</p>
+
+Live voice requires an OpenAI API key with Realtime access on the Buddy server.
+See the [voice setup guide](docs/guide.md#live-voice-calls).
 
 ## Install and run
 
