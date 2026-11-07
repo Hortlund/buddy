@@ -27,13 +27,14 @@ var ErrWorkspaceFileChanged = errors.New("This file changed on disk. Reload it b
 var ErrWorkspaceFolderChanged = errors.New("This Bud’s working folder changed. Open it again from the Workspace sidebar.")
 
 type WorkspaceItem struct {
-	Kind      string           `json:"kind"`
-	Entries   []workspaceEntry `json:"entries,omitempty"`
-	Truncated bool             `json:"truncated,omitempty"`
-	Text      string           `json:"text,omitempty"`
-	Image     []byte           `json:"image,omitempty"`
-	Revision  string           `json:"revision,omitempty"`
-	ReadOnly  bool             `json:"read_only,omitempty"`
+	SourceTask string           `json:"source_task,omitempty"`
+	Kind       string           `json:"kind"`
+	Entries    []workspaceEntry `json:"entries,omitempty"`
+	Truncated  bool             `json:"truncated,omitempty"`
+	Text       string           `json:"text,omitempty"`
+	Image      []byte           `json:"image,omitempty"`
+	Revision   string           `json:"revision,omitempty"`
+	ReadOnly   bool             `json:"read_only,omitempty"`
 }
 
 type WorkspaceFileEdit struct {
@@ -115,8 +116,19 @@ func openWorkspaceFolder(root *os.Root, name string) (*os.Root, error) {
 	return dir, nil
 }
 
-func (r *CodexRuntime) WorkspaceItem(ctx context.Context, s *Store, id, workspace, relative string) (WorkspaceItem, error) {
+func (r *CodexRuntime) WorkspaceItem(ctx context.Context, s *Store, id, workspace, relative string, source ...string) (WorkspaceItem, error) {
 	var item WorkspaceItem
+	if len(source) != 0 && source[0] != "" {
+		bound, err := s.ReferenceWorkspace(ctx, id, source[0])
+		if err != nil {
+			return item, err
+		}
+		if workspace != "" && workspace != bound {
+			return item, ErrWorkspaceFolderChanged
+		}
+		workspace = bound
+		item.SourceTask = source[0]
+	}
 	parent, err := r.openWorkspaceItem(ctx, s, id, workspace, relative)
 	if err != nil {
 		return item, err

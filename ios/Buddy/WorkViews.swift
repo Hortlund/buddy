@@ -226,6 +226,7 @@ struct WorkDetail: View {
     @State private var loadError: String?
     @State private var actionError: String?
     @State private var busy = false
+    private var currentChat: String { detail?.item.conversationId ?? chat }
 
     private struct ReplyRequest {
         let text: String
@@ -241,7 +242,7 @@ struct WorkDetail: View {
                         Text(detail.item.title).font(.title.bold())
                         Text("\(statusLabel(detail.item.status)) · \(detail.item.agentName)")
                             .foregroundStyle(.secondary)
-                        NavigationLink(value: Destination.chat(chat, detail.item.conversationName)) {
+                        NavigationLink(value: Destination.chat(currentChat, detail.item.conversationName)) {
                             Label("Open chat", systemImage: "bubble.left")
                         }
                         .font(.callout)
@@ -249,7 +250,7 @@ struct WorkDetail: View {
                     if let input = detail.item.inputId?.nilIfEmpty, detail.item.status == "needs_input" {
                         VStack(alignment: .leading, spacing: 9) {
                             Text("Your Bud needs input").font(.headline)
-                            if let question = detail.question { RichText(question) }
+                            if let question = detail.question { RichText(question, bud: detail.item.agentId, task: detail.item.id) }
                             replyField("Your answer", text: $answer, button: "Send answer", input: input)
                         }
                         .padding(14)
@@ -265,7 +266,7 @@ struct WorkDetail: View {
                             ForEach(events) { event in
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(event.at, style: .time).font(.caption).foregroundStyle(.secondary)
-                                    RichText(event.text)
+                                    RichText(event.text, bud: detail.item.agentId, task: detail.item.id)
                                 }
                                 .padding(.vertical, 6)
                             }
@@ -292,7 +293,7 @@ struct WorkDetail: View {
     private func section(_ title: String, _ body: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline)
-            RichText(body)
+            RichText(body, bud: detail?.item.agentId, task: id)
         }
     }
 
@@ -310,7 +311,7 @@ struct WorkDetail: View {
 
     private func load() async {
         do {
-            detail = try await api.workDetails(chat: chat, id: id)
+            detail = try await api.referencedWorkDetails(chat: chat, id: id)
             loadError = nil
         } catch where !Task.isCancelled { loadError = error.localizedDescription } catch {}
     }
@@ -327,9 +328,9 @@ struct WorkDetail: View {
             defer { busy = false }
             do {
                 if let input {
-                    try await api.answerWork(chat: chat, input: input, text: text, key: reply.key)
+                    try await api.answerWork(chat: currentChat, input: input, text: text, key: reply.key)
                 } else {
-                    try await api.send(chat: chat, text: text, job: id, key: reply.key)
+                    try await api.send(chat: currentChat, text: text, job: id, key: reply.key)
                 }
                 field.wrappedValue = ""
                 request = nil

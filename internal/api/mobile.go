@@ -50,6 +50,7 @@ func mobileRoutes(owner *http.ServeMux, store *tasks.Store, pushTopic string) *h
 		"PATCH /v1/inbox/{id}",
 		"GET /v1/work",
 		"GET /v1/work/history",
+		"GET /v1/work/{job}",
 		"GET /v1/conversations/{chat}/work/{job}",
 		"POST /v1/conversations/{chat}/work-inputs/{input}/answer",
 	} {

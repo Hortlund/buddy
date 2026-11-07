@@ -10,20 +10,30 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-func (a *desktop) referenceMarkdown(c *ui.Context, text, bud string, base ...string) {
+type fileReferenceContext struct{ task, base string }
+
+func (a *desktop) referenceMarkdown(c *ui.Context, text, bud string, source ...fileReferenceContext) {
 	services := c.Services()
+	var context fileReferenceContext
+	if len(source) != 0 {
+		context = source[0]
+	}
 	messageMarkdown(c, text, func(raw string) {
-		if len(base) != 0 {
+		if context.base != "" {
 			if u, err := url.Parse(raw); err == nil && u.Scheme == "" && u.Host == "" && u.Path != "" {
-				u.Path, u.RawPath = path.Join(base[0], u.Path), ""
+				u.Path, u.RawPath = path.Join(context.base, u.Path), ""
 				raw = u.String()
 			}
 		}
-		a.openReference(raw, bud, services.OpenURL)
+		a.openReference(raw, bud, services.OpenURL, context.task)
 	})
 }
 
-func (a *desktop) openReference(raw, bud string, openWeb func(string)) {
+func (a *desktop) openReference(raw, bud string, openWeb func(string), source ...string) {
+	origin := ""
+	if len(source) != 0 {
+		origin = source[0]
+	}
 	if target, ok := references.Parse(raw); ok {
 		switch target.Kind {
 		case "work":
@@ -31,7 +41,10 @@ func (a *desktop) openReference(raw, bud string, openWeb func(string)) {
 		case "chat":
 			a.openConversation(target.ID)
 		case "files":
-			a.openReferencedFile(target.ID, target.Path)
+			if target.Task != "" {
+				origin = target.Task
+			}
+			a.openReferencedFile(target.ID, target.Path, origin)
 		}
 		return
 	}
@@ -46,12 +59,12 @@ func (a *desktop) openReference(raw, bud string, openWeb func(string)) {
 	if u.Scheme == "" && u.Host == "" && u.RawQuery == "" && u.Path != "" {
 		relative := strings.TrimPrefix(u.Path, "./")
 		if references.ValidPath(relative) {
-			a.openReferencedFile(bud, path.Clean(relative))
+			a.openReferencedFile(bud, path.Clean(relative), origin)
 		}
 	}
 }
 
-func (a *desktop) openReferencedFile(bud, relative string) {
+func (a *desktop) openReferencedFile(bud, relative string, source ...string) {
 	if bud == "" {
 		bud = a.focusedAgent().ID
 	}
@@ -59,7 +72,7 @@ func (a *desktop) openReferencedFile(bud, relative string) {
 	request := a.referenceRequest
 	profile := a.agentProfile(bud)
 	if profile.ID == bud && profile.Workspace != "" {
-		a.openWorkspaceFile(profile, relative)
+		a.openWorkspaceFile(profile, relative, source...)
 		return
 	}
 	// Work results can refer to a teammate who isn't in the selected chat.
@@ -77,7 +90,7 @@ func (a *desktop) openReferencedFile(bud, relative string) {
 				a.chatErr = errorMessage(err, "Couldn't open this Bud’s file.")
 				return
 			}
-			a.openWorkspaceFile(profile, relative)
+			a.openWorkspaceFile(profile, relative, source...)
 		})
 	}()
 }

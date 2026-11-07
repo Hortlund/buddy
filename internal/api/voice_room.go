@@ -67,7 +67,7 @@ type voiceRoom struct {
 	team               tasks.TeamContext
 	nextTeamSync       time.Time
 	startedAt          time.Time
-	observedWork       map[string]tasks.Status
+	observedWork       map[string]workObservation
 	updates            []*roomReply
 	updateAfter        time.Time
 }
@@ -84,6 +84,11 @@ type roomReply struct {
 	tools        voicePermission
 	instructions string
 	job          string
+}
+
+type workObservation struct {
+	status tasks.Status
+	input  string
 }
 
 type roomInvitation struct {
@@ -573,7 +578,13 @@ func (r *voiceRoom) advance() error {
 	for reply == nil && len(r.updates) != 0 && !time.Now().Before(r.updateAfter) {
 		update := r.updates[0]
 		r.updates = r.updates[1:]
-		if r.member(update.member.agent.ID) == update.member {
+		if r.member(update.member.agent.ID) != update.member {
+			update.member = r.member(r.leadID)
+			if update.member == nil && len(r.members) != 0 {
+				update.member = r.members[0]
+			}
+		}
+		if update.member != nil {
 			reply = update
 		}
 	}

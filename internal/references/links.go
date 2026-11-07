@@ -17,11 +17,16 @@ type Target struct {
 	ID   string
 	Path string
 	Job  string
+	Task string
 }
 
-func File(bud, relative string) string {
+func File(bud, relative string, task ...string) string {
 	// Percent-encode spaces for native URL parsers as well as Go's form parser.
-	query := strings.ReplaceAll(url.Values{"path": {relative}}.Encode(), "+", "%20")
+	values := url.Values{"path": {relative}}
+	if len(task) != 0 && task[0] != "" {
+		values.Set("task", task[0])
+	}
+	query := strings.ReplaceAll(values.Encode(), "+", "%20")
 	u := url.URL{Scheme: "buddy", Host: "files", Path: "/" + bud, RawQuery: query}
 	return u.String()
 }
@@ -44,6 +49,10 @@ func Parse(raw string) (Target, bool) {
 	switch t.Kind {
 	case "files":
 		t.Path = u.Query().Get("path")
+		t.Task = u.Query().Get("task")
+		if u.Query().Has("task") && !validID(t.Task) {
+			return Target{}, false
+		}
 		if t.Path != "." && !ValidPath(t.Path) {
 			return Target{}, false
 		}
@@ -89,7 +98,7 @@ var inlineFile = regexp.MustCompile("`([^`\n]+)`")
 // LinkFiles makes existing inline-code file references clickable.
 // It leaves fenced code, existing links, and missing files alone.
 // The viewer still validates access and symlinks when a link is followed.
-func LinkFiles(text, bud, workspace string) string {
+func LinkFiles(text, bud, workspace string, task ...string) string {
 	if workspace == "" || !validID(bud) || !strings.Contains(text, "`") {
 		return text
 	}
@@ -140,7 +149,7 @@ func LinkFiles(text, bud, workspace string) string {
 				start > 0 && line[start-1] == '`' || end < len(line) && line[end] == '`'
 			if !skip && ValidPath(relative) {
 				if info, err := root.Lstat(relative); err == nil && (info.IsDir() || info.Mode().IsRegular()) {
-					code = "[" + code + "](" + File(bud, path.Clean(relative)) + ")"
+					code = "[" + code + "](" + File(bud, path.Clean(relative), task...) + ")"
 				}
 			}
 			output.WriteString(code)

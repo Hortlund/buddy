@@ -6,6 +6,22 @@ func validReferencePath(_ path: String) -> Bool {
     return path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy { !$0.isEmpty && !$0.hasPrefix(".") }
 }
 
+func resolvedReferencePath(_ relative: String, base: String) -> String? {
+    guard !relative.hasPrefix("/") else { return nil }
+    var components: [Substring] = []
+    for part in (base + "/" + relative).split(separator: "/") {
+        if part == "." { continue }
+        if part == ".." {
+            guard !components.isEmpty else { return nil }
+            components.removeLast()
+        } else {
+            components.append(part)
+        }
+    }
+    let path = components.joined(separator: "/")
+    return validReferencePath(path) ? path : nil
+}
+
 func referenceDestination(_ url: URL) -> Destination? {
     guard url.scheme == "buddy", url.user == nil, url.password == nil, url.fragment == nil,
           let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
@@ -24,7 +40,10 @@ func referenceDestination(_ url: URL) -> Destination? {
     case "files":
         guard let path = query.first(where: { $0.name == "path" })?.value,
               path == "." || validReferencePath(path) else { return nil }
-        return .file(id, path)
+        let binding = query.first(where: { $0.name == "task" })
+        let task = binding?.value
+        guard binding == nil || task.map(validID) == true else { return nil }
+        return .file(id, path, task)
     case "work":
         guard let job = query.first(where: { $0.name == "job" })?.value, validID(job) else { return nil }
         return .work(id, job)
@@ -35,6 +54,7 @@ func referenceDestination(_ url: URL) -> Destination? {
 
 struct WorkspacePreviewItem: Decodable {
     let kind: String
+    let sourceTask: String?
     let text: String?
     let image: Data?
     let entries: [Entry]?
@@ -51,6 +71,7 @@ struct WorkspacePreview: View {
     let api: BuddyAPI
     let bud: String
     let path: String
+    var sourceTask: String? = nil
     @State private var item: WorkspacePreviewItem?
     @State private var error: String?
 
@@ -61,7 +82,7 @@ struct WorkspacePreview: View {
                     switch item.kind {
                     case "folder":
                         ForEach(item.entries ?? []) { entry in
-                            NavigationLink(value: Destination.file(bud, path == "." ? entry.name : path + "/" + entry.name)) {
+                            NavigationLink(value: Destination.file(bud, path == "." ? entry.name : path + "/" + entry.name, sourceTask)) {
                                 HStack {
                                     Label(entry.name, systemImage: entry.folder ? "folder" : "doc.text")
                                     Spacer()
@@ -76,7 +97,7 @@ struct WorkspacePreview: View {
                         if item.truncated == true { Text("Showing the first files in this folder.").font(.footnote).foregroundStyle(.secondary) }
                     case "text":
                         if ["md", "markdown"].contains((path as NSString).pathExtension.lowercased()) {
-                            RichText(item.text ?? "", bud: bud, basePath: (path as NSString).deletingLastPathComponent)
+                            RichText(item.text ?? "", bud: bud, task: sourceTask, basePath: (path as NSString).deletingLastPathComponent)
                         } else {
                             CodeBlock(language: (path as NSString).pathExtension, code: item.text ?? "")
                         }
@@ -98,13 +119,13 @@ struct WorkspacePreview: View {
         .navigationTitle(path == "." ? "Workspace" : (path as NSString).lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .overlay { if item == nil && error == nil { ProgressView("Opening file…") } }
-        .task(id: bud + "/" + path) { await load() }
+        .task(id: bud + "/" + path + "/" + (sourceTask ?? "")) { await load() }
         .refreshable { await load() }
     }
 
     private func load() async {
         do {
-            item = try await api.workspaceItem(bud: bud, path: path)
+            item = try await api.workspaceItem(bud: bud, path: path, task: sourceTask)
             error = nil
         } catch where !Task.isCancelled { self.error = error.localizedDescription } catch {}
     }

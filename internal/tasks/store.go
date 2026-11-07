@@ -100,9 +100,9 @@ func OpenStore(ctx context.Context, path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("upgrade MCP settings: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, mobileSchema); err != nil {
+	if _, err := db.ExecContext(ctx, fileReferenceSchema+mobileSchema); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("initialize iPhone access: %w", err)
+		return nil, fmt.Errorf("initialize file references and iPhone access: %w", err)
 	}
 	return &Store{db: db, dbPath: path, startedAt: time.Now().UTC()}, nil
 }

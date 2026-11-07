@@ -981,7 +981,10 @@ func addReply(ctx context.Context, db writeQueryer, id, text string) error {
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		text = references.LinkFiles(text, bud, workspace)
+		text = references.LinkFiles(text, bud, workspace, id)
+	}
+	if err := captureFileReferences(ctx, db, id, text); err != nil {
+		return err
 	}
 	_, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO messages(task_id,role,text,created)
 		SELECT task_id,'assistant',?,? FROM chat_turns WHERE task_id=?`, text, time.Now().UnixMicro(), id)

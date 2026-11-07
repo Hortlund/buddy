@@ -143,8 +143,15 @@ func (a *desktop) refreshWork(c *ui.Context, work *workBrowser, scope string) {
 	work.reading = true
 	work.nextRead = time.Now().Add(2 * time.Second)
 	selection := work.selectionVersion
+	stableReferences := a.serverProtocol >= api.ReferenceProtocol
 	go func() {
-		detail, err := client.WorkDetails(a.ctx, selected.ConversationID, selected.ID)
+		var detail tasks.WorkDetails
+		var err error
+		if stableReferences {
+			detail, err = client.ReferencedWorkDetails(a.ctx, selected.ID)
+		} else {
+			detail, err = client.WorkDetails(a.ctx, selected.ConversationID, selected.ID)
+		}
 		win.Update(func() {
 			work.finishDetailRead(version, poll, selection, detail, err)
 		})
@@ -161,6 +168,7 @@ func (work *workBrowser) finishDetailRead(scope, poll, selection uint64, detail 
 		return
 	}
 	work.detail, work.detailErr = detail, ""
+	work.selected = detail.WorkItem
 }
 
 func (a *desktop) workPage(c *ui.Context) {
@@ -441,19 +449,19 @@ func (a *desktop) workDetail(c *ui.Context, work *workBrowser, compact bool) {
 		if progress := workActivity(item); progress != "" && !slices.ContainsFunc(detail.Events, func(event tasks.Event) bool {
 			return event.Text == progress
 		}) {
-			a.referenceMarkdown(c.Key("job-progress"), progress, item.AgentID)
+			a.referenceMarkdown(c.Key("job-progress"), progress, item.AgentID, fileReferenceContext{task: item.ID})
 		}
 		if detail.Question != "" {
 			sectionLabel(c, "Waiting for your reply")
-			a.referenceMarkdown(c.Key("job-question"), detail.Question, item.AgentID)
+			a.referenceMarkdown(c.Key("job-question"), detail.Question, item.AgentID, fileReferenceContext{task: item.ID})
 		}
 		if detail.Result != "" {
 			sectionLabel(c, "Result")
-			a.referenceMarkdown(c.Key("job-result"), detail.Result, item.AgentID)
+			a.referenceMarkdown(c.Key("job-result"), detail.Result, item.AgentID, fileReferenceContext{task: item.ID})
 		}
 		if detail.Brief != "" {
 			sectionLabel(c, "Assignment")
-			a.referenceMarkdown(c.Key("job-brief"), detail.Brief, item.AgentID)
+			a.referenceMarkdown(c.Key("job-brief"), detail.Brief, item.AgentID, fileReferenceContext{task: item.ID})
 		}
 		sectionLabel(c, "Activity")
 		if len(detail.Events) == 0 {
@@ -465,7 +473,7 @@ func (a *desktop) workDetail(c *ui.Context, work *workBrowser, compact bool) {
 				ui.Text(c, event.At.Local().Format("15:04")).FontSize(11).TextColor(c.Theme().TextMuted).Shrink(0)
 				ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 					if event.Stream == "commentary" {
-						a.referenceMarkdown(c.Key("update"), event.Text, item.AgentID)
+						a.referenceMarkdown(c.Key("update"), event.Text, item.AgentID, fileReferenceContext{task: item.ID})
 					} else {
 						ui.Text(c, event.Text).FontSize(12).MinWidth(0).Selectable()
 					}
@@ -476,7 +484,7 @@ func (a *desktop) workDetail(c *ui.Context, work *workBrowser, compact bool) {
 			sectionLabel(c, "Course corrections")
 			for _, correction := range item.Steering {
 				ui.Text(c, correctionLabel(correction.State)).FontSize(11).TextColor(c.Theme().TextMuted)
-				a.referenceMarkdown(c, correction.Text, item.AgentID)
+				a.referenceMarkdown(c, correction.Text, item.AgentID, fileReferenceContext{task: item.ID})
 			}
 		}
 	})

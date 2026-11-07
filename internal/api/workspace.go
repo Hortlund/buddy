@@ -138,7 +138,7 @@ func workspaceFileRoutes(mux *http.ServeMux, store *tasks.Store, runtime *tasks.
 	mux.HandleFunc("GET /v1/agents/{id}/workspace/item", func(w http.ResponseWriter, r *http.Request) {
 		allowAttachmentTransfer(w, false)
 		query := r.URL.Query()
-		item, err := runtime.WorkspaceItem(r.Context(), store, r.PathValue("id"), query.Get("workspace"), query.Get("path"))
+		item, err := runtime.WorkspaceItem(r.Context(), store, r.PathValue("id"), query.Get("workspace"), query.Get("path"), query.Get("task"))
 		result(w, http.StatusOK, item, err)
 	})
 	mux.HandleFunc("PUT /v1/agents/{id}/workspace/item", func(w http.ResponseWriter, r *http.Request) {
@@ -171,9 +171,16 @@ func workspaceItemURL(id, workspace, relative string) string {
 	return "/v1/agents/" + url.PathEscape(id) + "/workspace/item?" + query.Encode()
 }
 
-func (c *Client) WorkspaceItem(ctx context.Context, id, workspace, relative string) (tasks.WorkspaceItem, error) {
+func (c *Client) WorkspaceItem(ctx context.Context, id, workspace, relative string, source ...string) (tasks.WorkspaceItem, error) {
 	var out tasks.WorkspaceItem
-	err := c.callWithTimeout(ctx, attachmentTransferTimeout, http.MethodGet, workspaceItemURL(id, workspace, relative), "", nil, &out)
+	path := workspaceItemURL(id, workspace, relative)
+	if len(source) != 0 && source[0] != "" {
+		path += "&task=" + url.QueryEscape(source[0])
+	}
+	err := c.callWithTimeout(ctx, attachmentTransferTimeout, http.MethodGet, path, "", nil, &out)
+	if err == nil && len(source) != 0 && source[0] != "" && out.SourceTask != source[0] {
+		err = &tasks.InputError{Message: "Update the Buddy server to open task-bound file references safely."}
+	}
 	return out, err
 }
 

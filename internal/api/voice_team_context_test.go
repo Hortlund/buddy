@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -126,5 +128,148 @@ func TestCallRefreshesTeamLeadershipAndAnnouncesWorkOnce(t *testing.T) {
 	room.clearReplyRequest()
 	if err := room.syncTeam(); err != nil || room.requested || len(room.updates) != 0 {
 		t.Fatalf("a completed job was announced twice: %v", err)
+	}
+}
+
+func TestCallRetriesBurstUpdatesBeyondQueueAndTeamBudgets(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+	defer cancel()
+	store, err := tasks.OpenStore(ctx, filepath.Join(t.TempDir(), "buddy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnableWorkspaces(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	chat, err := store.Conversation(ctx, tasks.DefaultConversationID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dial, peers := newTestVoiceProvider(t)
+	client, err := dial(ctx, "test-voice-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseNow()
+	<-peers
+	provider, err := dial(ctx, "test-voice-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer provider.CloseNow()
+	voice := <-peers
+	room := newVoiceRoom(ctx, client, store, nil, chat, "test-voice-secret", dial)
+	member := &roomMember{agent: chat.Agent, conn: provider}
+	room.members, room.selected, room.listener = []*roomMember{member}, member, member
+	room.requested = true // Hold the floor while work accumulates.
+	jobs := map[string]bool{}
+	for batch := range 2 {
+		var drafts []tasks.Handoff
+		for index := range 6 {
+			drafts = append(drafts, tasks.Handoff{Title: fmt.Sprintf("Work %d/%d", batch, index), Brief: "Do this distinct assignment."})
+		}
+		items, err := store.QueueVoiceAssignments(ctx, chat.ID, chat.Agent.ID, "call", fmt.Sprint(batch), drafts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, job := range items {
+			jobs[job.ID] = false
+		}
+	}
+	if err := room.syncTeam(); err != nil {
+		t.Fatal(err)
+	}
+	worker := tasks.NewWorker(store, nil, func(_ context.Context, turn tasks.Turn, _ tasks.Emit) (string, error) {
+		if strings.HasSuffix(turn.Title, "/5") {
+			return "Which source should I use?", tasks.ErrWorkNeedsInput
+		}
+		return "Finished " + turn.Title, nil
+	})
+	lifetime, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); worker.Run(lifetime) }()
+	defer func() { stop(); <-done }()
+	for {
+		states, err := store.WorkStates(ctx, chat.ID, room.startedAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ready := len(states) == len(jobs)
+		for _, state := range states {
+			ready = ready && !state.Status.Active()
+		}
+		if ready {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("work didn't settle")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	stop()
+	<-done
+	peer, err := store.CreateAgent(ctx, tasks.Agent{Name: "Other worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for batch := range 5 {
+		var drafts []tasks.Handoff
+		for index := range 8 {
+			drafts = append(drafts, tasks.Handoff{Title: fmt.Sprintf("Elsewhere %d/%d", batch, index), Brief: "An unrelated pending assignment."})
+		}
+		if _, err := store.QueueVoiceAssignments(ctx, peer.ConversationID, peer.ID, "elsewhere", fmt.Sprint(batch), drafts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := room.syncTeam(); err != nil {
+		t.Fatal(err)
+	}
+	if len(room.updates) != 8 || !room.team.Truncated {
+		t.Fatal("fixture didn't fill both budgets")
+	}
+	room.clearReplyRequest()
+	for range len(jobs) {
+		if err := room.syncTeam(); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			select {
+			case event := <-voice.received:
+				if event["type"] != "response.create" {
+					continue
+				}
+				instructions := event["response"].(map[string]any)["instructions"].(string)
+				index := strings.LastIndex(instructions, "\n{\"job\":")
+				var evidence struct {
+					Job struct {
+						ID string `json:"id"`
+					}
+					Question string `json:"question"`
+					Result   string `json:"result"`
+				}
+				if index < 0 {
+					t.Fatal("missing work evidence")
+				}
+				if err := json.Unmarshal([]byte(instructions[index+1:]), &evidence); err != nil {
+					t.Fatal(err)
+				}
+				if seen, exists := jobs[evidence.Job.ID]; !exists || seen {
+					t.Fatalf("duplicate or unexpected update: %+v", evidence)
+				}
+				if evidence.Question == "" && evidence.Result == "" {
+					t.Fatal("a result or input request was lost")
+				}
+				jobs[evidence.Job.ID] = true
+			case <-ctx.Done():
+				t.Fatal("lost queued voice updates")
+			}
+			break
+		}
+		room.clearReplyRequest()
+	}
+	if err := room.syncTeam(); err != nil || room.requested || len(room.updates) != 0 {
+		t.Fatalf("repeated a delivered notification: %v", err)
 	}
 }

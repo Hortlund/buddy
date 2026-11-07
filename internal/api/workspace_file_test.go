@@ -69,6 +69,10 @@ func TestWorkspaceFileEditingProtectsConcurrentChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := Handler(token, store, tasks.NewWorker(store, nil, nil), runtime)
+	origin, _, err := store.Send(ctx, tasks.DefaultConversationID, "Look at the plan", "reference")
+	if err != nil {
+		t.Fatal(err)
+	}
 	pair, err := store.CreateMobilePairing(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +86,8 @@ func TestWorkspaceFileEditingProtectsConcurrentChanges(t *testing.T) {
 		status       int
 	}{
 		{http.MethodGet, workspaceItemURL(id, "", relative), http.StatusOK},
+		{http.MethodGet, workspaceItemURL(id, "", relative) + "&task=" + origin.ID, http.StatusOK},
+		{http.MethodGet, workspaceItemURL(id, "", relative) + "&task=tsk_unknown", http.StatusBadRequest},
 		{http.MethodGet, workspaceItemURL(id, "", "../state/buddy.db"), http.StatusBadRequest},
 		{http.MethodPut, workspaceItemURL(id, "", relative), http.StatusForbidden},
 	} {
@@ -119,6 +125,10 @@ func TestWorkspaceFileEditingProtectsConcurrentChanges(t *testing.T) {
 	item, err := client.WorkspaceItem(ctx, id, agent.Workspace, relative)
 	if err != nil || item.Kind != "text" || item.Text != "# First\r\n" || item.Revision == "" || item.ReadOnly {
 		t.Fatalf("could not open text: %+v, %v", item, err)
+	}
+	bound, err := client.WorkspaceItem(ctx, id, agent.Workspace, relative, origin.ID)
+	if err != nil || bound.SourceTask != origin.ID || bound.Text != item.Text {
+		t.Fatalf("server did not verify the reference binding: %+v, %v", bound, err)
 	}
 	var remote *HTTPError
 	for _, body := range []map[string]any{
@@ -185,6 +195,16 @@ func TestWorkspaceFileEditingProtectsConcurrentChanges(t *testing.T) {
 	if _, err := client.WorkspaceItem(ctx, id, oldWorkspace, relative); !errors.As(err, &remote) || remote.Status != http.StatusConflict {
 		t.Fatalf("reloading followed the changed workspace: %v", err)
 	}
+	if _, err := client.WorkspaceItem(ctx, id, "", relative, origin.ID); !errors.As(err, &remote) || remote.Status != http.StatusConflict {
+		t.Fatalf("task-bound reference followed the changed workspace: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, workspaceItemURL(id, "", relative)+"&task="+origin.ID, nil)
+	request.Header.Set("Authorization", "Bearer "+phone.Token)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("phone followed a stale file reference: %d %s", response.Code, response.Body)
+	}
 	if _, err := client.SaveWorkspaceFile(ctx, id, oldWorkspace, relative, edit); !errors.As(err, &remote) || remote.Status != http.StatusConflict {
 		t.Fatalf("saving followed the changed workspace: %v", err)
 	}
@@ -194,5 +214,24 @@ func TestWorkspaceFileEditingProtectsConcurrentChanges(t *testing.T) {
 	}
 	if _, err := client.SaveWorkspaceFile(ctx, id, moved, relative, tasks.WorkspaceFileEdit{Revision: item.Revision, Text: ""}); err != nil {
 		t.Fatalf("explicit empty text could not be saved: %v", err)
+	}
+}
+
+func TestWorkspaceFileReferenceRequiresBindingSupport(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := testToken(t, dir); err != nil {
+		t.Fatal(err)
+	}
+	server := startTestServer(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		write(w, http.StatusOK, tasks.WorkspaceItem{Kind: "text", Text: "unverified file"})
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, filepath.Join(dir, localconfig.TokenName))
+	defer client.Close()
+	if _, err := client.WorkspaceItem(t.Context(), tasks.DefaultAgentID, "", "plan.md", "tsk_origin"); err == nil {
+		t.Fatal("silently opened a reference on a server that ignored its binding")
+	}
+	if _, err := client.WorkspaceItem(t.Context(), tasks.DefaultAgentID, "", "plan.md"); err != nil {
+		t.Fatalf("ordinary workspace browsing lost compatibility: %v", err)
 	}
 }

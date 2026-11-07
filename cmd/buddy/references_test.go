@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"buddy/internal/references"
+	"buddy/internal/tasks"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -30,5 +31,21 @@ func TestMessageLinksNavigateAndRejectExecutableURLs(t *testing.T) {
 	}
 	if clicked != "buddy://files/agt_orbit?path=plan.md" {
 		t.Fatalf("native Markdown link wasn't clickable: %q", clicked)
+	}
+}
+
+func TestFileReferenceNavigationLeavesWorkAndKeepsTheCallAlive(t *testing.T) {
+	a := &desktop{section: "work", conversationID: "conv_team", voice: &desktopVoice{expanded: true}}
+	a.chat = tasks.Conversation{ID: "conv_team", Agent: tasks.Agent{ID: "agt_orbit", Name: "Orbit"}}
+	a.files = map[string]*workspaceFilesPane{"conv_team": {app: a, relative: "plan.md", item: tasks.WorkspaceItem{Kind: "unsupported"}}}
+	a.showWorkspaceFile("conv_team")
+	view := ui.NewTester(a.view, 1120, 750)
+	if !a.showingWorkspaceFiles() || a.voice == nil || a.voice.expanded || a.section != "" || !view.HasText("plan.md") {
+		t.Fatalf("Work/call file reference didn't reveal its tab: %v", view.Texts())
+	}
+	work := workBrowser{selected: tasks.WorkItem{ID: "tsk_job", ConversationID: "old-chat"}}
+	work.finishDetailRead(0, 0, 0, tasks.WorkDetails{WorkItem: tasks.WorkItem{ID: "tsk_job", ConversationID: "new-group"}}, nil)
+	if work.selected.ConversationID != "new-group" {
+		t.Fatal("resolved job details retained the stale chat for actions")
 	}
 }

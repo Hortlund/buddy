@@ -21,12 +21,18 @@ func TestReferenceLinksRoundTripAndRejectEscapes(t *testing.T) {
 	if target, ok := Parse(Work("conv_team", "tsk_work")); !ok || target.ID != "conv_team" || target.Job != "tsk_work" {
 		t.Fatalf("job link did not round-trip: %+v, %v", target, ok)
 	}
+	if target, ok := Parse(File("agt_orbit", "plan.md", "tsk_original")); !ok || target.Task != "tsk_original" {
+		t.Fatalf("workspace provenance did not round-trip: %+v, %v", target, ok)
+	}
 	for _, raw := range []string{
 		"buddy://files/agt_orbit?path=../secret", "buddy://files/agt_orbit?path=/etc/passwd",
 		"buddy://files/agt_orbit?path=.env", "buddy://files/agt_orbit?path=a%5Csecret",
 		"buddy://files/agt_orbit?path=C%3Asecret", "buddy://files/user/other?path=ok.txt",
 		"buddy://owner@files/agt_orbit?path=ok.txt", "buddy://work/conv_team?job=../other",
 		"buddy://execute/agt_orbit?path=ok.txt", "javascript:alert(1)", "file:///etc/passwd",
+		"buddy://files/agt_orbit?path=ok.txt&task=../other",
+		"buddy://files/agt_orbit?path=ok.txt&task=",
+		"buddy://files/agt_orbit?path=ok.txt&task",
 	} {
 		if target, ok := Parse(raw); ok {
 			t.Fatalf("accepted unsafe or unsupported reference %q: %+v", raw, target)

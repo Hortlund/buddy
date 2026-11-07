@@ -55,8 +55,11 @@ Run this command from the repository root.
    Chat renders Markdown, fenced code, and unified Git diffs in both directions.
    Buds can link web sources, workspace files, folders, and jobs directly in their
    replies. File links open beside the desktop chat or in the iPhone's native
-   preview; job links open Work. Files on another worker device must be brought
-   into the server workspace before they can be previewed this way.
+   preview; job links open Work. File links keep their workspace binding and show
+   an error if the Bud has switched to another folder. Managed server moves
+   preserve these bindings. Job links follow work into a group when a call grows.
+   Files on another worker device must be brought into the server workspace before
+   they can be previewed this way.
 2. Use **+** next to **Buds** to create a Bud with a role, instructions, model,
    and avatar. **Bud settings** lists every Bud and lets you choose your
    **Primary Bud**, whose chat Buddy opens on launch. Each Bud starts with a

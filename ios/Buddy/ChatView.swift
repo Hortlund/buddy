@@ -350,7 +350,7 @@ private struct MessageBubble: View {
                 if let name = message.agentName?.nilIfEmpty, !outgoing {
                     Text(name).font(.caption.bold()).foregroundStyle(.secondary)
                 }
-                if !message.text.isEmpty { RichText(message.text, bud: message.agentId) }
+                if !message.text.isEmpty { RichText(message.text, bud: message.agentId, task: message.taskId) }
                 if message.generatedImage == true {
                     GeneratedChatImage(api: api, task: message.taskId)
                 }

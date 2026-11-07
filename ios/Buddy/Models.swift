@@ -147,6 +147,7 @@ struct WatchSignal: Decodable {
 
 struct WorkItem: Decodable, Identifiable {
     let id: String
+    let agentId: String?
     let conversationId: String
     let conversationName: String
     let agentName: String

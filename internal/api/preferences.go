@@ -35,6 +35,10 @@ func preferencesRoutes(mux *http.ServeMux, store *tasks.Store, worker *tasks.Wor
 		page, err := store.WorkHistory(r.Context(), query.Get("chat"), query.Get("before"))
 		result(w, http.StatusOK, page, err)
 	})
+	mux.HandleFunc("GET /v1/work/{job}", func(w http.ResponseWriter, r *http.Request) {
+		detail, err := store.ReferencedWorkDetails(r.Context(), r.PathValue("job"))
+		result(w, http.StatusOK, detail, err)
+	})
 	mux.HandleFunc("GET /v1/conversations/{chat}/work/{job}", func(w http.ResponseWriter, r *http.Request) {
 		detail, err := store.WorkDetails(r.Context(), r.PathValue("chat"), r.PathValue("job"))
 		result(w, http.StatusOK, detail, err)
@@ -101,6 +105,12 @@ func (c *Client) WorkDetails(ctx context.Context, chat, job string) (tasks.WorkD
 	var detail tasks.WorkDetails
 	path := "/v1/conversations/" + url.PathEscape(chat) + "/work/" + url.PathEscape(job)
 	err := c.call(ctx, http.MethodGet, path, "", nil, &detail)
+	return detail, err
+}
+
+func (c *Client) ReferencedWorkDetails(ctx context.Context, job string) (tasks.WorkDetails, error) {
+	var detail tasks.WorkDetails
+	err := c.call(ctx, http.MethodGet, "/v1/work/"+url.PathEscape(job), "", nil, &detail)
 	return detail, err
 }
 

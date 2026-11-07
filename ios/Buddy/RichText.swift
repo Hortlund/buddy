@@ -8,10 +8,12 @@ struct RichText: View {
 
     private let blocks: [Block]
     private let bud: String?
+    private let sourceTask: String?
     private let basePath: String
 
-    init(_ text: String, bud: String? = nil, basePath: String = ".") {
+    init(_ text: String, bud: String? = nil, task: String? = nil, basePath: String = ".") {
         self.bud = bud
+        self.sourceTask = task
         self.basePath = basePath
         var blocks: [Block] = []
         var lines: [String] = []
@@ -67,14 +69,23 @@ struct RichText: View {
                 }
             }
         }
+        if let sourceTask {
+            for run in Array(result.runs) {
+                guard let link = run.link,
+                      case let .file(owner, path, nil)? = referenceDestination(link),
+                      var target = URLComponents(string: "buddy://files/\(owner)") else { continue }
+                target.queryItems = [URLQueryItem(name: "path", value: path), URLQueryItem(name: "task", value: sourceTask)]
+                result[run.range].link = target.url
+            }
+        }
         // A relative Markdown file link refers to its author's workspace.
         if let bud {
             for run in Array(result.runs) {
                 guard let link = run.link, link.scheme == nil, link.host == nil, !link.path.isEmpty else { continue }
-                let relative = ((basePath as NSString).appendingPathComponent(link.path) as NSString).standardizingPath
-                guard validReferencePath(relative),
+                guard let relative = resolvedReferencePath(link.path, base: basePath),
                       var target = URLComponents(string: "buddy://files/\(bud)") else { continue }
                 target.queryItems = [URLQueryItem(name: "path", value: relative)]
+                if let sourceTask { target.queryItems?.append(URLQueryItem(name: "task", value: sourceTask)) }
                 result[run.range].link = target.url
             }
         }

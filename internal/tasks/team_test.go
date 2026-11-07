@@ -19,7 +19,11 @@ func teamTestStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	if err := s.EnableWorkspaces(t.Context(), t.TempDir()); err != nil {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnableWorkspaces(t.Context(), root); err != nil {
 		t.Fatal(err)
 	}
 	return s
@@ -194,6 +198,10 @@ func TestReusedCallWorkFollowsTheCallIntoItsGroup(t *testing.T) {
 	}
 	if _, err := s.WorkDetails(ctx, DefaultConversationID, first[0].ID); !errors.Is(err, ErrNotFound) {
 		t.Fatal("a migrated job is still bound to the old chat:", err)
+	}
+	resolved, err := s.ReferencedWorkDetails(ctx, first[0].ID)
+	if err != nil || resolved.ConversationID != group.ID {
+		t.Fatalf("a saved job link could not resolve its new group: %+v, %v", resolved, err)
 	}
 }
 

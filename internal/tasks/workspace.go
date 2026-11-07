@@ -609,6 +609,10 @@ func (s *Store) RelocateManagedWorkspaces(ctx context.Context, oldRoot, newRoot 
 		newRoot, oldRoot, AgentTurn, BackgroundWork, RepoCheck, oldRoot, prefix, prefix); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE file_reference_workspaces SET workspace=? || substr(workspace,length(?)+1)
+		WHERE workspace=? OR substr(workspace,1,length(?))=?`, newRoot, oldRoot, oldRoot, prefix, prefix); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, "UPDATE managed_workspace_root SET path=? WHERE id=1 AND path=?", newRoot, oldRoot); err != nil {
 		return err
 	}

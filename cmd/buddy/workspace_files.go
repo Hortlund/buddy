@@ -26,6 +26,7 @@ type workspaceFilesPane struct {
 	app           *desktop
 	profile       tasks.Agent
 	relative      string
+	originTask    string
 	item          tasks.WorkspaceItem
 	source        editor.State
 	image         *ui.Bitmap
@@ -57,12 +58,26 @@ func (a *desktop) canBrowseWorkspace(profile tasks.Agent) bool {
 	return a.online && a.serverProtocol >= api.WorkspaceFilesProtocol && profile.Workspace != "" && !profile.WorkspaceNeedsReview
 }
 
-func (a *desktop) openWorkspaceFile(profile tasks.Agent, relative string) {
+func (a *desktop) showWorkspaceFile(chat string) {
+	if a.currentConversation() != chat {
+		return
+	}
+	a.section, a.conversationTab = "", conversationFilesTab
+	if a.voice != nil {
+		a.voice.expanded = false
+	}
+}
+
+func (a *desktop) openWorkspaceFile(profile tasks.Agent, relative string, source ...string) {
 	a.referenceRequest++
 	if a.window == nil || a.confirmingFileDiscard || !a.canBrowseWorkspace(profile) {
 		return
 	}
 	chatID := a.currentConversation()
+	origin := ""
+	if len(source) != 0 {
+		origin = source[0]
+	}
 	b := a.files[chatID]
 	if b == nil {
 		b = &workspaceFilesPane{app: a}
@@ -72,16 +87,18 @@ func (a *desktop) openWorkspaceFile(profile tasks.Agent, relative string) {
 		a.files[chatID] = b
 	}
 	show := func() {
-		if a.currentConversation() == chatID && a.section == "" {
-			a.conversationTab = conversationFilesTab
-		}
+		a.showWorkspaceFile(chatID)
 	}
-	if b.sameItem(profile, relative) {
+	if b.sameItem(profile, relative) && b.originTask == origin {
 		show()
 		b.refresh(profile, relative)
 		return
 	}
 	b.afterDiscard(func() {
+		if b.originTask != origin {
+			b.item, b.source = tasks.WorkspaceItem{}, editor.State{}
+		}
+		b.originTask = origin
 		show()
 		b.load(profile, relative)
 	})
@@ -339,9 +356,10 @@ func (b *workspaceFilesPane) load(profile tasks.Agent, relative string) {
 	win := b.app.window
 	win.Invalidate()
 	client := b.app.client
+	origin := b.originTask
 	go func() {
 		defer cancel()
-		item, err := client.WorkspaceItem(ctx, profile.ID, profile.Workspace, relative)
+		item, err := client.WorkspaceItem(ctx, profile.ID, profile.Workspace, relative, origin)
 		var picture *ui.Bitmap
 		if err == nil && ctx.Err() == nil && item.Kind == "image" {
 			picture = decodeWorkspaceImage(item.Image)
@@ -446,7 +464,8 @@ func (b *workspaceFilesPane) view(c *ui.Context) {
 			if b.preview {
 				ui.Scroll(c.Key("file-preview")).Grow(1).MinHeight(0).FillWidth().Padding(22).Children(func() {
 					ui.Column(c).FillWidth().MaxWidth(760).AlignSelf(ui.Center).Children(func() {
-						b.app.referenceMarkdown(c.Key(b.request), b.source.Buffer.String(), b.profile.ID, path.Dir(b.relative))
+						b.app.referenceMarkdown(c.Key(b.request), b.source.Buffer.String(), b.profile.ID,
+							fileReferenceContext{task: b.originTask, base: path.Dir(b.relative)})
 					})
 				})
 			} else {

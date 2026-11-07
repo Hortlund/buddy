@@ -133,8 +133,12 @@ final class BuddyAPI: Sendable {
         try await load("/v1/workspace")
     }
 
-    func workspaceItem(bud: String, path: String) async throws -> WorkspacePreviewItem {
-        try await load("/v1/agents/\(bud)/workspace/item", query: [URLQueryItem(name: "path", value: path)])
+    func workspaceItem(bud: String, path: String, task: String? = nil) async throws -> WorkspacePreviewItem {
+        var query = [URLQueryItem(name: "path", value: path)]
+        if let task { query.append(URLQueryItem(name: "task", value: task)) }
+        let item: WorkspacePreviewItem = try await load("/v1/agents/\(bud)/workspace/item", query: query)
+        if let task, item.sourceTask != task { throw BuddyError("Update the Buddy server to open task-bound file references safely.") }
+        return item
     }
 
     func voiceAvailable() async throws -> Bool {
@@ -222,6 +226,13 @@ final class BuddyAPI: Sendable {
 
     func workDetails(chat: String, id: String) async throws -> WorkDetails {
         try await load("/v1/conversations/\(chat)/work/\(id)")
+    }
+
+    func referencedWorkDetails(chat: String, id: String) async throws -> WorkDetails {
+        do { return try await load("/v1/work/\(id)") }
+        catch let error as BuddyError where error.status == 404 {
+            return try await workDetails(chat: chat, id: id)
+        }
     }
 
     func answerWork(chat: String, input: String, text: String, key: String) async throws {

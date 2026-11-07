@@ -58,7 +58,7 @@ struct PhoneCallView: View {
                             case let .work(chat, id): WorkDetail(api: api, chat: chat, id: id)
                             case let .chat(id, name): ChatView(api: api, id: id, name: name)
                             case let .inbox(id): InboxDetail(api: api, id: id)
-                            case let .file(bud, path): WorkspacePreview(api: api, bud: bud, path: path)
+                            case let .file(bud, path, task): WorkspacePreview(api: api, bud: bud, path: path, sourceTask: task)
                             }
                         }
                         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showWork = false } } }

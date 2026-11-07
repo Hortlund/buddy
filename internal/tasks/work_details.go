@@ -24,13 +24,23 @@ type WorkDetails struct {
 }
 
 func (s *Store) WorkDetails(ctx context.Context, chat, id string) (WorkDetails, error) {
+	return s.workDetails(ctx, chat, id, false)
+}
+
+// ReferencedWorkDetails follows a stable job ID after call-to-group migration.
+// Model/tool lookups continue to use the chat-scoped WorkDetails method.
+func (s *Store) ReferencedWorkDetails(ctx context.Context, id string) (WorkDetails, error) {
+	return s.workDetails(ctx, "", id, true)
+}
+
+func (s *Store) workDetails(ctx context.Context, chat, id string, reference bool) (WorkDetails, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return WorkDetails{}, err
 	}
 	defer tx.Rollback()
 
-	items, err := readWork(ctx, tx, workSelect+" AND ct.conversation_id=? AND t.id=?", chat, id)
+	items, err := readWork(ctx, tx, workSelect+" AND (? OR ct.conversation_id=?) AND t.id=?", reference, chat, id)
 	if err != nil {
 		return WorkDetails{}, err
 	}

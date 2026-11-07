@@ -161,6 +161,9 @@ func enqueueTurn(ctx context.Context, tx *sql.Tx, kind, key, conversation string
 	}
 	_, err := tx.ExecContext(ctx, "INSERT INTO turn_details VALUES (?,?,?,?,?,?,NULLIF(?,''),NULLIF(?,''))",
 		t.ID, agent.ID, agent.Role, request.origin, request.title, request.brief, request.parent, request.routine)
+	if err == nil {
+		err = captureFileReferences(ctx, tx, t.ID, "")
+	}
 	if err == nil && request.device != "" {
 		_, err = tx.ExecContext(ctx, "INSERT INTO device_runs(task_id,device_id) VALUES (?,?)", t.ID, request.device)
 	}
