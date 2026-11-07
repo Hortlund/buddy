@@ -57,6 +57,7 @@ enum Destination: Hashable {
     case chat(String, String)
     case inbox(String)
     case work(String, String)
+    case file(String, String)
 }
 
 enum BuddyTab: Hashable { case chats, inbox, work, settings }
@@ -198,6 +199,18 @@ struct BuddyTabs: View {
             }
         }
         .environment(voice)
+        .environment(\.openURL, OpenURLAction { url in
+            if let destination = referenceDestination(url) {
+                switch selected {
+                case .chats: chats.append(destination)
+                case .inbox: inbox.append(destination)
+                case .work: work.append(destination)
+                case .settings: selected = .chats; chats.append(destination)
+                }
+                return .handled
+            }
+            return safeWebURL(url) == nil ? .discarded : .systemAction
+        })
         .fullScreenCover(isPresented: $voice.presented, onDismiss: {
             guard !voice.chat.isEmpty else { return }
             chats = [.chat(voice.chat, voice.title)]
@@ -213,6 +226,7 @@ struct BuddyTabs: View {
             case .inbox: inbox = [route.destination]; selected = .inbox
             case .work: work = [route.destination]; selected = .work
             case .chat: chats = [route.destination]; selected = .chats
+            case .file: chats = [route.destination]; selected = .chats
             }
         }
         .task(id: PushSync(token: push.token, enabled: alerts, work: workAlerts, phase: phase)) {
@@ -250,6 +264,7 @@ struct BuddyTabs: View {
         case let .chat(id, name): ChatView(api: api, id: id, name: name)
         case let .inbox(id): InboxDetail(api: api, id: id)
         case let .work(chat, id): WorkDetail(api: api, chat: chat, id: id)
+        case let .file(bud, path): WorkspacePreview(api: api, bud: bud, path: path)
         }
     }
 }

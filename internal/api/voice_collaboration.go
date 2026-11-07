@@ -517,6 +517,9 @@ func voiceActionError(err error, fallback string) string {
 }
 
 func (r *voiceRoom) buddyContext(member *roomMember) string {
+	if err := r.refreshTeam(); err != nil {
+		return "Couldn't load the current Buddy team."
+	}
 	directory, err := r.store.Directory(r.ctx)
 	if err == nil {
 		r.directory, r.primaryID = directory.Agents, directory.PrimaryAgentID
@@ -558,7 +561,7 @@ func (r *voiceRoom) buddyContext(member *roomMember) string {
 		title = chat.Agent.Name
 	}
 	devices, _ := r.store.Devices(r.ctx)
-	data, _ := json.Marshal(object{"chat": title, "agents": agents, "primary_bud_id": r.primaryID, "lead_bud_id": r.leadID,
+	data, _ := json.Marshal(object{"chat": title, "agents": agents, "primary_bud_id": r.primaryID, "lead_bud_id": r.leadID, "buddy_team": r.team,
 		"your_workspace_entries": files, "work": work, "routines": routines, "watches": watches, "connected_devices": devices[:min(len(devices), 30)]})
 	return string(data)
 }
@@ -601,6 +604,15 @@ func (r *voiceRoom) buddyWork(member *roomMember, id string) string {
 		list = append(list, entry)
 	}
 	if id != "" && !stopLookup && len(list) == 0 {
+		team, err := r.store.TeamContext(r.ctx, r.chat.ID, member.agent.ID)
+		if err == nil {
+			for _, job := range team.Assignments {
+				if job.ID == id {
+					data, _ := json.Marshal(job)
+					return string(data)
+				}
+			}
+		}
 		return "That job isn't available to you."
 	}
 	data, _ := json.Marshal(list)

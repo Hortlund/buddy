@@ -312,7 +312,7 @@ func (a *desktop) reply(c *ui.Context, message tasks.Message, active *tasks.Acti
 			}
 			if active == nil {
 				if message.Text != "" {
-					messageMarkdown(c.Key("reply-text"), message.Text)
+					a.referenceMarkdown(c.Key("reply-text"), message.Text, message.AgentID)
 				}
 				if message.GeneratedImage {
 					a.generatedImageView(c.Key(message.TaskID), message.TaskID)
@@ -430,7 +430,7 @@ func (a *desktop) message(c *ui.Context, message tasks.Message) {
 							})
 					}
 					if message.Text != "" {
-						messageMarkdown(c.Key("sent-text"), message.Text)
+						a.referenceMarkdown(c.Key("sent-text"), message.Text, a.chat.Agent.ID)
 					}
 					for i, file := range message.Attachments {
 						ui.Button(c.Key(i), file.Name).Disabled(!a.online || a.savingFile).

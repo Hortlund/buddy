@@ -158,11 +158,17 @@ func TestVoiceRoomRoutesAudioAndHandsOffWork(t *testing.T) {
 
 	read := func(want string) VoiceEvent {
 		t.Helper()
-		event, pcm, err := call.Read(ctx)
-		if err != nil || len(pcm) != 0 || event.Type != want {
-			t.Fatalf("call received %+v, %d audio bytes, %v, want %s", event, len(pcm), err, want)
+		for {
+			event, pcm, err := call.Read(ctx)
+			// Work status notifications are asynchronous to the speaking turn.
+			if err == nil && len(pcm) == 0 && event.Type == "work_changed" && want != "work_changed" {
+				continue
+			}
+			if err != nil || len(pcm) != 0 || event.Type != want {
+				t.Fatalf("call received %+v, %d audio bytes, %v, want %s", event, len(pcm), err, want)
+			}
+			return event
 		}
-		return event
 	}
 	send := func(event VoiceEvent) {
 		t.Helper()

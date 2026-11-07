@@ -53,6 +53,10 @@ Run this command from the repository root.
    Click a sent attachment to save a copy. The microphone button uses macOS
    Dictation to fill the draft. Enable it in System Settings → Keyboard if needed.
    Chat renders Markdown, fenced code, and unified Git diffs in both directions.
+   Buds can link web sources, workspace files, folders, and jobs directly in their
+   replies. File links open beside the desktop chat or in the iPhone's native
+   preview; job links open Work. Files on another worker device must be brought
+   into the server workspace before they can be previewed this way.
 2. Use **+** next to **Buds** to create a Bud with a role, instructions, model,
    and avatar. **Bud settings** lists every Bud and lets you choose your
    **Primary Bud**, whose chat Buddy opens on launch. Each Bud starts with a
@@ -61,6 +65,12 @@ Run this command from the repository root.
    Bud out of active chats and stop its routines. **Removed Buds** keeps
    its chat history and workspace files accessible.
 3. Use **+** next to **Group chats** to bring Buds into the same conversation.
+   Buds receive the current team roster, roles, primary Bud, group lead, active
+   assignments, dependencies, and recent joins or departures. They can coordinate
+   separate assignments and ask a teammate for a contribution. Other chats share
+   job titles and status, rather than private transcripts, memories, or results.
+   An identical active assignment for the same Bud and workspace is reused;
+   different work and requests for another perspective stay separate.
    Pick a **Lead Bud** for default replies and calls, or change it from the chat
    header. New groups default to the Primary Bud when they include it. The
    group routes messages to a suitable member. Address a Bud by name to direct a

@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +69,30 @@ func TestWorkspaceFileEditingProtectsConcurrentChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := Handler(token, store, tasks.NewWorker(store, nil, nil), runtime)
+	pair, err := store.CreateMobilePairing(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phone, err := store.PairMobileClient(ctx, pair.Code, "Reference preview phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		method, path string
+		status       int
+	}{
+		{http.MethodGet, workspaceItemURL(id, "", relative), http.StatusOK},
+		{http.MethodGet, workspaceItemURL(id, "", "../state/buddy.db"), http.StatusBadRequest},
+		{http.MethodPut, workspaceItemURL(id, "", relative), http.StatusForbidden},
+	} {
+		req := httptest.NewRequest(check.method, check.path, nil)
+		req.Header.Set("Authorization", "Bearer "+phone.Token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		if response.Code != check.status {
+			t.Fatalf("phone reference access %s %s: %d %s", check.method, check.path, response.Code, response.Body.String())
+		}
+	}
 	server := startTestServer(t, state, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/workspace/item") && r.URL.Query().Get("path") == relative {
 			if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {

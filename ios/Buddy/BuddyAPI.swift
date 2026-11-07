@@ -133,6 +133,10 @@ final class BuddyAPI: Sendable {
         try await load("/v1/workspace")
     }
 
+    func workspaceItem(bud: String, path: String) async throws -> WorkspacePreviewItem {
+        try await load("/v1/agents/\(bud)/workspace/item", query: [URLQueryItem(name: "path", value: path)])
+    }
+
     func voiceAvailable() async throws -> Bool {
         struct Status: Decodable { let source: String }
         do {

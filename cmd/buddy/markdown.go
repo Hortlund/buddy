@@ -10,7 +10,12 @@ import (
 
 var diffBlocks = map[string]func(*ui.Context, *markdown.CodeBlockView){"diff": renderPatch, "patch": renderPatch}
 
-func messageMarkdown(c *ui.Context, text string) {
+type markdownAnchor struct {
+	slug    string
+	version uint64
+}
+
+func messageMarkdown(c *ui.Context, text string, onLink ...func(string)) {
 	trimmed := strings.TrimSpace(text)
 	if strings.HasPrefix(trimmed, "diff --git ") ||
 		strings.HasPrefix(trimmed, "--- ") && strings.Contains(trimmed, "\n+++ ") && strings.Contains(trimmed, "\n@@ ") {
@@ -27,8 +32,24 @@ func messageMarkdown(c *ui.Context, text string) {
 	if c.Theme().Dark {
 		link = ui.Hex("#58A6FF")
 	}
-	markdown.View(c, text, &markdown.Options{Theme: &markdown.Theme{Link: link}, Code: diffBlocks}).
-		MinWidth(0).FontSize(14).LineHeight(1.45)
+	options := &markdown.Options{Theme: &markdown.Theme{Link: link}, Code: diffBlocks}
+	container := ui.Column(c).MinWidth(0)
+	if len(onLink) != 0 {
+		anchor := ui.Local(container, "reference-anchor", func() markdownAnchor { return markdownAnchor{} })
+		options.Anchor, options.AnchorVersion = anchor.slug, anchor.version
+		options.OnLink = func(raw string) {
+			if strings.HasPrefix(raw, "#") {
+				anchor.slug = strings.TrimPrefix(raw, "#")
+				anchor.version++
+				return
+			}
+			onLink[0](raw)
+		}
+	}
+	container.Children(func() {
+		markdown.View(c, text, options).
+			MinWidth(0).FontSize(14).LineHeight(1.45)
+	})
 }
 
 type patchDisplay struct {

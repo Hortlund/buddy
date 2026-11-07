@@ -37,6 +37,7 @@ func mobileRoutes(owner *http.ServeMux, store *tasks.Store, pushTopic string) *h
 		"GET " + voiceKeyPath,
 		"GET " + voiceCallPath,
 		"GET /v1/workspace",
+		"GET /v1/agents/{id}/workspace/item",
 		"GET /v1/conversations/{id}",
 		"GET /v1/tasks/{task}/generated-image",
 		"POST /v1/conversations/{id}/messages",

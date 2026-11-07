@@ -58,6 +58,7 @@ func (a *desktop) canBrowseWorkspace(profile tasks.Agent) bool {
 }
 
 func (a *desktop) openWorkspaceFile(profile tasks.Agent, relative string) {
+	a.referenceRequest++
 	if a.window == nil || a.confirmingFileDiscard || !a.canBrowseWorkspace(profile) {
 		return
 	}
@@ -445,7 +446,7 @@ func (b *workspaceFilesPane) view(c *ui.Context) {
 			if b.preview {
 				ui.Scroll(c.Key("file-preview")).Grow(1).MinHeight(0).FillWidth().Padding(22).Children(func() {
 					ui.Column(c).FillWidth().MaxWidth(760).AlignSelf(ui.Center).Children(func() {
-						messageMarkdown(c.Key(b.request), b.source.Buffer.String())
+						b.app.referenceMarkdown(c.Key(b.request), b.source.Buffer.String(), b.profile.ID, path.Dir(b.relative))
 					})
 				})
 			} else {

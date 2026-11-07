@@ -583,7 +583,7 @@ func TestDeviceLeaseRespectsDeadlineAndCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enqueue := func() {
+	enqueue := func(title string) {
 		t.Helper()
 		parent, _, err := store.Send(ctx, DefaultConversationID, "Inspect the project", "")
 		if err != nil {
@@ -592,13 +592,13 @@ func TestDeviceLeaseRespectsDeadlineAndCancellation(t *testing.T) {
 		if _, err := store.claim(ctx); err != nil {
 			t.Fatal(err)
 		}
-		action := &TurnAction{Handoff: &Handoff{DeviceID: device.ID, Title: "Inspect project", Brief: "List files."}}
+		action := &TurnAction{Handoff: &Handoff{DeviceID: device.ID, Title: title, Brief: "List files."}}
 		if err := store.finishTurn(ctx, parent.ID, Succeeded, "Replied.", "", action); err != nil {
 			t.Fatal(err)
 		}
 	}
-	enqueue()
-	enqueue()
+	enqueue("Inspect the first project")
+	enqueue("Inspect the second project")
 	job, err := store.ClaimDeviceJob(ctx, device.ID)
 	if err != nil || job == nil {
 		t.Fatalf("claim = %+v, %v", job, err)

@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"buddy/internal/references"
 )
 
 const (
@@ -172,6 +174,7 @@ type Turn struct {
 	TeamStep           string
 	Team               []AgentRef
 	Buds               []AgentRef
+	BuddyTeam          TeamContext
 	Work               []WorkItem
 	coordinate         bool
 	routing            bool
@@ -359,6 +362,15 @@ func (s *Store) saveAgent(ctx context.Context, id string, a Agent, create bool) 
 		return Agent{}, err
 	}
 	a.ConversationID = conversationID
+	if create || initialSoul(a.Name, a.Role, a.Instructions) != priorSoul {
+		kind := "profile_updated"
+		if create {
+			kind = "joined_team"
+		}
+		if err := recordTeamEvent(ctx, tx, kind, id, ""); err != nil {
+			return Agent{}, err
+		}
+	}
 	return a, tx.Commit()
 }
 
@@ -793,6 +805,11 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 	if turn.Team, err = groupMembers(ctx, s.db, conv); err != nil {
 		return Turn{}, err
 	}
+	turn.BuddyTeam, err = s.TeamContext(ctx, conv, turn.Agent.ID)
+	if err != nil {
+		return Turn{}, err
+	}
+	turn.BuddyTeam.CurrentTaskID = task.ID
 	if turn.coordinate {
 		watches, err := s.Watches(ctx)
 		if err != nil {
@@ -955,7 +972,17 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 	return turn, err
 }
 
-func addReply(ctx context.Context, db execer, id, text string) error {
+func addReply(ctx context.Context, db writeQueryer, id, text string) error {
+	if strings.Contains(text, "`") {
+		var bud, workspace string
+		err := db.QueryRowContext(ctx, `SELECT COALESCE(td.agent_id,c.agent_id),t.repo
+			FROM tasks t JOIN chat_turns ct ON ct.task_id=t.id JOIN conversations c ON c.id=ct.conversation_id
+			LEFT JOIN turn_details td ON td.task_id=t.id WHERE t.id=?`, id).Scan(&bud, &workspace)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		text = references.LinkFiles(text, bud, workspace)
+	}
 	_, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO messages(task_id,role,text,created)
 		SELECT task_id,'assistant',?,? FROM chat_turns WHERE task_id=?`, text, time.Now().UnixMicro(), id)
 	return err

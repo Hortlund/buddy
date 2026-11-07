@@ -196,7 +196,7 @@ func runJob(ctx context.Context, client *api.Client, run tasks.AgentRunner, devi
 	job.Agent.Workspace = workspace
 	job.Agent.AllowEdits = job.Agent.AllowEdits && edits
 	turn := tasks.Turn{Agent: job.Agent, Language: job.Language, Title: job.Title, Brief: job.Brief, Personality: job.Personality,
-		Attachments: job.Attachments, DeviceExecution: true, CanRequestInput: job.CanRequestInput, Skill: job.Skill}
+		Attachments: job.Attachments, DeviceExecution: true, CanRequestInput: job.CanRequestInput, Skill: job.Skill, BuddyTeam: job.BuddyTeam}
 	progress := make(chan tasks.DevicePulse, 1)
 	done := make(chan jobOutcome, 1)
 	go func() {

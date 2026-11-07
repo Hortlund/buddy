@@ -5,6 +5,7 @@ struct PhoneCallView: View {
     @Environment(PhoneVoiceSession.self) private var voice
     @State private var showInvite = false
     @State private var showWork = false
+    @State private var workPath: [Destination] = []
     private let accent = Color(red: 0.73, green: 0.68, blue: 1)
 
     var body: some View {
@@ -50,17 +51,25 @@ struct PhoneCallView: View {
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showInvite) { inviteSheet }
             .sheet(isPresented: $showWork) {
-                NavigationStack {
+                NavigationStack(path: $workPath) {
                     WorkList(api: api)
                         .navigationDestination(for: Destination.self) { destination in
                             switch destination {
                             case let .work(chat, id): WorkDetail(api: api, chat: chat, id: id)
                             case let .chat(id, name): ChatView(api: api, id: id, name: name)
                             case let .inbox(id): InboxDetail(api: api, id: id)
+                            case let .file(bud, path): WorkspacePreview(api: api, bud: bud, path: path)
                             }
                         }
                         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showWork = false } } }
                 }
+                .environment(\.openURL, OpenURLAction { url in
+                    if let destination = referenceDestination(url) {
+                        workPath.append(destination)
+                        return .handled
+                    }
+                    return safeWebURL(url) == nil ? .discarded : .systemAction
+                })
             }
         }
         .tint(accent)

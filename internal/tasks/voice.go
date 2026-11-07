@@ -50,11 +50,16 @@ func (s *Store) JoinVoiceGroup(ctx context.Context, conversation, callID, name, 
 		}
 		if _, err := tx.ExecContext(ctx, `WITH call_tasks(task_id) AS (
 			SELECT task_id FROM voice_call_turns WHERE call_id=?
+			UNION SELECT task_id FROM assignment_reuses WHERE call_id=?
 			UNION SELECT task_id FROM turn_details WHERE routine_id IN
 				(SELECT routine_id FROM voice_call_routines WHERE call_id=?)
 		) UPDATE chat_turns SET conversation_id=? WHERE conversation_id=? AND (
 			task_id IN (SELECT task_id FROM call_tasks) OR task_id IN
-				(SELECT task_id FROM work_inputs WHERE job_id IN (SELECT task_id FROM call_tasks)))`, callID, callID, chat.ID, conversation); err != nil {
+				(SELECT task_id FROM work_inputs WHERE job_id IN (SELECT task_id FROM call_tasks)))`, callID, callID, callID, chat.ID, conversation); err != nil {
+			return ChatRef{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE voice_call_turns SET call_id=? WHERE task_id IN
+			(SELECT task_id FROM assignment_reuses WHERE call_id=?)`, callID, callID); err != nil {
 			return ChatRef{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE routines SET conversation_id=? WHERE conversation_id=?
@@ -76,6 +81,9 @@ func (s *Store) JoinVoiceGroup(ctx context.Context, conversation, callID, name, 
 			if _, err := tx.ExecContext(ctx, `INSERT INTO group_members
 				SELECT ?,?,COALESCE(MAX(position)+1,0) FROM group_members WHERE conversation_id=?`,
 				conversation, invitee, conversation); err != nil {
+				return ChatRef{}, err
+			}
+			if err := recordTeamEvent(ctx, tx, "joined_group", invitee, conversation); err != nil {
 				return ChatRef{}, err
 			}
 		}
@@ -170,7 +178,8 @@ func (s *Store) queueVoiceAssignments(ctx context.Context, conversation, request
 		var job AssignedWork
 		err := tx.QueryRowContext(ctx, `SELECT t.id,t.status,td.title,td.agent_id,ct.agent_name
 			FROM tasks t JOIN turn_details td ON td.task_id=t.id JOIN chat_turns ct ON ct.task_id=t.id
-			WHERE t.request_key=?`, namespacedKey(BackgroundWork, assignmentKey(key, i))).
+			WHERE t.request_key=? OR EXISTS(SELECT 1 FROM assignment_reuses a WHERE a.task_id=t.id AND a.request_key=?)`,
+			namespacedKey(BackgroundWork, assignmentKey(key, i)), namespacedKey(BackgroundWork, assignmentKey(key, i))).
 			Scan(&job.ID, &job.Status, &job.Title, &job.AgentID, &job.AgentName)
 		if errors.Is(err, sql.ErrNoRows) {
 			if i != 0 {

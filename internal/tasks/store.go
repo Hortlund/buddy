@@ -76,7 +76,7 @@ func OpenStore(ctx context.Context, path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("configure database: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, schema+chatSchema+workspaceSchema+cardsSchema+deviceSchema+attachmentSchema+voiceSchema+voiceTeamSchema+preferencesSchema+workQuestionsSchema+workInputSchema+standingSchema+skillSchema+removedBudSchema+connectionSchema+mcpSchema+assignmentSchema+managementSchema+historySchema+budMemorySchema+reactionSchema+githubWriteSchema); err != nil {
+	if _, err := db.ExecContext(ctx, schema+chatSchema+workspaceSchema+cardsSchema+deviceSchema+attachmentSchema+voiceSchema+voiceTeamSchema+preferencesSchema+workQuestionsSchema+workInputSchema+standingSchema+skillSchema+removedBudSchema+connectionSchema+mcpSchema+assignmentSchema+managementSchema+historySchema+budMemorySchema+reactionSchema+githubWriteSchema+teamSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize database: %w", err)
 	}

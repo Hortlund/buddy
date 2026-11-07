@@ -13,12 +13,14 @@ import (
 )
 
 type GroupRouting struct {
-	Lead    string        `json:"lead_bud_id"`
-	Buds    []AgentRef    `json:"buds"`
-	Recent  []routingLine `json:"recent"`
-	Message string        `json:"message"`
-	model   string
-	chat    string
+	Lead     string        `json:"lead_bud_id"`
+	Team     *TeamContext  `json:"buddy_team,omitempty"`
+	Buds     []AgentRef    `json:"buds"`
+	Recent   []routingLine `json:"recent"`
+	Message  string        `json:"message"`
+	model    string
+	chat     string
+	original string
 }
 
 type routingLine struct {
@@ -48,6 +50,12 @@ func (s *Store) groupRouting(ctx context.Context, task string) (*GroupRouting, e
 	if err != nil || len(route.Buds) < 2 {
 		return nil, err
 	}
+	route.original = route.Lead
+	team, err := s.TeamContext(ctx, route.chat, route.original)
+	if err != nil {
+		return nil, err
+	}
+	route.Team, route.Lead = &team, team.LeadID
 	if len(route.Message) > 4000 {
 		route.Message = managementExcerpt(route.Message, 4000)
 	}
@@ -114,7 +122,10 @@ func (w *Worker) routeGroupTurn(ctx context.Context, task Task) (Task, error) {
 	if ctx.Err() != nil {
 		return task, ctx.Err()
 	}
-	if id == "" || id == route.Lead || !slices.ContainsFunc(route.Buds, func(b AgentRef) bool { return b.ID == id }) {
+	if id == "" || !slices.ContainsFunc(route.Buds, func(b AgentRef) bool { return b.ID == id }) {
+		id = route.Lead
+	}
+	if id == route.original {
 		return task, nil
 	}
 	return w.store.assignGroupTurn(ctx, task, route.chat, id)

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"buddy/internal/references"
 )
 
 const BackgroundWork = "background_work"
@@ -205,15 +207,23 @@ func saveHandoffs(ctx context.Context, tx *sql.Tx, id string, handoffs []Handoff
 	}
 	if len(jobs) == 1 {
 		job := jobs[0]
-		if job.AgentID == requester {
-			return "I’ll take care of **" + escapeTitle(job.Title) + "**" + job.destination + " and let you know how it goes or if I need anything from you.", nil
+		link := "[" + escapeTitle(job.Title) + "](" + references.Work(conversation, job.ID) + ")"
+		if job.Reused {
+			return escapeTitle(job.AgentName) + " is already handling " + link + ". We’ll keep updates in this chat.", nil
 		}
-		return "I’ve asked " + escapeTitle(job.AgentName) + " to take care of **" + escapeTitle(job.Title) + "**" + job.destination + ". We’ll keep you posted here.", nil
+		if job.AgentID == requester {
+			return "I’ll take care of " + link + job.destination + " and let you know how it goes or if I need anything from you.", nil
+		}
+		return "I’ve asked " + escapeTitle(job.AgentName) + " to take care of " + link + job.destination + ". We’ll keep you posted here.", nil
 	}
 	var reply strings.Builder
 	reply.WriteString("I’ve handed these out:")
 	for _, job := range jobs {
-		fmt.Fprintf(&reply, "\n- %s: %s%s", escapeTitle(job.AgentName), escapeTitle(job.Title), job.destination)
+		state := ""
+		if job.Reused {
+			state = " (already in progress)"
+		}
+		fmt.Fprintf(&reply, "\n- %s: [%s](%s)%s%s", escapeTitle(job.AgentName), escapeTitle(job.Title), references.Work(conversation, job.ID), job.destination, state)
 	}
 	reply.WriteString("\n\nWe’ll post results or questions here.")
 	return reply.String(), nil

@@ -441,19 +441,19 @@ func (a *desktop) workDetail(c *ui.Context, work *workBrowser, compact bool) {
 		if progress := workActivity(item); progress != "" && !slices.ContainsFunc(detail.Events, func(event tasks.Event) bool {
 			return event.Text == progress
 		}) {
-			messageMarkdown(c.Key("job-progress"), progress)
+			a.referenceMarkdown(c.Key("job-progress"), progress, item.AgentID)
 		}
 		if detail.Question != "" {
 			sectionLabel(c, "Waiting for your reply")
-			messageMarkdown(c.Key("job-question"), detail.Question)
+			a.referenceMarkdown(c.Key("job-question"), detail.Question, item.AgentID)
 		}
 		if detail.Result != "" {
 			sectionLabel(c, "Result")
-			messageMarkdown(c.Key("job-result"), detail.Result)
+			a.referenceMarkdown(c.Key("job-result"), detail.Result, item.AgentID)
 		}
 		if detail.Brief != "" {
 			sectionLabel(c, "Assignment")
-			messageMarkdown(c.Key("job-brief"), detail.Brief)
+			a.referenceMarkdown(c.Key("job-brief"), detail.Brief, item.AgentID)
 		}
 		sectionLabel(c, "Activity")
 		if len(detail.Events) == 0 {
@@ -465,7 +465,7 @@ func (a *desktop) workDetail(c *ui.Context, work *workBrowser, compact bool) {
 				ui.Text(c, event.At.Local().Format("15:04")).FontSize(11).TextColor(c.Theme().TextMuted).Shrink(0)
 				ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 					if event.Stream == "commentary" {
-						messageMarkdown(c.Key("update"), event.Text)
+						a.referenceMarkdown(c.Key("update"), event.Text, item.AgentID)
 					} else {
 						ui.Text(c, event.Text).FontSize(12).MinWidth(0).Selectable()
 					}
@@ -476,7 +476,7 @@ func (a *desktop) workDetail(c *ui.Context, work *workBrowser, compact bool) {
 			sectionLabel(c, "Course corrections")
 			for _, correction := range item.Steering {
 				ui.Text(c, correctionLabel(correction.State)).FontSize(11).TextColor(c.Theme().TextMuted)
-				messageMarkdown(c, correction.Text)
+				a.referenceMarkdown(c, correction.Text, item.AgentID)
 			}
 		}
 	})

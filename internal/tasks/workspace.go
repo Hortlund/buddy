@@ -419,26 +419,65 @@ func (s *Store) Directory(ctx context.Context) (Directory, error) {
 }
 
 func (s *Store) SetPrimaryAgent(ctx context.Context, id string) error {
-	return setPrimaryAgent(ctx, s.db, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := setPrimaryAgent(ctx, tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func setPrimaryAgent(ctx context.Context, db writeQueryer, id string) error {
+	var previous string
+	if err := db.QueryRowContext(ctx, "SELECT agent_id FROM workspace_primary WHERE id=1").Scan(&previous); err != nil {
+		return err
+	}
 	result, err := db.ExecContext(ctx, `UPDATE workspace_primary SET agent_id=? WHERE id=1
 		AND EXISTS (SELECT 1 FROM agents WHERE id=?)
 		AND NOT EXISTS(SELECT 1 FROM removed_buds WHERE agent_id=?)`, id, id, id)
-	return requireLeadershipUpdate(result, err, "Choose a Bud from your workspace.")
+	if err := requireLeadershipUpdate(result, err, "Choose a Bud from your workspace."); err != nil {
+		return err
+	}
+	if previous == id {
+		return nil
+	}
+	return recordTeamEvent(ctx, db, "primary_changed", id, "")
 }
 
 func (s *Store) SetGroupLead(ctx context.Context, conversation, id string) error {
-	return setGroupLead(ctx, s.db, conversation, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := setGroupLead(ctx, tx, conversation, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func setGroupLead(ctx context.Context, db writeQueryer, conversation, id string) error {
+	var previous string
+	if err := db.QueryRowContext(ctx, "SELECT agent_id FROM conversations WHERE id=?", conversation).Scan(&previous); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return &InputError{"Choose a Bud in this group chat."}
+		}
+		return err
+	}
 	result, err := db.ExecContext(ctx, `UPDATE conversations SET agent_id=? WHERE id=?
 		AND EXISTS (SELECT 1 FROM group_members WHERE conversation_id=? AND agent_id=?)
 		AND NOT EXISTS (SELECT 1 FROM archived_groups WHERE conversation_id=conversations.id)`,
 		id, conversation, conversation, id)
-	return requireLeadershipUpdate(result, err, "Choose a Bud in this group chat.")
+	if err := requireLeadershipUpdate(result, err, "Choose a Bud in this group chat."); err != nil {
+		return err
+	}
+	if previous == id {
+		return nil
+	}
+	return recordTeamEvent(ctx, db, "lead_changed", id, conversation)
 }
 
 func requireLeadershipUpdate(result sql.Result, err error, message string) error {
@@ -512,6 +551,9 @@ func createGroup(ctx context.Context, tx *sql.Tx, req GroupRequest) (ChatRef, er
 	}
 	for i, id := range req.Members {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO group_members VALUES (?,?,?)", chat.ID, id, i); err != nil {
+			return ChatRef{}, err
+		}
+		if err := recordTeamEvent(ctx, tx, "joined_group", id, chat.ID); err != nil {
 			return ChatRef{}, err
 		}
 	}

@@ -68,6 +68,9 @@ func (s *Store) RemoveAgent(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, "INSERT INTO removed_buds VALUES (?)", id); err != nil {
 		return err
 	}
+	if err := recordTeamEvent(ctx, tx, "left_team", id, ""); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, "UPDATE workspace_primary SET agent_id=? WHERE agent_id=?", replacement, id); err != nil {
 		return err
 	}

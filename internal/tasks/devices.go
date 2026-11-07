@@ -58,6 +58,7 @@ type DeviceCredential struct {
 }
 
 type DeviceJob struct {
+	BuddyTeam       TeamContext      `json:"buddy_team"`
 	Skill           *SkillInvocation `json:"skill,omitempty"`
 	Language        string           `json:"language,omitempty"`
 	ID              string           `json:"id"`
@@ -262,14 +263,20 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 		}
 		job := &DeviceJob{ID: item.id, Lease: rand.Text(), NeedsStart: reserveDelivery && (len(files) != 0 || skill != nil),
 			Attachments: files, CanRequestInput: reserveDelivery, Skill: skill}
+		var conversation string
 		if err := tx.QueryRowContext(ctx, `
-			SELECT t.timeout,td.agent_id,ct.agent_name,ct.instructions,ct.allow_edits,tm.model,td.agent_role,td.title,td.brief,(SELECT chat FROM language_preferences WHERE id=1)
+			SELECT t.timeout,td.agent_id,ct.agent_name,ct.instructions,ct.allow_edits,tm.model,td.agent_role,td.title,td.brief,(SELECT chat FROM language_preferences WHERE id=1),ct.conversation_id
 			FROM tasks t JOIN chat_turns ct ON ct.task_id=t.id
 			JOIN turn_details td ON td.task_id=t.id JOIN turn_models tm ON tm.task_id=t.id
 			WHERE t.id=?`, item.id).Scan(&job.Seconds, &job.Agent.ID, &job.Agent.Name, &job.Agent.Instructions,
-			&job.Agent.AllowEdits, &job.Agent.Model, &job.Agent.Role, &job.Title, &job.Brief, &job.Language); err != nil {
+			&job.Agent.AllowEdits, &job.Agent.Model, &job.Agent.Role, &job.Title, &job.Brief, &job.Language, &conversation); err != nil {
 			return nil, err
 		}
+		job.BuddyTeam, err = readTeamContext(ctx, tx, conversation, job.Agent.ID)
+		if err != nil {
+			return nil, err
+		}
+		job.BuddyTeam.CurrentTaskID = job.ID
 		job.Personality, err = s.personality(job.Agent.ID)
 		if err != nil {
 			const message = "Buddy couldn't read the agent's AGENTS.md."

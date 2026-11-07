@@ -47,6 +47,7 @@ type desktop struct {
 	work                     workBrowser
 	files                    map[string]*workspaceFilesPane
 	visibleFiles             *workspaceFilesPane
+	referenceRequest         uint64
 	workspaceClose           workspaceCloseState
 	conversationTab          int
 	confirmingFileDiscard    bool

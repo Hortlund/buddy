@@ -295,6 +295,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         other_chat = "chat-" + other["conversation_id"]
         wait_for("another Bud’s chat", lambda: node(other_chat))
         press(other_chat)
+        wait_for("selected Files fixture chat", lambda: tree_has("Message Files fixture"))
         wait_for("another Bud’s workspace", lambda: (n := node("open-workspace")) and "disabled" not in n.get("states", []))
         press("open-workspace")
         wait_for("separate empty workspace", lambda: tree_has("This folder is empty."))
