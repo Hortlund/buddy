@@ -145,6 +145,9 @@ func (b *workspaceFilesPane) hide() {
 
 func (b *workspaceFilesPane) refresh(profile tasks.Agent, relative string) {
 	if b.artifactID != "" {
+		if !b.loading && b.app.window != nil && b.app.client != nil && b.app.online {
+			b.loadArtifact(b.artifactJob, b.artifactID)
+		}
 		return
 	}
 	if b.loading || b.saving || b.dirty() || b.app.window == nil || b.app.confirmingFileDiscard || !b.app.canBrowseWorkspace(profile) {
@@ -383,7 +386,7 @@ func (b *workspaceFilesPane) finishLoad(request uint64, item tasks.WorkspaceItem
 		return
 	}
 	b.cancelLoad, b.loading = nil, false
-	if b.artifactID == "" && (!b.app.showingWorkspaceFiles() || b.app.currentWorkspaceFiles() != b) {
+	if !b.app.showingWorkspaceFiles() || b.app.currentWorkspaceFiles() != b {
 		b.refreshOnShow = true
 		return
 	}

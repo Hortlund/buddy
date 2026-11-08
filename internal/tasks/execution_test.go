@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"buddy/internal/localconfig"
 )
 
 func fixtureHost(caps ...string) HostProfile {
@@ -18,6 +20,82 @@ func fixtureHost(caps ...string) HostProfile {
 		p.Capabilities = append(p.Capabilities, Capability{ID: id, Installed: true, Enabled: true, Ready: true})
 	}
 	return p
+}
+
+func TestDiscoverHostUsesConfiguredCodexOutsidePATH(t *testing.T) {
+	runner := filepath.Join(t.TempDir(), "custom-runner")
+	if err := os.WriteFile(runner, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := t.TempDir()
+	if err := os.Chmod(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewCodexRuntime(runner, "", localconfig.CodexKey{Dir: state})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	profile := runtime.DiscoverHost(t.Context())
+	for _, cap := range profile.Capabilities {
+		if cap.ID == "codex" {
+			if !cap.Installed || !cap.Enabled || !cap.Ready {
+				t.Fatalf("configured runner was marked unavailable: %+v", cap)
+			}
+			return
+		}
+	}
+	t.Fatal("Codex capability is missing")
+}
+
+func TestLocalBlockedJobsKeepTheirExplanationAndResume(t *testing.T) {
+	for _, blocker := range []string{"disabled", "checkout changed"} {
+		t.Run(blocker, func(t *testing.T) {
+			ctx, s := t.Context(), teamTestStore(t)
+			project, err := s.SaveProject(ctx, Project{Name: "Blocked project"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkout, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile := fixtureHost("browser")
+			profile.Projects = []ProjectBinding{{ProjectID: project.ID, Path: checkout}}
+			if err := s.SaveHostProfile(ctx, "server", profile); err != nil {
+				t.Fatal(err)
+			}
+			jobs, err := s.QueueVoiceAssignments(ctx, DefaultConversationID, DefaultAgentID, "call", "blocked", []Handoff{{ExecutionPlan: ExecutionPlan{ProjectID: project.ID, Requirements: []string{"browser"}}, Title: "Inspect website", Brief: "Inspect website.", ReadOnly: true}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if blocker == "disabled" {
+				profile.Capabilities[0].Enabled = false
+			} else {
+				profile.Projects[0].Path, err = filepath.EvalSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.SaveHostProfile(ctx, "server", profile); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.claimLane(ctx, true); !errors.Is(err, ErrNotFound) {
+				t.Fatal("blocked job was claimed", err)
+			}
+			queued, err := s.Get(ctx, jobs[0].ID)
+			if err != nil || queued.Status != Queued || !strings.Contains(queued.Summary, blocker) {
+				t.Fatalf("blocker was rolled back: %+v %v", queued, err)
+			}
+			profile.Capabilities[0].Enabled, profile.Projects[0].Path = true, checkout
+			if err := s.SaveHostProfile(ctx, "server", profile); err != nil {
+				t.Fatal(err)
+			}
+			if job, err := s.claimLane(ctx, true); err != nil || job.ID != jobs[0].ID || job.Status != Running {
+				t.Fatal("ready job did not resume", job, err)
+			}
+		})
+	}
 }
 
 func TestExecutionRoutesProjectsAndCapabilitiesBeforeClaiming(t *testing.T) {

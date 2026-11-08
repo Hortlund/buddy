@@ -414,6 +414,9 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             db.execute("INSERT INTO choice_cards VALUES (?,?,?,NULL,NULL)", (turn, "How should I proceed?", '["Run tests","Review logs"]'))
             db.execute("INSERT INTO choice_card_details VALUES (?,?,?)",
                        (turn, "**One check** should be enough.", '["Run the Go suite.","Read the previous output."]'))
+            db.execute("INSERT INTO work_artifacts VALUES (?,?,?,?,?,?)",
+                       ("fixture-deliverable", job, "deliverable.png", "image/png",
+                        (ROOT / "cmd/buddy/assets/Buddy.png").read_bytes(), now))
 
         navigate("nav-work")
         wait_for("finished work row", lambda: node("job-" + job))
@@ -454,6 +457,16 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         wait_for("job reply draft cleared", lambda: not tree_has("Replying to Review the repo"))
         press("work-overview")
         wait_for("chat-scoped work overview", lambda: node("all-work"))
+        file_press("job-" + job)
+        file_press("fixture-deliverable")
+        wait_for("returned image deliverable", lambda: node("file-image"))
+        conversation_tab("Chat")
+        wait_for("deliverable hidden in Chat", lambda: node("chat-input") and not node("file-image"))
+        conversation_tab("deliverable.png")
+        wait_for("image deliverable restored after switching tabs", lambda: node("file-image"))
+        conversation_tab("Chat")
+        file_press("close-file-tab")
+        print("Image deliverables reopened correctly after switching to Chat.", flush=True)
         print("Native build info, workspace file editing, dark theme, language settings, Markdown, diffs, choice cards, and linked job details worked.", flush=True)
 
     worker = None

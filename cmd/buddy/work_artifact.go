@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"unicode/utf8"
 
@@ -21,32 +22,39 @@ func (a *desktop) openWorkArtifact(job, id string) {
 		a.files[chat] = pane
 	}
 	pane.afterDiscard(func() {
-		if pane.cancelLoad != nil {
-			pane.cancelLoad()
-		}
-		pane.request++
-		request := pane.request
-		pane.artifactID, pane.artifactJob, pane.originTask = id, job, ""
-		pane.loading, pane.err = true, ""
 		pane.profile = a.focusedAgent()
 		a.showWorkspaceFile(chat)
-		client, win := a.client, a.window
-		go func() {
-			artifact, err := client.WorkArtifact(a.ctx, job, id)
-			item := tasks.WorkspaceItem{Kind: "unsupported", ReadOnly: true}
-			picture := decodeWorkspaceImage(artifact.Data)
-			if picture != nil {
-				item.Kind = "image"
-			} else if utf8.Valid(artifact.Data) && !strings.ContainsRune(string(artifact.Data), '\x00') {
-				item.Kind, item.Text = "text", string(artifact.Data)
-			}
-			win.Update(func() {
-				if a.client != client || pane.request != request {
-					return
-				}
-				pane.relative, pane.preview = artifact.Name, true
-				pane.finishLoad(request, item, picture, err)
-			})
-		}()
+		pane.loadArtifact(job, id)
 	})
+}
+
+func (b *workspaceFilesPane) loadArtifact(job, id string) {
+	if b.cancelLoad != nil {
+		b.cancelLoad()
+	}
+	b.request++
+	request := b.request
+	b.artifactID, b.artifactJob, b.originTask = id, job, ""
+	b.loading, b.err, b.refreshOnShow = true, "", false
+	ctx, cancel := context.WithCancel(b.app.ctx)
+	b.cancelLoad = cancel
+	client, win := b.app.client, b.app.window
+	go func() {
+		defer cancel()
+		artifact, err := client.WorkArtifact(ctx, job, id)
+		item := tasks.WorkspaceItem{Kind: "unsupported", ReadOnly: true}
+		picture := decodeWorkspaceImage(artifact.Data)
+		if picture != nil {
+			item.Kind = "image"
+		} else if utf8.Valid(artifact.Data) && !strings.ContainsRune(string(artifact.Data), '\x00') {
+			item.Kind, item.Text = "text", string(artifact.Data)
+		}
+		win.Update(func() {
+			if b.app.client != client || b.request != request {
+				return
+			}
+			b.relative, b.preview = artifact.Name, true
+			b.finishLoad(request, item, picture, err)
+		})
+	}()
 }

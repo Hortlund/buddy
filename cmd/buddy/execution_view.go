@@ -13,13 +13,13 @@ import (
 )
 
 type executionView struct {
-	vms                                        []tasks.LumeVM
-	hosts                                      []tasks.Device
-	projects                                   []tasks.Project
-	config                                     tasks.ExecutionConfig
-	loading, busy                              bool
-	next                                       time.Time
-	err, name, description, checkout, selected string
+	vms                                                 []tasks.LumeVM
+	hosts                                               []tasks.Device
+	projects                                            []tasks.Project
+	config                                              tasks.ExecutionConfig
+	loading, busy                                       bool
+	next                                                time.Time
+	err, loadErr, name, description, checkout, selected string
 }
 
 func (a *desktop) refreshExecution(c *ui.Context) {
@@ -58,15 +58,18 @@ func (a *desktop) refreshExecution(c *ui.Context) {
 			if a.client != client {
 				return
 			}
-			v.loading = false
-			if err != nil {
-				v.err = errorMessage(err, "Couldn't refresh hosts and projects.")
-				return
-			}
-			v.hosts, v.projects, v.config, v.err = hosts, projects, cfg, ""
-			v.vms = vms
+			v.finishRefresh(hosts, projects, cfg, vms, err)
 		})
 	}()
+}
+
+func (v *executionView) finishRefresh(hosts []tasks.Device, projects []tasks.Project, cfg tasks.ExecutionConfig, vms []tasks.LumeVM, err error) {
+	v.loading = false
+	if err != nil {
+		v.loadErr = errorMessage(err, "Couldn't refresh hosts and projects.")
+		return
+	}
+	v.hosts, v.projects, v.config, v.vms, v.loadErr = hosts, projects, cfg, vms, ""
 }
 
 func (a *desktop) executionSettings(c *ui.Context) {
@@ -188,6 +191,9 @@ func (a *desktop) executionSettings(c *ui.Context) {
 		if v.err != "" {
 			ui.Text(c, v.err).FontSize(12).TextColor(c.Theme().Danger)
 		}
+		if v.loadErr != "" {
+			ui.Text(c, v.loadErr).FontSize(12).TextColor(c.Theme().Danger)
+		}
 	})
 }
 
@@ -237,7 +243,7 @@ func (a *desktop) changeExecution(action func(context.Context, *api.Client) erro
 	if a.window == nil || a.client == nil || v.busy {
 		return
 	}
-	v.busy = true
+	v.busy, v.err = true, ""
 	client, win := a.client, a.window
 	go func() {
 		err := action(a.ctx, client)

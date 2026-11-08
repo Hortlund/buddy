@@ -22,6 +22,13 @@ func writeMCPConfig(home string, servers []MCPServerConfig) error {
 	if len(servers) == 0 {
 		return nil
 	}
+	seen := make(map[string]bool, len(servers))
+	for _, server := range servers {
+		if seen[server.Name] {
+			return &InputError{"MCP server names must be unique."}
+		}
+		seen[server.Name] = true
+	}
 	var config strings.Builder
 	config.WriteString("mcp_oauth_credentials_store = \"file\"\n")
 	for _, server := range servers {
@@ -86,7 +93,7 @@ func (r *CodexRuntime) mcpForRun(ctx context.Context, turn Turn) ([]MCPServerCon
 				}
 			}
 		}
-		if config.Enabled && turn.WatchSignal == nil {
+		if config.Enabled && !reservedMCPName(config.Name) && turn.WatchSignal == nil {
 			enabled = append(enabled, config)
 		}
 	}
@@ -100,6 +107,9 @@ type MCPTestResult struct {
 
 func (r *CodexRuntime) TestMCPServer(ctx context.Context, server MCPServerConfig) (MCPTestResult, error) {
 	var result MCPTestResult
+	if server.ID != "" && reservedMCPName(server.Name) {
+		return result, &InputError{"Rename this MCP server before testing it. Buddy reserves its current name for built-in tools."}
+	}
 	if r.lookupErr != nil {
 		return result, &InputError{"Install the Codex CLI on the Buddy server to test this connection."}
 	}

@@ -103,6 +103,50 @@ func TestMCPApprovalRequiresExactToolAllowlist(t *testing.T) {
 	}
 }
 
+func TestMCPReservedNamesAndLegacyCollision(t *testing.T) {
+	ctx, store := t.Context(), teamTestStore(t)
+	for _, name := range []string{"buddy-work", "buddy-cua", "buddy-playwright", "BUDDY-WORK"} {
+		if _, err := store.SaveMCPServer(ctx, "", MCPServerSetup{Name: name, Transport: MCPHTTP, URL: "https://tools.example/mcp"}); err == nil {
+			t.Fatalf("accepted reserved name %q", name)
+		}
+	}
+	// A previously valid configuration must not prevent new built-in tools
+	// from starting. Keep it editable, with its credential, until renamed.
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO mcp_servers
+		(id,name,transport,url,command,args,env_vars,tools,token,enabled)
+		VALUES ('legacy','buddy-work','http','https://tools.example/mcp','','[]','[]','[]','existing-token',1)`); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &CodexRuntime{MCPStore: store}
+	if active, _, err := runtime.mcpForRun(ctx, Turn{}); err != nil || len(active) != 0 {
+		t.Fatal("legacy name collision was passed to Codex", active, err)
+	}
+	server, err := store.MCPServerConfig(ctx, "legacy")
+	if err != nil || !server.NeedsReview || !server.HasToken {
+		t.Fatal("legacy connection was not preserved for review", server, err)
+	}
+	if _, err := store.SetMCPServerEnabled(ctx, "legacy", true); err == nil {
+		t.Fatal("enabled a conflicting legacy name")
+	}
+	if _, err := runtime.TestMCPServer(ctx, server); err == nil || !strings.Contains(err.Error(), "Rename") {
+		t.Fatal("Test did not explain how to repair the name", err)
+	}
+	if _, err := store.SaveMCPServer(ctx, "legacy", MCPServerSetup{Name: "custom-work", Transport: MCPHTTP, URL: server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if active, _, err := runtime.mcpForRun(ctx, Turn{}); err != nil || len(active) != 1 || !active[0].HasToken || active[0].NeedsReview {
+		t.Fatal("renaming did not restore the existing connection", active, err)
+	}
+	home := t.TempDir()
+	duplicates := []MCPServerConfig{{MCPServer: MCPServer{Name: "buddy-work"}}, {MCPServer: MCPServer{Name: "buddy-work"}}}
+	if err := writeMCPConfig(home, duplicates); err == nil {
+		t.Fatal("wrote duplicate TOML sections")
+	}
+	if _, err := os.Stat(filepath.Join(home, "config.toml")); !os.IsNotExist(err) {
+		t.Fatal("left a malformed configuration on disk", err)
+	}
+}
+
 func TestMCPLaunchRequiresExistingUnlinkedFiles(t *testing.T) {
 	ctx := t.Context()
 	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "buddy.db"))

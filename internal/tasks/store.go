@@ -290,6 +290,9 @@ func (s *Store) claimLane(ctx context.Context, background bool, occupied ...stri
 		}
 	}
 	if id == "" {
+		if err := tx.Commit(); err != nil {
+			return Task{}, err
+		}
 		return Task{}, ErrNotFound
 	}
 	t, err := scanTask(tx.QueryRowContext(ctx, `

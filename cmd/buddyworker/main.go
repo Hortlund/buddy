@@ -261,15 +261,9 @@ func serveWorker(ctx context.Context, path, server, workspace, codex string, edi
 					}
 				}
 				if err == nil && turn.OutputDirectory != "" {
-					items, collectErr := tasks.CollectWorkArtifacts(turn.OutputDirectory)
-					if collectErr != nil {
-						_ = emit("commentary", "Couldn't collect deliverables: "+collectErr.Error())
-					}
-					for _, artifact := range items {
-						if err := client.UploadWorkArtifact(jobCtx, connection.DeviceID, job.ID, job.Lease, artifact); err != nil {
-							_ = emit("commentary", "Couldn't return artifact: "+artifact.Name)
-						}
-					}
+					err = returnWorkArtifacts(jobCtx, turn.OutputDirectory, func(ctx context.Context, artifact tasks.WorkArtifact) error {
+						return client.UploadWorkArtifact(ctx, connection.DeviceID, job.ID, job.Lease, artifact)
+					})
 				}
 				return reply, err
 			}

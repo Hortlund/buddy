@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"slices"
 	"strings"
@@ -272,11 +273,11 @@ func (w *Worker) execute(ctx context.Context, t Task, run *workerRun, emit Emit,
 	if err == nil && turn.OutputDirectory != "" {
 		artifacts, collectErr := CollectWorkArtifacts(turn.OutputDirectory)
 		if collectErr != nil {
-			_ = emit("system", "Could not collect artifacts: "+collectErr.Error())
+			return reply, fmt.Errorf("couldn't collect deliverables: %w", collectErr)
 		}
 		for _, artifact := range artifacts {
 			if saveErr := w.store.SaveWorkArtifact(ctx, t.ID, "", "", artifact); saveErr != nil {
-				_ = emit("system", "Could not save artifact: "+artifact.Name)
+				return reply, fmt.Errorf("couldn't save deliverable %q: %w", artifact.Name, saveErr)
 			}
 		}
 	}

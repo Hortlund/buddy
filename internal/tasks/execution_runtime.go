@@ -222,6 +222,15 @@ func (r *CodexRuntime) DiscoverHost(ctx context.Context) HostProfile {
 	}
 	for _, name := range []string{"git", "go", "node", "python3", "docker", "xcodebuild", "codex", "lume"} {
 		binary, err := exec.LookPath(name)
+		if name == "codex" {
+			if r.lookupErr != nil {
+				err = r.lookupErr
+			} else if r.path == "" {
+				err = exec.ErrNotFound
+			} else {
+				binary, err = exec.LookPath(r.path)
+			}
+		}
 		cap := Capability{ID: name, Installed: err == nil, Enabled: err == nil, Ready: err == nil, Detail: "Not installed"}
 		if err == nil {
 			cap.Detail = "Installed"
@@ -458,7 +467,10 @@ func PrepareProjectWorkspace(ctx context.Context, workspace, job, project string
 	if _, err := os.Stat(filepath.Join(workspace, ".git")); err != nil {
 		return workspace, "", nil
 	}
-	status, err := exec.CommandContext(ctx, "git", "-C", workspace, "status", "--porcelain").Output()
+	if err := checkProjectGitHelpers(ctx, workspace); err != nil {
+		return "", "", err
+	}
+	status, err := projectGit(ctx, workspace, "status", "--porcelain").Output()
 	if err != nil {
 		return "", "", err
 	}
@@ -477,9 +489,9 @@ func PrepareProjectWorkspace(ctx context.Context, workspace, job, project string
 	branch := "buddy/" + job
 	if _, statErr := os.Lstat(target); statErr == nil {
 		realTarget, resolveErr := filepath.EvalSymlinks(target)
-		actualBranch, branchErr := exec.CommandContext(ctx, "git", "-C", target, "symbolic-ref", "--short", "HEAD").Output()
-		common, commonErr := exec.CommandContext(ctx, "git", "-C", target, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
-		original, originalErr := exec.CommandContext(ctx, "git", "-C", workspace, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+		actualBranch, branchErr := projectGit(ctx, target, "symbolic-ref", "--short", "HEAD").Output()
+		common, commonErr := projectGit(ctx, target, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+		original, originalErr := projectGit(ctx, workspace, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
 		if resolveErr != nil || realTarget != target || branchErr != nil || strings.TrimSpace(string(actualBranch)) != branch ||
 			commonErr != nil || originalErr != nil || strings.TrimSpace(string(common)) != strings.TrimSpace(string(original)) {
 			return "", "", &InputError{"This worker's existing Git worktree does not match its project and branch."}
@@ -488,7 +500,7 @@ func PrepareProjectWorkspace(ctx context.Context, workspace, job, project string
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return "", "", statErr
 	}
-	if err := exec.CommandContext(ctx, "git", "-C", workspace, "worktree", "add", "-b", branch, target, "HEAD").Run(); err != nil {
+	if err := projectGit(ctx, workspace, "worktree", "add", "-b", branch, target, "HEAD").Run(); err != nil {
 		return "", "", &InputError{"Couldn't create this worker's Git worktree. Check the project checkout and branch."}
 	}
 	return target, branch, nil

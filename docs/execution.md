@@ -99,6 +99,14 @@ Resuming an assignment verifies that the existing worktree belongs to that proje
 and branch. Changes are kept for review; Buddy does not automatically merge them.
 Read-only and non-Git assignments use the registered folder directly.
 
+Host preparation disables Git hooks, filesystem-monitor commands, and automatic
+network access. Checkouts with filtered files (such as LFS or git-crypt),
+initialized submodules, or repository-specific config includes require preparation
+inside the agent sandbox; automatic project worktrees currently refuse those
+checkouts with an explanation. You can
+instead assign them through a Bud's normal workspace. Unused filter definitions
+do not prevent ordinary projects from running.
+
 The assignment detail shows the host-local workspace and branch. Local project
 file links open a read-only preview of the correct worker checkout. For remote
 results, workers place files in their assigned artifact outbox. Buddy returns
@@ -108,6 +116,9 @@ synchronization: each host needs its own clone, access, and dependencies.
 Deliverables are limited to 20 files, 4 MiB per file, and 16 MiB per assignment.
 Only the explicit outbox is exported; the checkout is never uploaded wholesale.
 Symlinks and hardlinks are refused. Keep secrets out of deliverables.
+Workers retry temporary delivery errors before finishing. If files cannot be
+returned, the assignment reports a failure and keeps the original files on its
+worker instead of claiming a successful delivery.
 
 ## Enable a headless browser
 

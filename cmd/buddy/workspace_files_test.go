@@ -107,6 +107,29 @@ func TestWorkspaceRefreshRetainsEditorForUnchangedText(t *testing.T) {
 	}
 }
 
+func TestArtifactPreviewDoesNotRepopulateHiddenTab(t *testing.T) {
+	a := &desktop{conversationID: "chat", conversationTab: conversationFilesTab}
+	picture := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 1, 1)))
+	b := &workspaceFilesPane{app: a, relative: "deliverable.png", artifactID: "art_fixture", artifactJob: "tsk_fixture",
+		item: tasks.WorkspaceItem{Kind: "image", ReadOnly: true}, image: picture, request: 1}
+	a.files = map[string]*workspaceFilesPane{"chat": b}
+	a.syncWorkspaceFiles()
+	a.conversationTab = conversationChatTab
+	a.syncWorkspaceFiles()
+	// A response already queued on the UI thread must not retain a hidden
+	// bitmap. Returning to the tab accepts its newly loaded preview.
+	b.finishLoad(b.request, b.item, picture, nil)
+	if b.image != nil || !b.refreshOnShow {
+		t.Fatal("a late deliverable response repopulated the hidden tab")
+	}
+	a.conversationTab = conversationFilesTab
+	a.syncWorkspaceFiles()
+	b.finishLoad(b.request, b.item, picture, nil)
+	if b.image != picture || !a.showingWorkspaceFiles() {
+		t.Fatal("the visible deliverable tab rejected its refreshed image")
+	}
+}
+
 func TestWorkspaceCloseWaitsForSaves(t *testing.T) {
 	for _, outcome := range []string{"saved", "failed", "keep open"} {
 		t.Run(outcome, func(t *testing.T) {

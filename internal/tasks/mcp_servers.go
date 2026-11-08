@@ -75,6 +75,14 @@ const mcpColumns = "id,name,transport,url,command,args,env_vars,tools,enabled,to
 var mcpName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,48}$`)
 var mcpEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
+func reservedMCPName(name string) bool {
+	switch strings.ToLower(name) {
+	case "buddy-work", "buddy-cua", "buddy-playwright":
+		return true
+	}
+	return false
+}
+
 func validMCPTool(name string) bool {
 	return name != "" && len(name) <= 128 && !strings.ContainsFunc(name, unicode.IsSpace) && !strings.ContainsFunc(name, unicode.IsControl)
 }
@@ -83,6 +91,9 @@ func (input *MCPServerSetup) validate() error {
 	input.Name = strings.TrimSpace(input.Name)
 	if !mcpName.MatchString(input.Name) {
 		return &InputError{"Use up to 48 letters, numbers, hyphens, or underscores for the server name."}
+	}
+	if reservedMCPName(input.Name) {
+		return &InputError{"Buddy reserves this server name for built-in tools. Choose another name."}
 	}
 	if len(input.Tools) > 100 || len(input.Args) > 32 || len(input.EnvVars) > 32 {
 		return &InputError{"Too many tool names, arguments, or environment variables."}
@@ -156,7 +167,7 @@ func scanMCPServer(row scanner) (MCPServerConfig, error) {
 		return c, errors.New("Invalid saved MCP configuration.")
 	}
 	c.HasToken = c.token != ""
-	c.NeedsReview = c.Transport == MCPStdio && c.launchFingerprint == ""
+	c.NeedsReview = reservedMCPName(c.Name) || (c.Transport == MCPStdio && c.launchFingerprint == "")
 	return c, nil
 }
 
@@ -253,6 +264,15 @@ func migrateMCPServers(ctx context.Context, db *sql.DB) error {
 }
 
 func (s *Store) SetMCPServerEnabled(ctx context.Context, id string, enabled bool) (MCPServer, error) {
+	if enabled {
+		server, err := s.MCPServerConfig(ctx, id)
+		if err != nil {
+			return MCPServer{}, err
+		}
+		if reservedMCPName(server.Name) {
+			return MCPServer{}, &InputError{"Rename this MCP server before enabling it. Buddy reserves its current name for built-in tools."}
+		}
+	}
 	server, err := scanMCPServer(s.db.QueryRowContext(ctx, "UPDATE mcp_servers SET enabled=? WHERE id=? RETURNING "+mcpColumns, enabled, id))
 	return server.MCPServer, err
 }
