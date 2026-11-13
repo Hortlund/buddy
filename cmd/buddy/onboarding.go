@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"buddy/internal/localconfig"
+	"buddy/internal/tasks"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -43,57 +44,92 @@ func recordSetup(dir, marker string) error {
 
 func (a *desktop) setupView(c *ui.Context) {
 	bar := c.TitleBar()
-	ui.Column(c).Fill().Background(c.Theme().Background).Children(func() {
+	t := c.Theme()
+	ui.Column(c).Fill().Gradient(t.Background, t.Background.Mix(t.Accent, .06), 145).Children(func() {
 		ui.Box(c).Height(max(44, bar.Height)).FillWidth().Shrink(0).DragWindow()
-		ui.Scroll(c.Key("setup-scroll")).Grow(1).FillWidth().Padding(25, 32).Children(func() {
-			ui.Column(c).FillWidth().MaxWidth(570).AlignSelf(ui.Center).Gap(14).Children(func() {
-				switch {
-				case a.hostPending:
-					pageHeading(c, "Server verified", "Reopen Buddy to finish setting up your connection.")
-					a.applyHostButton(c)
-				case a.online:
-					a.setupRuntime(c)
-				default:
-					pageHeading(c, "Welcome to Buddy", "Choose where your chats, files, and background work will live.")
-					sectionLabel(c, "Step 1 of 2 · Buddy server")
-					connectionSection(c, func() {
-						ui.Row(c).Padding(13).Gap(10).Children(func() {
-							connectionDetail(c, deviceMark, "This Mac", "Work can continue after you close the app.")
+		ui.Scroll(c.Key("setup-scroll")).Grow(1).FillWidth().Padding(10, 32, 30).Children(func() {
+			ui.Column(c).FillWidth().MaxWidth(590).AlignSelf(ui.Center).Gap(19).Children(func() {
+				setupMascot(c.Key("setup-mascot"))
+				step, title := 1, "Welcome to Buddy"
+				if a.online || a.hostPending {
+					step, title = 2, "Connect Codex"
+				}
+				if a.hostPending {
+					title = "Server verified"
+				}
+				ui.Column(c.Key(step)).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+					ui.Text(c, title).Role(ui.RoleHeading).FontSize(40).FontWeight(730).LetterSpacing(-1.8)
+				})
+				ui.Row(c).AlignSelf(ui.Center).Gap(12).Children(func() {
+					for i, label := range []string{"Buddy home", "Codex"} {
+						color := t.TextMuted
+						if i+1 == step {
+							color = t.Accent
+						}
+						if i != 0 {
+							ui.Icon(c, arrowMark).Size(11, 11).TextColor(t.TextMuted)
+						}
+						ui.Text(c.Key(i), label).FontSize(12).FontWeight(620).TextColor(color)
+					}
+				})
+				panel := ui.Column(c.Key("setup-step-" + title)).FillWidth().Gap(12)
+				revealPanel(c, panel)
+				panel.Children(func() {
+					switch {
+					case a.hostPending:
+						a.applyHostButton(c)
+					case a.online:
+						a.setupRuntime(c)
+					default:
+						connectionSection(c, func() {
 							label := "Start on this Mac"
 							if a.hasSavedHost {
 								label = "Use this Mac instead"
 							}
-							ui.PrimaryButton(c.Key("setup-local"), label).Height(32).
-								Disabled(a.hostBusy || a.localServer == nil).OnClick(func() { a.startLocalHome(a.hasSavedHost, false) })
+							setupChoice(c.Key("setup-local"), label, deviceMark, a.hostBusy || a.localServer == nil,
+								func() { a.startLocalHome(a.hasSavedHost, false) })
+							setupChoice(c.Key("setup-remote"), "Connect to an existing server…", hostMark, a.hostBusy, a.importConnection)
 						})
-						ui.Row(c).Padding(13).Gap(10).Children(func() {
-							connectionDetail(c, hostMark, "Another server", "Use a Buddy server that’s already running.")
-							ui.Button(c.Key("setup-remote"), "Connect to server…").Height(32).
-								Disabled(a.hostBusy).OnClick(a.importConnection)
-						})
-					})
-					if a.localServer == nil {
-						ui.Text(c, "To start a local server, open the bundled Buddy app or run buddyd separately.").FontSize(12).TextColor(c.Theme().TextMuted)
+						if a.localServer == nil {
+							ui.Text(c, "To start a local server, open the bundled Buddy app or run buddyd separately.").FontSize(12).TextColor(c.Theme().TextMuted)
+						}
+						quietControl(c.Key("setup-host-guide"), toggleGuideLabel(a.hostGuideOpen, "Set up a server on another machine"),
+							linkMark, true, func() { a.hostGuideOpen = !a.hostGuideOpen })
+						if a.hostGuideOpen {
+							a.newHostGuide(c)
+						}
 					}
-					ui.Text(c, "For overnight work, keep this Mac awake or host Buddy on a machine that stays on.").
-						FontSize(12).TextColor(c.Theme().TextMuted)
-					ui.Button(c.Key("setup-host-guide"), toggleGuideLabel(a.hostGuideOpen, "Set up a server on another machine")).
-						Height(29).OnClick(func() { a.hostGuideOpen = !a.hostGuideOpen })
-					if a.hostGuideOpen {
-						a.newHostGuide(c)
+					if a.hostNotice != "" {
+						ui.Text(c, a.hostNotice).FontSize(12).TextColor(c.Theme().TextMuted)
 					}
-				}
-				if a.hostNotice != "" {
-					ui.Text(c, a.hostNotice).FontSize(12).TextColor(c.Theme().TextMuted)
-				}
+				})
 			})
 		})
 	})
 }
 
+func setupChoice(c *ui.Context, label string, icon *ui.SVG, disabled bool, action func()) {
+	t := c.Theme()
+	button := ui.ButtonBase(c).Label(label).FillWidth().Height(58).Padding(0, 15).
+		AlignItems(ui.Center).Gap(10).Disabled(disabled).OnClick(action)
+	if button.Hovered() && !disabled {
+		button.Background(t.SurfaceHover)
+	}
+	button.Children(func() {
+		connectionDetail(c, icon, label, "")
+		ui.Icon(c, arrowMark).Size(15, 15).TextColor(t.TextMuted)
+	})
+}
+
+func setupMascot(c *ui.Context) {
+	t := c.Theme()
+	ui.Box(c).Size(116, 116).AlignSelf(ui.Center).Center().Radius(58).
+		Gradient(t.Accent.Alpha(.20), t.Accent.Alpha(.04), 155).Children(func() {
+		avatar(c, 87, tasks.Avatar{Color: "plum", Shape: "cloud", Finish: "satin", Animate: true}, nil, true, orbHappy)
+	})
+}
+
 func (a *desktop) setupRuntime(c *ui.Context) {
-	pageHeading(c, "Get your first Bud ready", "Your Buddy server is connected. Set up Codex so your Bud can reply and do work.")
-	sectionLabel(c, "Step 2 of 2 · Codex")
 	ready := a.auth.State == "configured" || a.auth.State == "signed_in"
 	label := "Setup available"
 	switch {
@@ -107,9 +143,11 @@ func (a *desktop) setupRuntime(c *ui.Context) {
 	connectionSection(c, func() {
 		ui.Row(c).Padding(13).Gap(8).Children(func() {
 			connectionDetail(c, runtimeMark, "Codex", "Chat and background work")
-			connectionBadge(c, label, ready)
+			connectionStatus(c, label, ready)
 		})
-		a.codexConnection(c)
+		if !ready {
+			a.codexConnection(c)
+		}
 	})
 	if a.auth.State == "missing" && !a.remoteHost && a.localServer != nil {
 		ui.Button(c.Key("setup-runtime-restart"), "Restart server after installing Codex").Height(29).
@@ -122,12 +160,11 @@ func (a *desktop) setupRuntime(c *ui.Context) {
 		}
 		ui.PrimaryButton(c.Key("finish-setup"), label).Height(32).
 			Disabled(a.hostBusy || a.authBusy).OnClick(a.finishSetup)
-		ui.Button(c.Key("setup-auth-check"), "Check Codex again").Height(32).
-			Disabled(a.hostBusy || a.authBusy).OnClick(func() { a.changeAuth("read") })
+		if !ready {
+			ui.Button(c.Key("setup-auth-check"), "Check Codex again").Height(32).
+				Disabled(a.hostBusy || a.authBusy).OnClick(func() { a.changeAuth("read") })
+		}
 	})
-	if !ready {
-		ui.Text(c, "You can finish setting up Codex later in Connections → Runtimes.").FontSize(12).TextColor(c.Theme().TextMuted)
-	}
 }
 
 func (a *desktop) finishSetup() {

@@ -35,6 +35,13 @@ final class PhoneVoiceSession {
     private(set) var captionName = ""
     private(set) var status = "Connecting…"
     private(set) var issue: String?
+    struct QueuedWork: Equatable {
+        let id: String
+        let title: String
+    }
+
+    private(set) var budNotice: String?
+    private(set) var queuedWork: QueuedWork?
     private(set) var members: [CallMember] = []
     private(set) var directory: [Bud] = []
     private(set) var micLevel: Float = 0
@@ -52,6 +59,7 @@ final class PhoneVoiceSession {
     private var invitationTimeouts: [String: Task<Void, Never>] = [:]
     private var revision = UUID()
     private var outputItem = ""
+    private var playedItem = ""
     private var micStarted = false
     private var audioAnnounced = false
     private let log = Logger(subsystem: "dev.buddy.ios", category: "Voice")
@@ -63,9 +71,12 @@ final class PhoneVoiceSession {
         active = true
         ready = false
         issue = nil
+        budNotice = nil
+        queuedWork = nil
         muted = false
         micStarted = false
         audioAnnounced = false
+        playedItem = ""
         continues = false
         joinedAt = nil
         title = conversation.name?.nilIfEmpty ?? conversation.agent.name
@@ -98,6 +109,7 @@ final class PhoneVoiceSession {
                     guard let owner, owner.outputItem == item else { return }
                     owner.playbackTimeout?.cancel()
                     owner.outputItem = ""
+                    owner.playedItem = item
                     owner.speaker = ""
                     owner.status = "Listening"
                     owner.send(["type": "played", "item": item])
@@ -134,18 +146,14 @@ final class PhoneVoiceSession {
                         }
                     }
                 }
-                directoryLoad = Task {
-                    if let loaded = try? await api.directory(), revision == attempt, active {
-                        directory = loaded.agents ?? directory
-                    }
-                }
+                refreshDirectory(api: api)
                 while !Task.isCancelled, revision == attempt {
                     let message = try await call.receive()
                     switch message {
                     case .data(let data): try audio?.enqueue(data)
                     case .string(let text):
                         let event = try JSONDecoder().decode(CallEvent.self, from: Data(text.utf8))
-                        receive(event)
+                        receive(event, api: api)
                     @unknown default: break
                     }
                 }
@@ -156,7 +164,7 @@ final class PhoneVoiceSession {
         }
     }
 
-    private func receive(_ event: CallEvent) {
+    private func receive(_ event: CallEvent, api: BuddyAPI) {
         switch event.type {
         case "ready", "roster":
             if let value = event.chat { chat = value }
@@ -194,8 +202,13 @@ final class PhoneVoiceSession {
             }
         case "interrupt":
             playbackTimeout?.cancel()
+            let item = event.item ?? outputItem
+            if item == playedItem, !item.isEmpty {
+                send(["type": "played", "item": item])
+                return
+            }
             let millis = audio?.cut() ?? 0
-            send(["type": "cut", "item": event.item ?? outputItem, "millis": millis])
+            send(["type": "cut", "item": item, "millis": millis])
             speaker = ""
             outputItem = ""
             status = "Listening"
@@ -207,9 +220,26 @@ final class PhoneVoiceSession {
         case "settled", "idle", "listening": speaker = ""; status = "Listening"
         case "responding", "routing": status = "Thinking…"
         case "team_queued": continues = true
+        case "work_queued":
+            if let id = event.item, let title = event.text {
+                queuedWork = QueuedWork(id: id, title: title)
+            }
+        case "bud_saved":
+            budNotice = event.text
+            refreshDirectory(api: api)
         case "notice": issue = event.text
         case "error": fail(event.text ?? "The voice server reported a problem.")
         default: break
+        }
+    }
+
+    private func refreshDirectory(api: BuddyAPI) {
+        directoryLoad?.cancel()
+        let attempt = revision
+        directoryLoad = Task {
+            if let loaded = try? await api.directory(), !Task.isCancelled, revision == attempt, active {
+                directory = loaded.agents ?? directory
+            }
         }
     }
 

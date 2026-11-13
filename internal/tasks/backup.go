@@ -81,6 +81,15 @@ func (s *Store) PrepareRestoredHome(ctx context.Context) error {
 	}
 	defer tx.Rollback()
 	prefix := root + "/"
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO restored_background_workspaces
+		SELECT t.id FROM tasks t JOIN turn_details td ON td.task_id=t.id WHERE td.origin=? AND t.repo<>''
+		AND (?='' OR (t.repo<>? AND substr(t.repo,1,length(?))<>?))`, backgroundRequest, root, root, prefix, prefix); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE background_workspace_snapshots SET needs_review=1 WHERE workspace<>''
+		AND (?='' OR (workspace<>? AND substr(workspace,1,length(?))<>?))`, root, root, prefix, prefix); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO restored_workspace_agents
 		SELECT id,workspace FROM agents WHERE workspace<>'' AND
 		(?='' OR (workspace<>? AND substr(workspace,1,length(?))<>?))`, root, root, prefix, prefix); err != nil {
@@ -91,7 +100,8 @@ func (s *Store) PrepareRestoredHome(ctx context.Context) error {
 		JOIN conversations c ON c.id=ct.conversation_id LEFT JOIN turn_details td ON td.task_id=t.id
 		JOIN restored_workspace_agents h ON h.agent_id=COALESCE(td.agent_id,c.agent_id) AND h.path=t.repo
 		WHERE t.status IN ('queued','needs_input') AND t.kind<>'work_input'
-		AND NOT EXISTS(SELECT 1 FROM device_runs dr WHERE dr.task_id=t.id)`); err != nil {
+		AND COALESCE(td.origin,'')<>?
+		AND NOT EXISTS(SELECT 1 FROM device_runs dr WHERE dr.task_id=t.id)`, backgroundRequest); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET summary=? WHERE id IN (SELECT task_id FROM restored_workspace_tasks)
@@ -104,7 +114,8 @@ func (s *Store) PrepareRestoredHome(ctx context.Context) error {
 	if err := interruptJobs(ctx, tx, `SELECT id FROM tasks t WHERE t.status IN ('queued','needs_input') AND t.repo<>''
 		AND (?='' OR (t.repo<>? AND substr(t.repo,1,length(?))<>?))
 		AND NOT EXISTS(SELECT 1 FROM restored_workspace_tasks h WHERE h.task_id=t.id)
-		AND NOT EXISTS(SELECT 1 FROM device_runs dr WHERE dr.task_id=t.id)`, retry, root, root, prefix, prefix); err != nil {
+		AND NOT EXISTS(SELECT 1 FROM turn_details td WHERE td.task_id=t.id AND td.origin=?)
+		AND NOT EXISTS(SELECT 1 FROM device_runs dr WHERE dr.task_id=t.id)`, retry, root, root, prefix, prefix, backgroundRequest); err != nil {
 		return err
 	}
 	// Backups made by earlier servers can still contain mobile credentials.

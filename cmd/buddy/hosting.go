@@ -180,20 +180,22 @@ func serverPort(u *url.URL) string {
 }
 
 func sectionLabel(c *ui.Context, title string) {
-	ui.Text(c, title).FontSize(12).FontWeight(700).TextColor(c.Theme().TextMuted)
+	ui.Text(c, title).FontSize(13).FontWeight(680).TextColor(c.Theme().Text)
 }
 
 func connectionSection(c *ui.Context, body func()) {
-	ui.Column(c).Background(c.Theme().Surface).Border(1, c.Theme().Border).Radius(12).Gap(1).Dividers(1, c.Theme().Border).Children(body)
+	ui.Column(c).FillWidth().Background(c.Theme().Surface).Border(1, c.Theme().Border).Radius(14).Gap(1).Dividers(1, c.Theme().Border).Children(body)
 }
 
 func connectionDetail(c *ui.Context, mark *ui.SVG, title, subtitle string) {
-	ui.Box(c).Size(32, 32).Shrink(0).Radius(8).Background(c.Theme().SurfaceHover).Center().Children(func() {
-		ui.Icon(c, mark).Size(17, 17).TextColor(c.Theme().Text)
+	ui.Box(c).Size(34, 34).Shrink(0).Radius(9).Background(c.Theme().Accent.Alpha(.10)).Center().Children(func() {
+		ui.Icon(c, mark).Size(16, 16).TextColor(c.Theme().Accent)
 	})
 	ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
 		ui.Text(c, title).FontSize(14).FontWeight(680).SingleLine()
-		ui.Text(c, subtitle).FontSize(12).TextColor(c.Theme().TextMuted).SingleLine().Tooltip(subtitle)
+		if subtitle != "" {
+			ui.Text(c, subtitle).FontSize(12).TextColor(c.Theme().TextMuted).SingleLine().Tooltip(subtitle)
+		}
 	})
 }
 
@@ -214,7 +216,7 @@ func (a *desktop) hosting(c *ui.Context) {
 				status = "Moved"
 			}
 			connectionDetail(c, hostMark, name, a.endpoint)
-			connectionBadge(c, status, a.online)
+			connectionStatus(c, status, a.online)
 		})
 		ui.Column(c).Padding(10, 13).Gap(8).Children(func() {
 			if a.hostPending {
@@ -247,14 +249,14 @@ func (a *desktop) hosting(c *ui.Context) {
 					a.moveOpen, a.hostGuideOpen = !a.moveOpen, false
 				})
 			})
-			ui.Text(c, "Connect to use a server’s existing data. Move to take this home’s chats, Buds, routines, and files with you.").
-				FontSize(12).TextColor(c.Theme().TextMuted)
 			if a.hostNotice != "" {
 				ui.Text(c, a.hostNotice).FontSize(12).TextColor(c.Theme().TextMuted)
 			}
 			if !a.moveOpen {
-				ui.Button(c.Key("host-guide"), toggleGuideLabel(a.hostGuideOpen, "How do I set up a hosted server?")).Height(27).
-					OnClick(func() { a.hostGuideOpen = !a.hostGuideOpen })
+				ui.Row(c).Children(func() {
+					quietControl(c.Key("host-guide"), toggleGuideLabel(a.hostGuideOpen, "Hosted server setup"),
+						linkMark, true, func() { a.hostGuideOpen = !a.hostGuideOpen })
+				})
 				if a.hostGuideOpen {
 					a.newHostGuide(c)
 				}
@@ -267,15 +269,17 @@ func (a *desktop) hosting(c *ui.Context) {
 	a.workerDevices(c)
 }
 
-func connectionBadge(c *ui.Context, label string, ready bool) {
-	bg, fg := c.Theme().SurfaceHover, c.Theme().TextMuted
+func connectionStatus(c *ui.Context, label string, ready bool) {
+	fg := c.Theme().TextMuted
 	if ready {
-		bg, fg = ui.Hex("#E6F1EB"), ui.Hex("#276448")
-		if c.Theme().Dark {
-			bg, fg = c.Theme().Success.Alpha(.13), c.Theme().Success
-		}
+		fg = c.Theme().Success
 	}
-	ui.Text(c, label).SingleLine().FontSize(11).FontWeight(630).TextColor(fg).Padding(4, 7).Radius(6).Background(bg)
+	ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+		if ready {
+			ui.Box(c).Size(5, 5).Radius(3).Background(fg)
+		}
+		ui.Text(c, label).SingleLine().FontSize(12).TextColor(fg)
+	})
 }
 
 func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }

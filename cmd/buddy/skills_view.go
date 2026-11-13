@@ -177,6 +177,10 @@ func (a *desktop) removeSkill(name string) {
 
 func (a *desktop) budProposalCard(c *ui.Context, message tasks.Message) {
 	proposal := message.BudProposal
+	needsRevision := message.Card != nil
+	if proposal.NeedsRevision != nil {
+		needsRevision = *proposal.NeedsRevision
+	}
 	ui.Column(c.Key("bud-proposal")).MinWidth(0).FillWidth().Gap(7).Padding(11).
 		Radius(11).Border(1, c.Theme().Border).Background(c.Theme().Surface).Children(func() {
 		label := "Bud draft"
@@ -190,21 +194,35 @@ func (a *desktop) budProposalCard(c *ui.Context, message tasks.Message) {
 		if proposal.ConversationID != "" {
 			ui.Button(c.Key("open-bud-"+message.TaskID), "Open chat").AlignSelf(ui.Start).
 				OnClick(func() { a.openConversation(proposal.ConversationID) })
-		} else {
-			ui.PrimaryButton(c.Key("create-bud-"+message.TaskID), "Create Bud").AlignSelf(ui.Start).
-				Disabled(!a.online || a.creatingProposal != "" || a.chat.Agent.Removed).OnClick(func() { a.createProposedBud(message.TaskID) })
+		} else if !needsRevision {
+			disabled := !a.online || a.creatingProposal != "" || a.chat.Archived || a.chat.Agent.Removed
+			label := "Create Bud"
+			var approval tasks.BudApproval
+			if len(proposal.PendingWork) != 0 {
+				label = "Create Bud and start work"
+				approval = tasks.CreateBudWithWork
+				for _, title := range proposal.PendingWork {
+					ui.Text(c, title).FontSize(12).TextColor(c.Theme().TextMuted).Selectable()
+				}
+			}
+			ui.PrimaryButton(c.Key("create-bud-"+message.TaskID), label).AlignSelf(ui.Start).
+				Disabled(disabled).OnClick(func() { a.createProposedBud(message.TaskID, approval) })
+			if approval != "" {
+				ui.Button(c.Key("create-bud-only-"+message.TaskID), "Create Bud only").AlignSelf(ui.Start).
+					Disabled(disabled).OnClick(func() { a.createProposedBud(message.TaskID, tasks.CreateBudOnly) })
+			}
 		}
 	})
 }
 
-func (a *desktop) createProposedBud(task string) {
+func (a *desktop) createProposedBud(task string, approval tasks.BudApproval) {
 	if a.window == nil || !a.online || a.creatingProposal != "" {
 		return
 	}
 	a.creatingProposal, a.chatErr = task, ""
 	win, chat := a.window, a.currentConversation()
 	go func() {
-		bud, err := a.client.CreateProposedBud(a.ctx, chat, task)
+		bud, err := a.client.CreateProposedBud(a.ctx, chat, task, approval)
 		win.Update(func() {
 			a.creatingProposal = ""
 			if chat == a.currentConversation() {

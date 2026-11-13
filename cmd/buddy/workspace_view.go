@@ -94,7 +94,9 @@ func (a *desktop) budNav(c *ui.Context, bud tasks.AgentRef) {
 						ui.Icon(c, primaryMark).Size(12, 12).Shrink(0).TextColor(c.Theme().Success)
 					}
 				})
-				ui.Text(c, role).FontSize(10).TextColor(c.Theme().TextMuted).SingleLine()
+				if bud.Role != "" {
+					ui.Text(c, role).FontSize(11).TextColor(c.Theme().TextMuted).SingleLine()
+				}
 			})
 			if unread {
 				sidebarUnreadDot(c)

@@ -65,7 +65,7 @@ func (a *desktop) mcpSettings(c *ui.Context) {
 	sectionLabel(c, "MCP servers")
 	connectionSection(c, func() {
 		ui.Row(c).Padding(11, 13).Gap(8).AlignItems(ui.Center).Children(func() {
-			connectionDetail(c, linkMark, "Custom tools", "Available to Buds in chat and work on this Buddy server.")
+			connectionDetail(c, linkMark, "Custom tools", "")
 			ui.Button(c.Key("add-mcp"), "Add MCP server").Disabled(!a.online || a.serverProtocol < api.MCPProtocol || v.busy != "" || v.draft != nil).
 				OnClick(func() { a.editMCP(tasks.MCPServer{Transport: tasks.MCPHTTP}) })
 		})
@@ -74,8 +74,6 @@ func (a *desktop) mcpSettings(c *ui.Context) {
 			mcpNote(c, "Connect to your Buddy server to manage MCP tools.")
 		case a.serverProtocol < api.MCPProtocol:
 			mcpNote(c, "Update the Buddy server to add custom MCP tools.")
-		default:
-			mcpNote(c, "Requires a Codex file sign-in or OpenAI API key. Changes apply to new runs.")
 		}
 		if v.loadErr != "" {
 			ui.Text(c, v.loadErr).Padding(8, 13).FontSize(12).TextColor(c.Theme().Danger)
@@ -124,7 +122,7 @@ func (a *desktop) mcpRow(c *ui.Context, server tasks.MCPServer) {
 	}
 	ui.Row(c).Padding(8, 13).Gap(8).AlignItems(ui.Center).Children(func() {
 		connectionDetail(c, linkMark, server.Name, detail)
-		connectionBadge(c, status, server.Enabled && !server.NeedsReview)
+		connectionStatus(c, status, server.Enabled && !server.NeedsReview)
 		label := "Test"
 		if v.busy == "test:"+server.ID {
 			label = "Testing…"

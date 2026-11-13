@@ -28,7 +28,8 @@ const WatchDraftProtocol = 38
 const MCPProtocol = 40
 const MobileProtocol = 42
 const ReferenceProtocol = 57
-const DesktopProtocol = ExecutionProtocol
+const BackgroundComposerProtocol = 60
+const DesktopProtocol = 75
 const AttachmentProtocol = 11
 const attachmentTransferTimeout = 2 * time.Minute
 
@@ -66,7 +67,7 @@ func Handler(token string, store *tasks.Store, worker *tasks.Worker, codex *task
 		integrationRoutes(mux, store, integrations)
 	}
 	standingRoutes(mux, store, integrations)
-	skillRoutes(mux, store)
+	skillRoutes(mux, store, worker)
 	executionRoutes(mux, store, codex)
 	devices := deviceRoutes(mux, store)
 	if codex != nil {
@@ -322,6 +323,7 @@ func result(w http.ResponseWriter, status int, value any, err error) {
 		return
 	}
 	var input *tasks.InputError
+	var approval *tasks.BudApprovalConflict
 	switch {
 	case errors.As(err, &input):
 		write(w, http.StatusBadRequest, errorBody{input.Error()})
@@ -330,7 +332,7 @@ func result(w http.ResponseWriter, status int, value any, err error) {
 		write(w, http.StatusUnauthorized, errorBody{err.Error()})
 	case errors.Is(err, tasks.ErrNotFound):
 		write(w, http.StatusNotFound, errorBody{err.Error()})
-	case errors.Is(err, tasks.ErrConflict), errors.Is(err, tasks.ErrInactive),
+	case errors.As(err, &approval), errors.Is(err, tasks.ErrConflict), errors.Is(err, tasks.ErrInactive),
 		errors.Is(err, tasks.ErrSteeringUnavailable), errors.Is(err, tasks.ErrNoLongerQueued),
 		errors.Is(err, tasks.ErrWorkspaceFileChanged), errors.Is(err, tasks.ErrWorkspaceFolderChanged):
 		write(w, http.StatusConflict, errorBody{err.Error()})

@@ -105,7 +105,12 @@ func setMessageReaction(ctx context.Context, tx *sql.Tx, chat string, message in
 	if changed, err := result.RowsAffected(); err != nil || changed == 0 {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO reaction_versions VALUES (?,?,(
+	return bumpMessageVersion(ctx, tx, chat, message)
+}
+
+// The existing poll cursor tracks changes to previously delivered messages.
+func bumpMessageVersion(ctx context.Context, tx *sql.Tx, chat string, message int64) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO reaction_versions VALUES (?,?,(
 		SELECT COALESCE(max(revision),0)+1 FROM reaction_versions WHERE conversation_id=?))
 		ON CONFLICT(message_id) DO UPDATE SET revision=excluded.revision`, message, chat, chat)
 	return err
@@ -120,7 +125,7 @@ func saveBudReaction(ctx context.Context, tx *sql.Tx, task, emoji string) (bool,
 	err := tx.QueryRowContext(ctx, `SELECT ct.conversation_id,td.agent_id,m.id
 		FROM messages m JOIN chat_turns ct ON ct.task_id=m.task_id JOIN turn_details td ON td.task_id=m.task_id
 		WHERE m.task_id=? AND m.role='user' AND td.origin='chat'
-		AND NOT EXISTS(SELECT 1 FROM choice_cards c WHERE c.answer_task_id=m.task_id)
+		AND NOT EXISTS(SELECT 1 FROM choice_card_answers c WHERE c.answer_task_id=m.task_id)
 		AND NOT EXISTS(SELECT 1 FROM work_questions w WHERE w.task_id=m.task_id)
 		AND NOT EXISTS(SELECT 1 FROM archived_groups a WHERE a.conversation_id=ct.conversation_id)
 		AND NOT EXISTS(SELECT 1 FROM removed_buds r WHERE r.agent_id=td.agent_id)`, task).Scan(&chat, &bud, &message)

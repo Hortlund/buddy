@@ -165,6 +165,9 @@ func (a *desktop) startVoice() {
 				case "work_changed":
 					call.work.nextPoll = time.Time{}
 					a.refreshSoon()
+				case "bud_saved":
+					call.notice = event.Text
+					a.refreshSoon()
 				case "team_queued":
 					call.teamQueued, call.teamPending = true, false
 					call.notice = event.Text
@@ -200,9 +203,8 @@ func (a *desktop) startVoice() {
 				a.voiceErr = err.Error()
 				var failure *api.HTTPError
 				if errors.As(err, &failure) && failure.Status == http.StatusPreconditionFailed {
-					a.showConnections()
 					a.voiceKeyOpen = true
-					a.changeVoiceKey(http.MethodGet)
+					a.showConnectionTab(connectionsRuntimes)
 				}
 			}
 			a.refreshSoon()

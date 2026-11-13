@@ -533,6 +533,7 @@ func (a *desktop) askAboutWork(item tasks.WorkItem) {
 		a.jobDrafts = make(map[string]tasks.WorkItem)
 	}
 	a.jobDrafts[item.ConversationID] = item
+	delete(a.backgroundAnswers, item.ConversationID)
 	if item.InputID == "" && strings.TrimSpace(a.draft) == "" {
 		a.draft = "What’s the latest on this job?"
 	}

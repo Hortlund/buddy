@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
+	"time"
 )
 
 const assignmentSchema = `
@@ -52,8 +54,10 @@ func migrateAssignmentParents(ctx context.Context, db *sql.DB) error {
 
 type assignmentSource struct {
 	chat, requester, key, parent, call string
-	repo, attachment, earlier          string
+	repo, attachment, earlier, newBud  string
 	allowEdits, readOnly, allowOutside bool
+	fromPlanner                        bool
+	restoredWorkspace                  bool
 }
 
 type AssignedWork struct {
@@ -64,6 +68,8 @@ type AssignedWork struct {
 	Reused      bool   `json:"reused,omitempty"`
 	destination string
 }
+
+const MaxWorkTitleBytes = 120
 
 func enqueueAssignments(ctx context.Context, tx *sql.Tx, source assignmentSource, handoffs []Handoff) ([]AssignedWork, error) {
 	if len(handoffs) < 1 || len(handoffs) > 8 {
@@ -76,7 +82,7 @@ func enqueueAssignments(ctx context.Context, tx *sql.Tx, source assignmentSource
 	jobs := make([]AssignedWork, 0, len(handoffs))
 	for i, assignment := range handoffs {
 		title, brief := strings.TrimSpace(assignment.Title), strings.TrimSpace(assignment.Brief)
-		if !validTitle(title, 120) || brief == "" || len(brief) > 12000 {
+		if !validTitle(title, MaxWorkTitleBytes) || brief == "" || len(brief) > 12000 {
 			return nil, &InputError{"Each assignment needs a short title and a clear brief."}
 		}
 		for j, prerequisite := range assignment.After {
@@ -101,8 +107,23 @@ func enqueueAssignments(ctx context.Context, tx *sql.Tx, source assignmentSource
 		if err != nil {
 			return nil, err
 		}
-		// A self-handoff keeps the workspace and permissions from the request.
-		if source.parent != "" && target == source.requester {
+		switch {
+		case source.newBud != "":
+			if target != source.newBud {
+				if err := revalidateBudWorkScope(ctx, tx, source, &agent, assignment); err != nil {
+					return nil, err
+				}
+			}
+		case source.fromPlanner && target == source.requester:
+			agent.AllowEdits = agent.AllowEdits && source.allowEdits
+			agent.WorkspaceNeedsReview = agent.WorkspaceNeedsReview ||
+				(source.restoredWorkspace && source.repo != agent.Workspace)
+			agent.Workspace = source.repo
+		case source.fromPlanner:
+			if err := applyBackgroundWorkspace(ctx, tx, source.parent, &agent); err != nil {
+				return nil, err
+			}
+		case source.parent != "" && target == source.requester:
 			agent.Workspace, agent.AllowEdits = source.repo, source.allowEdits
 		}
 		agent.AllowEdits = agent.AllowEdits && !assignment.ReadOnly && !source.readOnly
@@ -110,8 +131,12 @@ func enqueueAssignments(ctx context.Context, tx *sql.Tx, source assignmentSource
 		for _, prerequisite := range assignment.After {
 			after = append(after, jobs[prerequisite-1].ID)
 		}
+		var projectDraft string
+		if source.newBud != "" && assignment.ProjectID != "" {
+			projectDraft = source.parent
+		}
 		if source.attachment == "" && (!assignment.UseEarlierAttachments || source.earlier == "") {
-			existing, err := identicalAssignment(ctx, tx, source.chat, agent, assignment, after)
+			existing, err := identicalAssignment(ctx, tx, source.chat, agent, assignment, after, projectDraft)
 			if err != nil {
 				return nil, err
 			}
@@ -130,6 +155,7 @@ func enqueueAssignments(ctx context.Context, tx *sql.Tx, source assignmentSource
 		queued++
 		job, destination, err := enqueueHandoff(ctx, tx, assignmentKey(source.key, i), source.chat, agent, workRequest{
 			origin: "handoff", title: title, brief: brief, parent: source.parent, device: assignment.DeviceID, plan: assignment.ExecutionPlan,
+			projectDraft: projectDraft,
 		})
 		if err != nil {
 			return nil, err
@@ -164,35 +190,114 @@ func enqueueAssignments(ctx context.Context, tx *sql.Tx, source assignmentSource
 	return jobs, nil
 }
 
-// Exact active repeats reuse the same worker. Different briefs, owners, devices,
-// attachments, or prerequisites remain separate assignments, including reviews.
-func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Agent, assignment Handoff, after []string) (AssignedWork, error) {
-	routing := workRequest{device: strings.TrimSpace(assignment.DeviceID), plan: assignment.ExecutionPlan}
+// Chat turns already capture the requester's scope. Voice transcripts have
+// no working folder, so capture the speaker's settings when saving work.
+func snapshotAssignmentWorkspaces(ctx context.Context, tx *sql.Tx, task string) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO background_workspace_snapshots
+		SELECT t.id,a.id,
+			CASE WHEN a.id=td.agent_id AND td.origin<>'voice' THEN t.repo ELSE a.workspace END,
+			CASE WHEN a.id=td.agent_id AND td.origin<>'voice' THEN ct.allow_edits ELSE a.allow_edits END,
+			EXISTS(SELECT 1 FROM restored_workspace_agents h WHERE h.agent_id=a.id)
+		FROM tasks t JOIN chat_turns ct ON ct.task_id=t.id JOIN turn_details td ON td.task_id=t.id
+		CROSS JOIN agents a WHERE t.id=? AND NOT EXISTS(SELECT 1 FROM removed_buds r WHERE r.agent_id=a.id)`, task)
+	return err
+}
+
+func revalidateBudWorkScope(ctx context.Context, tx *sql.Tx, source assignmentSource, agent *Agent, assignment Handoff) error {
+	var workspace string
+	var edits, review bool
+	err := tx.QueryRowContext(ctx, questionRequestChain+`
+		SELECT s.workspace,s.allow_edits,s.needs_review FROM requests r
+		JOIN background_workspace_snapshots s ON s.task_id=r.id JOIN tasks t ON t.id=r.id
+		WHERE s.agent_id=? ORDER BY t.rowid LIMIT 1`, source.parent, agent.ID).
+		Scan(&workspace, &edits, &review)
+	if errors.Is(err, sql.ErrNoRows) && source.call == "" && agent.ID == source.requester {
+		// Earlier servers recorded the chat requester on the original turn.
+		err = tx.QueryRowContext(ctx, questionRequestChain+`
+			SELECT t.repo,ct.allow_edits FROM requests r
+			JOIN tasks t ON t.id=r.id JOIN chat_turns ct ON ct.task_id=r.id
+			ORDER BY t.rowid LIMIT 1`, source.parent).Scan(&workspace, &edits)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return &InputError{"The saved draft has no working-folder settings for " + agent.Name + ". Choose Create Bud only or request the work again."}
+	}
+	if err != nil {
+		return err
+	}
+	device := strings.TrimSpace(assignment.DeviceID)
+	if (device == "" || device == "server") && strings.TrimSpace(assignment.ProjectID) == "" && (workspace != agent.Workspace || review) {
+		return &InputError{"The working folder for " + agent.Name + " changed or needs review. Choose Create Bud only or request the work again."}
+	}
+	agent.AllowEdits = agent.AllowEdits && edits
+	return nil
+}
+
+func applyBackgroundWorkspace(ctx context.Context, tx *sql.Tx, task string, agent *Agent) error {
+	var workspace string
+	var edits, review bool
+	err := tx.QueryRowContext(ctx, questionRequestChain+`
+		SELECT s.workspace,s.allow_edits,s.needs_review FROM requests r
+		JOIN background_workspace_snapshots s ON s.task_id=r.id WHERE s.agent_id=?`, task, agent.ID).
+		Scan(&workspace, &edits, &review)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // Older plans and Buds added after submission have no snapshot.
+	}
+	if err != nil {
+		return err
+	}
+	agent.AllowEdits = agent.AllowEdits && edits
+	agent.WorkspaceNeedsReview = agent.WorkspaceNeedsReview || review && workspace != agent.Workspace
+	agent.Workspace = workspace
+	return nil
+}
+
+type assignmentCandidate struct {
+	id, host, draft, checkout string
+	unclaimed                 bool
+}
+
+// Exact active repeats reuse the same worker. Different workspaces, briefs,
+// owners, devices, attachments, or prerequisites remain separate assignments.
+func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Agent, assignment Handoff, after []string, projectDraft string) (AssignedWork, error) {
+	routing := workRequest{device: strings.TrimSpace(assignment.DeviceID), plan: assignment.ExecutionPlan, projectDraft: projectDraft}
+	namedHost := routing.device != "" && routing.device != DevicePool
 	if err := routeExecution(ctx, tx, &agent, &routing); err != nil {
 		return AssignedWork{}, err
 	}
 	assignment.DeviceID, assignment.ExecutionPlan = routing.device, routing.plan
-	rows, err := tx.QueryContext(ctx, `SELECT t.id,td.title,td.brief FROM tasks t
+	if assignment.DeviceID == "" && agent.WorkspaceNeedsReview {
+		return AssignedWork{}, &InputError{WorkspaceReviewMessage}
+	}
+	now := time.Now().UnixMicro()
+	rows, err := tx.QueryContext(ctx, `SELECT t.id,td.title,td.brief,
+		COALESCE(d.device_id,''),COALESCE(b.draft_id,''),
+		COALESCE(checkout.path,''),
+		t.status='queued' AND COALESCE(d.expires,0)<=? AND NOT EXISTS(SELECT 1 FROM work_inputs i WHERE i.job_id=t.id)
+		FROM tasks t
 		JOIN chat_turns ct ON ct.task_id=t.id JOIN turn_details td ON td.task_id=t.id
 		LEFT JOIN device_runs d ON d.task_id=t.id LEFT JOIN pooled_work p ON p.task_id=t.id
+		LEFT JOIN bud_work_project_sources b ON b.task_id=t.id
+		LEFT JOIN device_project_checkouts checkout ON checkout.task_id=t.id
 		WHERE t.kind='background_work' AND t.status IN ('queued','running','needs_input')
 		AND NOT EXISTS(SELECT 1 FROM handoff_attachments h WHERE h.task_id=t.id)
 		AND ct.conversation_id=? AND td.agent_id=? AND ct.allow_edits=?
+		AND (p.task_id IS NOT NULL OR d.device_id IS NOT NULL OR t.repo=?)
 		AND CASE WHEN p.task_id IS NOT NULL THEN 'any' ELSE COALESCE(d.device_id,'') END=?
-		ORDER BY t.rowid DESC`, chat, agent.ID, agent.AllowEdits, strings.TrimSpace(assignment.DeviceID))
+		ORDER BY t.rowid DESC`, now, chat, agent.ID, agent.AllowEdits, agent.Workspace, assignment.DeviceID)
 	if err != nil {
 		return AssignedWork{}, err
 	}
 	normalize := strings.TrimSpace
-	var candidates []string
+	var candidates []assignmentCandidate
 	for rows.Next() {
-		var id, title, brief string
-		if err := rows.Scan(&id, &title, &brief); err != nil {
+		var job assignmentCandidate
+		var title, brief string
+		if err := rows.Scan(&job.id, &title, &brief, &job.host, &job.draft, &job.checkout, &job.unclaimed); err != nil {
 			rows.Close()
 			return AssignedWork{}, err
 		}
 		if normalize(title) == normalize(assignment.Title) && normalize(brief) == normalize(assignment.Brief) {
-			candidates = append(candidates, id)
+			candidates = append(candidates, job)
 		}
 	}
 	if err := rows.Close(); err != nil {
@@ -203,7 +308,8 @@ func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Age
 	}
 	wanted := slices.Clone(after)
 	slices.Sort(wanted)
-	for _, id := range candidates {
+	for _, job := range candidates {
+		id := job.id
 		plan, err := readExecutionPlan(ctx, tx, id)
 		if err != nil {
 			return AssignedWork{}, err
@@ -217,6 +323,15 @@ func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Age
 		}
 		if plan.ProjectID != want.ProjectID || plan.Role != want.Role || plan.Environment != want.Environment || !slices.Equal(plan.Requirements, want.Requirements) {
 			continue
+		}
+		if routing.device != "" && want.ProjectID != "" && (projectDraft != "" || job.draft != "" || job.checkout != "") {
+			match, err := sameWorkerCheckout(ctx, tx, job, routing, agent.AllowEdits, namedHost)
+			if err != nil {
+				return AssignedWork{}, err
+			}
+			if !match {
+				continue
+			}
 		}
 		rows, err := tx.QueryContext(ctx, "SELECT prerequisite_id FROM work_dependencies WHERE task_id=? ORDER BY prerequisite_id", id)
 		if err != nil {
@@ -254,6 +369,68 @@ func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Age
 		return AssignedWork{Task: task, Title: strings.TrimSpace(assignment.Title), AgentID: agent.ID, AgentName: agent.Name, Reused: true}, nil
 	}
 	return AssignedWork{}, nil
+}
+
+func sameWorkerCheckout(ctx context.Context, tx *sql.Tx, job assignmentCandidate, request workRequest, allowEdits, namedHost bool) (bool, error) {
+	project := request.plan.ProjectID
+	if request.projectDraft != "" {
+		// Reuse must preserve the original job's routing and the draft's
+		// checkout restrictions even if workers change after approval.
+		if job.draft == "" {
+			return false, nil
+		}
+		if request.device == DevicePool && job.draft != request.projectDraft {
+			existing, err := savedPoolCheckouts(ctx, tx, job.draft, project)
+			if err != nil {
+				return false, err
+			}
+			requested, err := savedPoolCheckouts(ctx, tx, request.projectDraft, project)
+			if err != nil || !maps.Equal(existing, requested) {
+				return false, err
+			}
+		}
+	}
+	if job.host == "" {
+		workers, err := eligiblePoolCheckouts(ctx, tx, request.plan, allowEdits, true)
+		if err != nil {
+			return false, err
+		}
+		// Both requests see the same current path for each pool worker. They
+		// match only if their draft snapshots allow the same workers to use it.
+		for _, worker := range workers {
+			existing, err := validateSavedCheckout(ctx, tx, job.draft, project, worker.id, worker.path, false)
+			if err != nil {
+				return false, err
+			}
+			requested, err := validateSavedCheckout(ctx, tx, request.projectDraft, project, worker.id, worker.path, false)
+			if err != nil || existing != requested {
+				return false, err
+			}
+		}
+		return true, nil
+	}
+	path, _, err := projectCheckout(ctx, tx, job.host, project)
+	if err != nil || path == "" {
+		return false, err
+	}
+	// A job waiting for its first start can retry on the current checkout
+	// once any delivery lease has expired.
+	if !job.unclaimed && (job.checkout != "" && job.checkout != path || job.checkout == "" && job.draft == "") {
+		return false, nil
+	}
+	var existingNamesWorker bool
+	if job.draft != "" && request.device != DevicePool {
+		existingNamesWorker, err = draftJobNamesWorker(ctx, tx, job.id, job.draft)
+		if err != nil {
+			return false, err
+		}
+	}
+	reason, err := validateSavedCheckout(ctx, tx, job.draft, project, job.host, path, existingNamesWorker)
+	if err != nil || reason != "" {
+		return false, err
+	}
+	reason, err = validateSavedCheckout(ctx, tx, request.projectDraft, project, job.host, path, namedHost)
+	return reason == "", err
 }
 
 func assignmentKey(key string, index int) string {

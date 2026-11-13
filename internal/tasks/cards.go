@@ -22,7 +22,73 @@ CREATE TABLE IF NOT EXISTS choice_card_details (
 	detail TEXT NOT NULL,
 	option_details TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS choice_card_answers (
+	answer_task_id TEXT PRIMARY KEY REFERENCES chat_turns(task_id),
+	question_task_id TEXT NOT NULL REFERENCES choice_cards(task_id)
+);
+CREATE TABLE IF NOT EXISTS bud_choice_cards (
+	task_id TEXT PRIMARY KEY REFERENCES choice_cards(task_id)
+);
+INSERT OR IGNORE INTO choice_card_answers
+	SELECT answer_task_id,task_id FROM choice_cards WHERE answer_task_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS background_clarifications (
+	task_id TEXT PRIMARY KEY REFERENCES chat_turns(task_id),
+	answer_task_id TEXT UNIQUE REFERENCES chat_turns(task_id)
+);
+CREATE TABLE IF NOT EXISTS background_clarification_answers (
+	answer_task_id TEXT PRIMARY KEY REFERENCES chat_turns(task_id),
+	question_task_id TEXT NOT NULL REFERENCES background_clarifications(task_id)
+);
+CREATE INDEX IF NOT EXISTS background_answers_question ON background_clarification_answers(question_task_id);
+INSERT OR IGNORE INTO background_clarification_answers
+	SELECT answer_task_id,task_id FROM background_clarifications WHERE answer_task_id IS NOT NULL;
 `
+
+const chatQuestionLinks = `SELECT question_task_id AS task_id,answer_task_id FROM choice_card_answers
+	UNION ALL SELECT question_task_id,answer_task_id FROM background_clarification_answers`
+
+const questionRequestChain = `WITH RECURSIVE question_links(task_id,answer_task_id) AS (` + chatQuestionLinks + `), requests(id) AS (
+	VALUES (?)
+	UNION SELECT q.task_id FROM question_links q JOIN requests r ON q.answer_task_id=r.id
+)`
+
+// A failed conversational choice can be retried. Confirmations that may have
+// already performed a write keep their original receipt.
+const retryableChoice = `EXISTS(SELECT 1 FROM tasks answer WHERE answer.id=q.answer_task_id
+	AND (answer.status IN ('failed','cancelled','interrupted') OR (answer.status='succeeded'
+		AND EXISTS(SELECT 1 FROM bud_choice_cards b WHERE b.task_id=q.task_id)
+		AND NOT EXISTS(SELECT 1 FROM bud_proposals p WHERE p.task_id=answer.id)
+		AND NOT EXISTS(SELECT 1 FROM choice_cards next WHERE next.task_id=answer.id))))
+	AND NOT EXISTS(SELECT 1 FROM github_write_cards p WHERE p.task_id=q.task_id)
+	AND NOT EXISTS(SELECT 1 FROM management_cards p WHERE p.task_id=q.task_id)`
+
+const openBackgroundQuestion = `NOT EXISTS (
+	SELECT 1 FROM background_clarification_answers a JOIN tasks answer ON answer.id=a.answer_task_id
+	WHERE a.question_task_id=q.task_id AND answer.status IN ('queued','running','cancelling','succeeded')
+)`
+
+func backgroundQuestions(ctx context.Context, db queryer, chat string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT q.task_id FROM background_clarifications q
+		JOIN chat_turns ct ON ct.task_id=q.task_id WHERE ct.conversation_id=? AND `+openBackgroundQuestion, chat)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func saveBackgroundQuestion(ctx context.Context, tx *sql.Tx, task string) error {
+	_, err := tx.ExecContext(ctx, "INSERT INTO background_clarifications(task_id) VALUES (?)", task)
+	return err
+}
 
 type ChoiceCard struct {
 	Confirmation  string   `json:"confirmation,omitempty"`
@@ -87,20 +153,21 @@ func (s *Store) AnswerCard(ctx context.Context, conversation, cardID string, cho
 		return Task{}, false, err
 	}
 	defer tx.Rollback()
-	var question, options, target string
+	var options, target, origin string
 	var answer sql.NullString
 	var selected sql.NullInt64
-	err = tx.QueryRowContext(ctx, `SELECT cc.question,cc.options,COALESCE(td.agent_id,c.agent_id),cc.answer_task_id,cc.choice
-		FROM choice_cards cc JOIN chat_turns ct ON ct.task_id=cc.task_id JOIN conversations c ON c.id=ct.conversation_id
-		LEFT JOIN turn_details td ON td.task_id=ct.task_id WHERE cc.task_id=? AND ct.conversation_id=?`, cardID, conversation).
-		Scan(&question, &options, &target, &answer, &selected)
+	var retry bool
+	err = tx.QueryRowContext(ctx, `SELECT q.options,COALESCE(td.agent_id,c.agent_id),q.answer_task_id,q.choice,COALESCE(td.origin,'chat'),`+retryableChoice+`
+		FROM choice_cards q JOIN chat_turns ct ON ct.task_id=q.task_id JOIN conversations c ON c.id=ct.conversation_id
+		LEFT JOIN turn_details td ON td.task_id=ct.task_id WHERE q.task_id=? AND ct.conversation_id=?`, cardID, conversation).
+		Scan(&options, &target, &answer, &selected, &origin, &retry)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
 	}
 	if err != nil {
 		return Task{}, false, err
 	}
-	if answer.Valid {
+	if answer.Valid && !retry {
 		if selected.Int64 != int64(choice) {
 			return Task{}, false, ErrConflict
 		}
@@ -132,7 +199,14 @@ func (s *Store) AnswerCard(ctx context.Context, conversation, cardID string, cho
 	if err := checkQueue(ctx, tx, false); err != nil {
 		return Task{}, false, err
 	}
-	t, err := enqueueTurn(ctx, tx, AgentTurn, "\x00card:"+cardID, conversation, agent, workRequest{origin: "chat"})
+	if origin != backgroundRequest {
+		origin = "chat"
+	}
+	key := "\x00card:" + cardID
+	if retry {
+		key += ":" + answer.String
+	}
+	t, err := enqueueTurn(ctx, tx, AgentTurn, key, conversation, agent, workRequest{origin: origin, backgroundQuestion: cardID})
 	if err != nil {
 		return Task{}, false, err
 	}
@@ -141,6 +215,9 @@ func (s *Store) AnswerCard(ctx context.Context, conversation, cardID string, cho
 		return Task{}, false, err
 	}
 	if err := continueSkill(ctx, tx, t.ID, cardID); err != nil {
+		return Task{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO choice_card_answers VALUES (?,?)", t.ID, cardID); err != nil {
 		return Task{}, false, err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE choice_cards SET answer_task_id=?,choice=? WHERE task_id=?", t.ID, choice, cardID); err != nil {

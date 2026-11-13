@@ -1,9 +1,53 @@
 package tasks
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestVoiceBudKeepsDraftWhenWorkCannotQueue(t *testing.T) {
+	ctx, s := t.Context(), teamTestStore(t)
+	if err := s.EnableProfiles(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	device, err := s.EnrollDevice(ctx, "Build Mac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeDevice(ctx, device.ID); err != nil {
+		t.Fatal(err)
+	}
+	draft := BudDraft{Name: "Finch", Role: "Reviewer", Instructions: "Review logs.", CreateNow: true, Evidence: "Create a Bud named Finch"}
+	bud, jobs, notice, err := s.SaveVoiceBud(ctx, DefaultConversationID, "call", DefaultAgentID,
+		"Create a Bud named Finch and have Finch review the logs on Build Mac.", draft,
+		Handoff{AgentID: newBudAssignee, DeviceID: device.ID, Title: "Review logs", Brief: "Review the logs."})
+	if err != nil || bud.ID != "" || len(jobs) != 0 || !strings.Contains(notice, "draft") {
+		t.Fatalf("voice creation did not fall back to a draft: %+v, %+v, %q, %v", bud, jobs, notice, err)
+	}
+	chat, err := s.Conversation(ctx, DefaultConversationID, 0)
+	if err != nil || len(chat.Messages) != 1 || len(chat.Work) != 0 {
+		t.Fatalf("expected a draft with no queued work: %+v, %v", chat, err)
+	}
+	message := chat.Messages[0]
+	if message.BudProposal == nil || message.BudProposal.ConversationID != "" || len(message.BudProposal.PendingWork) != 1 {
+		t.Fatalf("draft lost its saved assignment: %+v", message.BudProposal)
+	}
+	var id string
+	if err := s.db.QueryRowContext(ctx, "SELECT bud_id FROM bud_proposals WHERE task_id=?", message.TaskID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{s.workspaceRoot, s.profilesRoot} {
+		if _, err := os.Stat(filepath.Join(root, id)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("failed voice creation left files in %s: %v", root, err)
+		}
+	}
+	if bud, err := s.CreateProposedBud(ctx, chat.ID, message.TaskID, CreateBudOnly); err != nil || bud.ID != id {
+		t.Fatalf("could not create the Bud separately: %+v, %v", bud, err)
+	}
+}
 
 func TestVoiceGroupMovesOnlyCurrentCallAndKeepsAddingMembers(t *testing.T) {
 	ctx := t.Context()

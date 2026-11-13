@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 
@@ -15,7 +16,13 @@ type skillImport struct {
 	Markdown string `json:"markdown"`
 }
 
-func skillRoutes(mux *http.ServeMux, store *tasks.Store) {
+type budApprovalRequest struct {
+	Approval tasks.BudApproval `json:"approval"`
+}
+
+const budApprovalRoute = "POST /v1/conversations/{id}/bud-proposals/{turn}/approval"
+
+func skillRoutes(mux *http.ServeMux, store *tasks.Store, worker *tasks.Worker) {
 	mux.HandleFunc("GET /v1/skills", func(w http.ResponseWriter, r *http.Request) {
 		skills, err := store.Skills(r.Context())
 		result(w, http.StatusOK, skills, err)
@@ -32,10 +39,26 @@ func skillRoutes(mux *http.ServeMux, store *tasks.Store) {
 	mux.HandleFunc("DELETE /v1/skills/{name}", func(w http.ResponseWriter, r *http.Request) {
 		result(w, http.StatusOK, nil, store.RemoveSkill(r.Context(), r.PathValue("name")))
 	})
-	mux.HandleFunc("POST /v1/conversations/{id}/bud-proposals/{turn}", func(w http.ResponseWriter, r *http.Request) {
-		bud, err := store.CreateProposedBud(r.Context(), r.PathValue("id"), r.PathValue("turn"))
+	approve := func(w http.ResponseWriter, r *http.Request) {
+		var input budApprovalRequest
+		if r.Pattern == budApprovalRoute || r.ContentLength != 0 {
+			if err := decode(w, r, &input, 1024); err != nil {
+				result(w, 0, nil, err)
+				return
+			}
+			if input.Approval == "" {
+				result(w, 0, nil, &tasks.InputError{Message: "Choose how to create this Bud."})
+				return
+			}
+		}
+		bud, err := store.CreateProposedBud(r.Context(), r.PathValue("id"), r.PathValue("turn"), input.Approval)
+		if err == nil && worker != nil && input.Approval == tasks.CreateBudWithWork {
+			worker.WakeBackground()
+		}
 		result(w, http.StatusOK, bud, err)
-	})
+	}
+	mux.HandleFunc("POST /v1/conversations/{id}/bud-proposals/{turn}", approve)
+	mux.HandleFunc(budApprovalRoute, approve)
 }
 
 func (c *Client) InstallSkill(ctx context.Context, markdown string) (tasks.SkillInfo, error) {
@@ -48,8 +71,17 @@ func (c *Client) RemoveSkill(ctx context.Context, name string) error {
 	return c.call(ctx, http.MethodDelete, "/v1/skills/"+url.PathEscape(name), "", nil, nil)
 }
 
-func (c *Client) CreateProposedBud(ctx context.Context, chat, turn string) (tasks.Agent, error) {
+func (c *Client) CreateProposedBud(ctx context.Context, chat, turn string, approval tasks.BudApproval) (tasks.Agent, error) {
 	var bud tasks.Agent
-	err := c.call(ctx, http.MethodPost, "/v1/conversations/"+url.PathEscape(chat)+"/bud-proposals/"+url.PathEscape(turn), "", nil, &bud)
+	path := "/v1/conversations/" + url.PathEscape(chat) + "/bud-proposals/" + url.PathEscape(turn)
+	if approval == "" {
+		err := c.call(ctx, http.MethodPost, path, "", nil, &bud)
+		return bud, err
+	}
+	err := c.call(ctx, http.MethodPost, path+"/approval", "", budApprovalRequest{Approval: approval}, &bud)
+	var response *HTTPError
+	if errors.As(err, &response) && response.Status == http.StatusNotFound && response.Message == "Buddy server returned 404 Not Found" {
+		return tasks.Agent{}, &HTTPError{Status: http.StatusNotFound, Message: "Update the Buddy server to approve this draft."}
+	}
 	return bud, err
 }

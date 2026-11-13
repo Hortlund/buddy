@@ -65,6 +65,51 @@ func TestRemovedBudMemoryDraftKeepsItsOriginalTarget(t *testing.T) {
 	}
 }
 
+func TestWatchSetupOpensIntegrations(t *testing.T) {
+	a := &desktop{section: "autonomy", connectionTab: connectionsRuntimes, serverProtocol: api.DesktopProtocol}
+	view := ui.NewTester(a.watchSettings, 760, 450)
+	if err := view.Click("Connect a service"); err != nil {
+		t.Fatal(err)
+	}
+	if a.section != "connections" || a.connectionTab != connectionsIntegrations {
+		t.Fatalf("watch setup opened %s, tab %d", a.section, a.connectionTab)
+	}
+}
+
+func TestExecutionTabExplainsOlderServer(t *testing.T) {
+	a := &desktop{online: true, serverProtocol: api.ExecutionProtocol - 1, protocolChecked: time.Now()}
+	view := ui.NewTester(a.connections, 760, 450)
+	if err := view.Click("Execution"); err != nil {
+		t.Fatal(err)
+	}
+	if !view.HasText("Update the Buddy server to manage execution.") {
+		t.Fatalf("older server left the Execution tab empty: %v", view.Texts())
+	}
+}
+
+func TestBackgroundQuestionCanTargetAndClearComposerReply(t *testing.T) {
+	a := &desktop{online: true, serverProtocol: api.DesktopProtocol, draft: "Build v1.2"}
+	question := tasks.Message{TaskID: "background-plan", Role: "assistant", Text: "Which build?", BackgroundQuestion: true}
+	view := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).Children(func() {
+			a.reply(c, question, nil)
+			a.composer(c)
+		})
+	}, 760, 450)
+	if err := view.Click("Reply"); err != nil {
+		t.Fatal(err)
+	}
+	if a.backgroundAnswers[tasks.DefaultConversationID] != question.TaskID || !view.HasText("Replying to background work") {
+		t.Fatalf("Reply didn't target the question: %v", view.Texts())
+	}
+	if err := view.Click("Clear reply"); err != nil {
+		t.Fatal(err)
+	}
+	if a.backgroundAnswers[tasks.DefaultConversationID] != "" || a.draft != "Build v1.2" {
+		t.Fatalf("clearing the reply lost the draft or left a target: %q, %v", a.draft, a.backgroundAnswers)
+	}
+}
+
 func TestGroupHistoryKeepsRemovedSpeakerNameAndAppearance(t *testing.T) {
 	a := &desktop{}
 	a.chat.Name = "Project"
@@ -328,7 +373,6 @@ func TestDesktopPagesAlignAtEveryWindowSize(t *testing.T) {
 				{"work", "Your team at work. Follow assignments, workers, and deliverables.", "Back to menu"},
 				{"preferences", "Choose how Buddy looks and which languages it uses.", "Back to menu"},
 				{"autonomy", "Review what your Buds do and remember between chats.", "Back to menu"},
-				{"connections", "Choose where Buddy lives and what it can use.", "Back to menu"},
 				{"history", "Open or restore an archived group. Its routines and watches stay paused until you resume them.", "Back to menu"},
 				{"group", "Choose the Buds who can share this conversation and hand off work.", "Back to menu"},
 				{"routine", "Runs with Scout and posts results in this chat.", "Back to chat"},

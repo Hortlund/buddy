@@ -84,6 +84,17 @@ CREATE TABLE IF NOT EXISTS restored_workspace_tasks (
 	task_id TEXT PRIMARY KEY REFERENCES tasks(id),
 	agent_id TEXT NOT NULL REFERENCES restored_workspace_agents(agent_id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS restored_background_workspaces (
+	task_id TEXT PRIMARY KEY REFERENCES tasks(id)
+);
+CREATE TABLE IF NOT EXISTS background_workspace_snapshots (
+	task_id TEXT NOT NULL REFERENCES tasks(id),
+	agent_id TEXT NOT NULL REFERENCES agents(id),
+	workspace TEXT NOT NULL,
+	allow_edits INTEGER NOT NULL,
+	needs_review INTEGER NOT NULL,
+	PRIMARY KEY(task_id,agent_id)
+);
 `
 
 type AgentRef struct {
@@ -605,11 +616,17 @@ func (s *Store) RelocateManagedWorkspaces(ctx context.Context, oldRoot, newRoot 
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET repo=? || substr(repo,length(?)+1)
-		WHERE kind IN (?,?,?) AND status IN ('queued','needs_input') AND (repo=? OR substr(repo,1,length(?))=?)`,
-		newRoot, oldRoot, AgentTurn, BackgroundWork, RepoCheck, oldRoot, prefix, prefix); err != nil {
+		WHERE (kind IN (?,?,?) AND status IN ('queued','needs_input')
+			OR id IN (SELECT task_id FROM turn_details WHERE origin=?))
+		AND (repo=? OR substr(repo,1,length(?))=?)`,
+		newRoot, oldRoot, AgentTurn, BackgroundWork, RepoCheck, backgroundRequest, oldRoot, prefix, prefix); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE file_reference_workspaces SET workspace=? || substr(workspace,length(?)+1)
+		WHERE workspace=? OR substr(workspace,1,length(?))=?`, newRoot, oldRoot, oldRoot, prefix, prefix); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE background_workspace_snapshots SET workspace=? || substr(workspace,length(?)+1)
 		WHERE workspace=? OR substr(workspace,1,length(?))=?`, newRoot, oldRoot, oldRoot, prefix, prefix); err != nil {
 		return err
 	}

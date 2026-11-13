@@ -45,6 +45,10 @@ Run this command from the repository root.
    file in its editable workspace during that reply. Longer research and
    development can be handed off to a separate Codex worker. Keep chatting while that worker runs, or quit Buddy
    and open it later. The result lands in the originating chat.
+   Choose **Run in background** (the briefcase) on Mac or iPhone to plan and
+   queue an assignment. Name a project, worker device, or tool in the request
+   when the job needs it. If Buddy asks a question while planning, use **Reply**
+   under the question to continue the request. You can also ask a Bud to start a job in a call.
    If a job needs input, choose **Reply to job** in chat or in Work. Your
    reply resumes the same job.
    Use the paperclip for files or paste an image into the composer. Each message
@@ -61,7 +65,9 @@ Run this command from the repository root.
    Files on another worker device must be brought into the server workspace before
    they can be previewed this way.
 2. Use **+** next to **Buds** to create a Bud with a role, instructions, model,
-   and avatar. **Bud settings** lists every Bud and lets you choose your
+   and avatar on Mac. You can ask for a new Bud in chat or in a call on either
+   device. Ask for a draft to review the profile before creating it.
+   **Bud settings** lists every Bud and lets you choose your
    **Primary Bud**, whose chat Buddy opens on launch. Each Bud starts with a
    dedicated writable workspace that you can change from its profile. The
    default model is GPT-6.1 Terra. Use **Remove** in Bud settings to take a
@@ -211,10 +217,10 @@ Open the bundled Buddy app or run `./script/build_and_run.sh` with a fresh home.
 Choose **Start on this Mac** to create a local home and start its background
 service. Buddy keeps running after you close the app while this Mac is awake
 and signed in. If the service is offline when you reopen Buddy, start it again
-from **Connections → Buddy home**. For unattended hosting across desktop
+from **Connections → Home & devices**. For unattended hosting across desktop
 restarts and sleep, use a separate always-on server.
 
-Choose **Connect to server…** to use an existing home. Buddy verifies its
+Choose **Connect to an existing server…** to use an existing home. Buddy verifies its
 private owner access file before asking you to reopen the app. After either
 path, sign in to Codex on the server or save its API key. You can finish the
 Codex setup later from **Connections → Runtimes**.
@@ -351,13 +357,13 @@ builds the separate iPhone app for iOS 17 and later. Select your development
 team or Xcode Personal Team to install it on a physical iPhone. The Go server
 is shared with the MyGo desktop app.
 
-In **Settings → Appearance**, choose **GitHub Dark**, **Light**, or **System**.
+In **Settings → Appearance**, choose **Dark**, **Light**, or **System**.
 Chats, native question cards, connection cards, Work, and settings share the
 desktop palette. Tap the phone in a conversation to call a Bud or invite several
 Buds into the same room. See [Live voice calls](#live-voice-calls) for setup.
 
 For a Buddy server on your Mac, install Tailscale on the Mac and iPhone and
-connect both to the same tailnet. In **Connections → iPhone → Pair iPhone**,
+connect both to the same tailnet. In **Connections → Home & devices → Pair iPhone**,
 choose **Tailscale**, then **Enable private forwarding** if setup is needed.
 Buddy checks whether the Mac allows incoming connections and creates a Serve
 rule only if the port is free and the configuration still matches what it
@@ -384,7 +390,7 @@ minutes and works once. The iPhone verifies the server identity and saves
 its own access in Keychain.
 
 Chats, watch approvals, and Work are shared with the desktop. Use **Remove**
-in **Connections → iPhone** to revoke a paired iPhone. After changing your
+under **iPhone** in **Connections → Home & devices** to revoke a paired iPhone. After changing your
 Buddy home's address or server certificate, disconnect and pair again. Pair
 each iPhone again after restoring a backup. Backups preserve chats and jobs
 and exclude phone credentials, pairing invitations, and pending push alerts.
@@ -660,7 +666,9 @@ Speak over an agent to interrupt, or use **Mute** and **Hang up**. The
 agents can check the chat’s work and routines, inspect their own workspace
 entries, and queue background work or schedule routines on request. Open
 **Work** in the call room to see job progress while you talk, or ask a Bud
-for an update. Results appear in the call’s chat. Ask the team to keep
+for an update. Answer a job’s question right after the call reads it, or say
+“For Release review, use the beta branch” to name the job you’re answering.
+Results appear in the call’s chat. Ask the team to keep
 working after you hang up, or click **Continue after call** to queue a
 read-only discussion. After hang-up, each agent posts an update in the
 same group chat and the lead agent wraps up the round.

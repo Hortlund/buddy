@@ -292,7 +292,7 @@ struct PhoneSettings: View {
                 Picker("Theme", selection: $appearance) {
                     Text("System").tag("system")
                     Text("Light").tag("light")
-                    Text("GitHub Dark").tag("dark")
+                    Text("Dark").tag("dark")
                 }
                 .accessibilityIdentifier("appearance-picker")
             }

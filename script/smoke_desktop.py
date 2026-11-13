@@ -2,9 +2,11 @@
 """Exercise Buddy chat, delegated work, and groups in the native desktop."""
 import argparse
 import base64
+import hashlib
 import hmac
 import json
 import os
+import shutil
 import signal
 from pathlib import Path
 import socket
@@ -89,6 +91,10 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         wait_for(key, lambda: node(key))
         press(key)
 
+    def select_connections_tab(key):
+        wait_for(key, lambda: node(key))
+        press(key)
+
     def set_value(key, value):
         ui("act", key=key, action="setValue", text=value)
 
@@ -104,15 +110,18 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(base64.b64decode(ui("capture")["png"]))
 
+    server_url = f"https://127.0.0.1:{port}"
+    server_state = state
+
     def api(path, data=None):
-        token = (state / "server.token").read_text().strip()
+        token = (server_state / "server.token").read_text().strip()
         request = urllib.request.Request(
-            f"https://127.0.0.1:{port}/v1/{path}",
+            f"{server_url}/v1/{path}",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             data=json.dumps(data).encode() if data is not None else None,
         )
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        tls.load_verify_locations(cafile=str(state / "server.crt"))
+        tls.load_verify_locations(cafile=str(server_state / "server.crt"))
         with urllib.request.urlopen(request, timeout=3, context=tls) as response:
             return json.load(response)
 
@@ -123,6 +132,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         return next((m for m in chat(chat_id)["messages"] if m["role"] == "assistant" and predicate(m)), None)
 
     app_path = dist / "Buddy.app" / "Contents" / "MacOS" / "BuddyDesktop"
+    daemon_path = app_path.parents[1] / "Helpers" / "buddyd"
     def app_pid():
         output = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True)
         for line in output.splitlines():
@@ -162,12 +172,16 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
                                 y=bounds["y"] + bounds["height"] / 2)] +
                            [dict(type="key", key=key) for key in keys])
 
-    def verify_new_address():
+    def open_move_guide():
         navigate("nav-connections")
+        select_connections_tab("connections-home")
         wait_for("move action", lambda: node("move-host"))
-        press("move-host")
+        if not node("moved-address"):
+            press("move-host")
         wait_for("new address field", lambda: node("moved-address"))
-        set_value("moved-address", f"https://localhost:{port}")
+
+    def verify_new_address(destination):
+        set_value("moved-address", destination)
         wait_for("enabled address verification", lambda: (n := node("use-moved-address")) and
                  "disabled" not in n.get("states", []))
         press("use-moved-address")
@@ -177,10 +191,36 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             state_labels = [n.get("label", "") for n in ui("tree")["nodes"] if
                             n.get("key") in ("use-moved-address", "apply-host") or
                             any(hint in n.get("label", "") for hint in
-                                ("Couldn't verify", "Export a move backup", "Reopen Buddy"))]
+                                ("Couldn't verify", "Export a move backup", "Reopen Buddy", "new HTTPS address"))]
             raise RuntimeError(f"{err}. Server move controls: {state_labels}") from err
-        if json.loads((state / "desktop-connection.json").read_text())["server"] != f"https://localhost:{port}":
+        if json.loads((state / "desktop-connection.json").read_text())["server"] != destination:
             raise RuntimeError("Buddy did not save the verified address")
+
+    def restore_home():
+        nonlocal restored_server, server_url, server_state
+        open_move_guide()
+        archive = directory / "move.tar.gz"
+        home = directory / "restored-home"
+        binary = directory / "buddyd"
+        shutil.copy2(daemon_path, binary)
+        service = hashlib.sha256(os.fsencode(state)).hexdigest()[:16]
+        target = f"gui/{os.getuid()}/dev.buddy.server.{service}"
+        subprocess.run([binary, "-data-dir", state, "-stop-service-for-move", target], check=True)
+        subprocess.run([binary, "-data-dir", state, "-backup", archive, "-retire-source"], check=True)
+        subprocess.run([binary, "-restore", archive, "-restore-to", home], check=True)
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            address = f"127.0.0.1:{probe.getsockname()[1]}"
+        destination = f"https://{address}"
+        server_url, server_state = destination, home / "state"
+        args = [binary, "-addr", address, "-data-dir", server_state, "-workspaces-dir", home / "workspaces",
+                "-runtime-dir", dist, "-source-dir", ROOT]
+        if codex := shutil.which("codex"):
+            args.extend(["-codex", codex])
+        restored_server = subprocess.Popen(args, env=env)
+        wait_for("restored server", lambda: api("workspace"))
+        verify_new_address(destination)
+        return destination
 
     def choose_menu_item(label):
         item = wait_for(label, lambda: next((n for n in ui("tree")["nodes"] if n.get("label") == label and n.get("bounds")), None))
@@ -295,15 +335,17 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         other_chat = "chat-" + other["conversation_id"]
         wait_for("another Bud’s chat", lambda: node(other_chat))
         press(other_chat)
-        wait_for("selected Files fixture chat", lambda: tree_has("Message Files fixture"))
+        wait_for("selected Files fixture chat", lambda: any(
+            n.get("key") == "chat-input" and n.get("placeholder") == "Message Files fixture…" for n in ui("tree")["nodes"]
+        ))
         wait_for("another Bud’s workspace", lambda: (n := node("open-workspace")) and "disabled" not in n.get("states", []))
         press("open-workspace")
         wait_for("separate empty workspace", lambda: tree_has("This folder is empty."))
         press("chat-conv_buddy")
         wait_for("original chat", lambda: node("chat-input"))
         conversation_tab("plan.md")
-        wait_for("retained unsaved file draft", lambda: tree_has("Saved heading") and tree_has("Unsaved changes"))
-        wait_for("enabled file save", lambda: (n := node("file-save")) and "disabled" not in n.get("states", []))
+        wait_for("retained unsaved file draft", lambda: tree_has("Saved heading") and
+                 (n := node("file-save")) and "disabled" not in n.get("states", []))
         file_press("file-save")
         wait_for("saved workspace file with mixed line endings",
                  lambda: note.read_bytes() == b"# Saved heading\r\n\nOriginal paragraph\n")
@@ -366,8 +408,11 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         if len(api("inbox")) != 1:
             raise RuntimeError("Archiving a watch removed its inbox history")
         press("autonomy-memory")
+        wait_for("add memory note", lambda: node("new-memory"))
+        press("new-memory")
         wait_for("memory editor", lambda: node("memory-note"))
         set_value("memory-note", "Prefer focused Go examples.")
+        wait_for("enabled memory save", lambda: (n := node("memory-save")) and "disabled" not in n.get("states", []))
         press("memory-save")
         wait_for("persisted Bud memory", lambda: any(n["note"] == "Prefer focused Go examples."
                  for n in api("agents/agt_buddy/memories") or []))
@@ -470,6 +515,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         print("Native build info, workspace file editing, dark theme, language settings, Markdown, diffs, choice cards, and linked job details worked.", flush=True)
 
     worker = None
+    restored_server = None
     try:
         if workbench_only:
             verify_workbench()
@@ -505,6 +551,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         print("The call button opened Live voice setup, and the separate key could be saved and removed.", flush=True)
 
         navigate("nav-connections")
+        select_connections_tab("connections-home")
         wait_for("device pairing action", lambda: node("pair-device"))
         press("pair-device")
         wait_for("guided pairing", lambda: node("device-server"))
@@ -512,6 +559,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         press("move-host")
         wait_for("guided server move", lambda: node("moved-address"))
         press("move-host")
+        select_connections_tab("connections-runtimes")
         wait_for("Codex runtime row", lambda: node("manage-codex"))
         if node("codex-api-key"):
             raise RuntimeError("OpenAI API key field is visible without opening runtime settings")
@@ -525,13 +573,13 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         wait_for("CLI sign-in restored", lambda: not node("codex-api-key-remove"))
 
         if connections_only:
-            verify_new_address()
+            destination = restore_home()
             previous_pid = app_pid()
             press("apply-host")
             wait_for("restarted desktop process", lambda: (pid := app_pid()) and pid != previous_pid)
             wait_for("reopened desktop", lambda: tree_has("Server connected"))
             navigate("nav-connections")
-            wait_for("hosted connection after reopen", lambda: tree_has("Hosted Buddy server"))
+            wait_for("restored connection after reopen", lambda: tree_has("Connected server") and tree_has(destination))
             print("Buddy verified the new address, reopened, and authenticated at the new origin.", flush=True)
             return
 
@@ -539,7 +587,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         wait_for("Bud settings directory", lambda: node("edit-bud-agt_buddy"))
         press("edit-bud-agt_buddy")
         wait_for("avatar settings", lambda: node("avatar-color-pearl"))
-        wait_for("live model catalog", lambda: node("agent-model-picker"))
+        wait_for("Codex model field", lambda: node("agent-model"))
         press("avatar-shape-bean")
         wait_for("bean preview", lambda: "checked" in (node("avatar-shape-bean") or {}).get("states", []))
         capture(screenshot)
@@ -598,7 +646,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         print("The model read the attached image and text file. The upload appeared in native chat.", flush=True)
 
         send("Run /bin/sh ./show-result.sh in the working folder and tell me the exact value it prints. "
-             "The script waits briefly for a file created by my test, so let it finish.")
+             "The script waits briefly for a file created by my test, so let it finish.", "send-background")
         work = wait_for("independent work", lambda: next(
             (w for w in chat().get("work", []) if w["status"] == "running" and w.get("can_steer")
              and w.get("activity_kind") == "running"), None
@@ -647,7 +695,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             "import json, os, time\n"
             "results = {}\n"
             "for file, flags in [('data/buddy.db', os.O_WRONLY), "
-            "('alias/server.token', os.O_RDONLY), ('dist/buddyd', os.O_WRONLY)]:\n"
+            "('alias/server.token', os.O_RDONLY), ('dist/Buddy.app/Contents/Helpers/buddyd', os.O_WRONLY)]:\n"
             "    try:\n"
             "        os.close(os.open(file, flags))\n"
             "    except PermissionError:\n"
@@ -661,7 +709,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             "with open('tool-finished', 'w') as marker: marker.write('finished')\n"
         )
         send("Run exactly /usr/bin/python3 ./check-isolation.py in the working folder. "
-             "This is a Buddy test and I will interrupt the command while it sleeps.")
+             "This is a Buddy test and I will interrupt the command while it sleeps.", "send-background")
         probe = wait_for("sandbox command to start",
                          lambda: json.loads((repo / "probe.json").read_text()), 90)
         if len(probe["results"]) != 3 or set(probe["results"].values()) != {"denied"}:
@@ -705,9 +753,9 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         group = wait_for("created group chat", lambda: next(
             (g for g in (api("workspace").get("groups") or []) if g["name"] == "Workshop"), None
         ))
-        wait_for("group composer", lambda: node("recipient"))
+        wait_for("group composer", lambda: node("group-lead") and node("chat-input"))
         send("Please hand this off to Forge, our coding specialist. In Forge's own workspace, "
-             "create workshop.txt containing exactly BUDDY_TEAMWORK. Have Forge report the result here.")
+             "create workshop.txt containing exactly BUDDY_TEAMWORK. Have Forge report the result here.", "send-background")
         done = wait_for("teammate work result", lambda: reply_matching(
             lambda m: m.get("origin") == "handoff", group["id"]
         ), 100)
@@ -716,7 +764,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         wait_for("linked result in group", lambda: node("view-job"))
         capture(reply_screenshot)
 
-        # Use a different HTTPS origin and the same pinned Buddy identity.
+        # Move to a new HTTPS origin and reconnect the same enrolled worker.
         owner_dir, worker_dir, device_repo = (directory / name for name in ("owner", "worker", "device-workspace"))
         for folder in (owner_dir, worker_dir, device_repo):
             folder.mkdir(mode=0o700)
@@ -724,8 +772,8 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         worker_file = worker_dir / "connection.json"
         worker_bin = directory / "buddyworker"
         subprocess.run(["go", "build", "-o", str(worker_bin), "./cmd/buddyworker"], cwd=ROOT, check=True)
-        subprocess.run([dist / "buddyd", "-data-dir", state, "-export-connection", owner_file,
-                        "-server-url", f"https://localhost:{port}"], check=True)
+        subprocess.run([daemon_path, "-data-dir", state, "-export-connection", owner_file,
+                        "-server-url", f"https://127.0.0.1:{port}"], check=True)
         subprocess.run([worker_bin, "-enroll", owner_file, "-connection", worker_file, "-name", "Workshop Mac"], check=True)
         (device_repo / "verify-worker-env.sh").write_text(
             "#!/bin/sh\n"
@@ -738,18 +786,32 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         worker = subprocess.Popen([worker_bin, "-connection", worker_file, "-workspace", device_repo, "-allow-edits"],
                                   env={**os.environ, "BUDDY_SMOKE_CANARY": "synthetic-worker-credential"})
         wait_for("worker online", lambda: any(d["name"] == "Workshop Mac" and d["online"] for d in api("devices")))
-        verify_new_address()
+        worker.terminate()
+        worker.wait(timeout=20)
+        destination = restore_home()
+        worker = subprocess.Popen([worker_bin, "-connection", worker_file, "-server", destination,
+                                   "-workspace", device_repo, "-allow-edits"],
+                                  env={**os.environ, "BUDDY_SMOKE_CANARY": "synthetic-worker-credential"})
+        wait_for("worker reconnected", lambda: any(d["name"] == "Workshop Mac" and d["online"] for d in api("devices")))
         close()
         launch()
         navigate("nav-connections")
-        wait_for("hosted connection", lambda: tree_has("Hosted Buddy server"))
+        wait_for("restored connection", lambda: tree_has("Connected server") and tree_has(destination))
         wait_for("connected device shown", lambda: tree_has("Workshop Mac"))
+        if not chat()["agent"].get("workspace_needs_review"):
+            raise RuntimeError("Restore did not flag Scout's external workspace for review")
+        navigate("nav-agent")
+        wait_for("restored Bud settings", lambda: node("edit-bud-agt_buddy"))
+        press("edit-bud-agt_buddy")
+        wait_for("confirm restored workspace", lambda: (n := node("agent-save")) and n.get("label") == "Confirm workspace")
+        press("agent-save")
+        wait_for("external workspace confirmed", lambda: not chat()["agent"].get("workspace_needs_review"))
         press("chat-" + group["id"])
-        wait_for("group chat reopened", lambda: node("recipient"))
+        wait_for("group chat reopened", lambda: node("group-lead") and node("chat-input"))
         send("Run exactly /bin/sh ./verify-worker-env.sh in the selected device's working folder. "
              "The script itself writes device-proof.txt. Do not create the file any other way. "
              "Before doing the work, ask me which device to use with a clickable choice card. "
-             "Use the exact option labels Buddy server and Workshop Mac. Do not start until I pick.")
+             "Use the exact option labels Buddy server and Workshop Mac. Do not start until I pick.", "send-background")
         card = wait_for("model choice card", lambda: reply_matching(lambda m: m.get("card"), group["id"]), 90)
         options = card["card"]["options"]
         index = options.index("Workshop Mac")
@@ -820,8 +882,19 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
                 (repo / "result.txt").touch(exist_ok=True)
                 if pid := app_pid():
                     os.kill(pid, signal.SIGTERM)
-                    wait_for("fixture app shutdown", lambda: not app_pid(), 8)
+                    try:
+                        wait_for("fixture app shutdown", lambda: not app_pid(), 8)
+                    except RuntimeError:
+                        if app_pid() == pid:
+                            os.kill(pid, signal.SIGKILL)
             finally:
+                if restored_server is not None:
+                    restored_server.terminate()
+                    try:
+                        restored_server.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        restored_server.kill()
+                        restored_server.wait()
                 subprocess.run([RUN, "--stop-server"], env=env, check=False)
 
 

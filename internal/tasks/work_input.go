@@ -211,24 +211,12 @@ func (s *Store) AnswerWorkInput(ctx context.Context, chat, input, text, key stri
 }
 
 func readWorkAttachments(ctx context.Context, db queryer, job, source string) ([]Attachment, error) {
-	rows, err := db.QueryContext(ctx, `SELECT f.name,f.media_type,f.data FROM chat_attachments f
+	return queryAttachments(ctx, db, requestAttachmentChain+`
+		SELECT f.name,f.media_type,f.data FROM chat_attachments f
+		LEFT JOIN attachment_requests r ON r.id=f.task_id
 		LEFT JOIN work_inputs w ON w.task_id=f.task_id AND w.job_id=? AND w.answer_key IS NOT NULL
-		WHERE f.task_id=? OR w.task_id IS NOT NULL ORDER BY w.task_id IS NOT NULL,
-		(SELECT m.id FROM messages m WHERE m.task_id=f.task_id AND m.role='user'),f.position`, job, source)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var files []Attachment
-	for rows.Next() {
-		var file Attachment
-		if err := rows.Scan(&file.Name, &file.Type, &file.Data); err != nil {
-			return nil, err
-		}
-		file.Size = len(file.Data)
-		files = append(files, file)
-	}
-	return files, rows.Err()
+		WHERE r.id IS NOT NULL OR w.task_id IS NOT NULL ORDER BY w.task_id IS NOT NULL,r.rowid,
+		(SELECT m.id FROM messages m WHERE m.task_id=f.task_id AND m.role='user'),f.position`, source, job)
 }
 
 func backgroundBrief(ctx context.Context, db queryer, job, brief string) (string, error) {

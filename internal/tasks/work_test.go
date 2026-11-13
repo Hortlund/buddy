@@ -572,6 +572,75 @@ func TestOldCardAnswerPreservesOriginalRequest(t *testing.T) {
 	}
 }
 
+func TestChoiceCanBeRetriedAfterAnUnfinishedAnswer(t *testing.T) {
+	ctx, store := t.Context(), teamTestStore(t)
+	plan, _, err := store.SendMessage(ctx, DefaultConversationID, "choice-retry", MessageRequest{Text: "Review the build.", Background: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.claimLane(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	card := &ChoiceCard{Question: "Which checkout?", Options: []string{"Stable", "Beta"}}
+	if err := store.finishTurn(ctx, plan.ID, Succeeded, "Replied.", "", &TurnAction{Card: card}); err != nil {
+		t.Fatal(err)
+	}
+	var previous string
+	for i, status := range []Status{Cancelled, Failed, Interrupted, Succeeded} {
+		choice := i % len(card.Options)
+		answer, created, err := store.AnswerCard(ctx, DefaultConversationID, plan.ID, choice)
+		if err != nil || !created || answer.ID == previous {
+			t.Fatalf("choice retry returned %+v, %v, %v", answer, created, err)
+		}
+		previous = answer.ID
+		if duplicate, created, err := store.AnswerCard(ctx, DefaultConversationID, plan.ID, choice); err != nil || created || duplicate.ID != answer.ID {
+			t.Fatalf("repeated click returned %+v, %v, %v", duplicate, created, err)
+		}
+		claimed, err := store.claimLane(ctx, false)
+		if err != nil || claimed.ID != answer.ID {
+			t.Fatalf("claim answer: %+v, %v", claimed, err)
+		}
+		turn, err := store.turn(ctx, claimed)
+		if err != nil || turn.Origin != backgroundRequest || turn.Messages[len(turn.Messages)-1].AnswerTo != card.Question {
+			t.Fatalf("lost context on retry: %+v, %v", turn, err)
+		}
+		if err := store.finish(ctx, answer.ID, status, "Finished.", ""); err != nil {
+			t.Fatal(err)
+		}
+		chat, err := store.Conversation(ctx, DefaultConversationID, 0)
+		if err != nil || !slices.ContainsFunc(append(chat.Messages, chat.EarlierUpdates...), func(m Message) bool {
+			return m.TaskID == plan.ID && m.Card != nil && (m.Card.Choice != nil) == (status == Succeeded)
+		}) {
+			t.Fatalf("wrong choice state after %s: %v", status, err)
+		}
+		for _, message := range chat.Messages {
+			if message.TaskID == answer.ID && message.Role == "user" && message.AnswerTo != card.Question {
+				t.Fatalf("retry discarded the answer's link: %+v", message)
+			}
+		}
+		if status == Interrupted {
+			for range 61 {
+				filler, _, err := store.Send(ctx, DefaultConversationID, "An unrelated message", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.claimLane(ctx, false); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.finish(ctx, filler.ID, Succeeded, "Finished.", "An unrelated reply"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			latest, err := store.Conversation(ctx, DefaultConversationID, 0)
+			if err != nil || !slices.ContainsFunc(latest.EarlierUpdates, func(m Message) bool {
+				return m.TaskID == plan.ID && m.Card != nil && m.Card.Choice == nil
+			}) {
+				t.Fatalf("the reopened choice did not reach clients that loaded it earlier: %+v, %v", latest.EarlierUpdates, err)
+			}
+		}
+	}
+}
+
 func TestDeviceLeaseRespectsDeadlineAndCancellation(t *testing.T) {
 	ctx := t.Context()
 	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "buddy.db"))
@@ -737,5 +806,288 @@ func TestRestoreHoldsExternalWorkspaceUntilConfirmed(t *testing.T) {
 	}
 	if queued, err := store.enqueueDueRoutine(ctx, future); err != nil || !queued {
 		t.Fatalf("the confirmed routine was still held: %v", err)
+	}
+}
+
+func TestBackgroundPlannerCanRouteRemoteWorkWithUnconfirmedWorkspace(t *testing.T) {
+	ctx, s := t.Context(), teamTestStore(t)
+	agent, err := s.Agent(ctx, DefaultAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.Workspace = t.TempDir()
+	if _, err := s.SaveAgent(ctx, agent.ID, agent); err != nil {
+		t.Fatal(err)
+	}
+	device, err := s.EnrollDevice(ctx, "Build Mac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PrepareRestoredHome(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Send(ctx, DefaultConversationID, "Check the old checkout", "local"); err == nil {
+		t.Fatal("ordinary chat accepted the unconfirmed local folder")
+	}
+	for _, destination := range []string{device.ID, ""} {
+		task, _, err := s.SendMessage(ctx, DefaultConversationID, "plan-"+destination, MessageRequest{
+			Text: "Review the build.", Background: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		claimed, err := s.claimLane(ctx, false)
+		if err != nil || claimed.ID != task.ID || claimed.Repository != "" {
+			t.Fatalf("planner was tied to the old checkout: %+v, %v", claimed, err)
+		}
+		action := &TurnAction{Handoffs: []Handoff{{
+			DeviceID: destination, Title: "Build review", Brief: "Review the build.",
+		}}}
+		if err := s.finishTurn(ctx, task.ID, Succeeded, "Replied.", "", action); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job, err := s.ClaimDeviceJob(ctx, device.ID)
+	if err != nil || job == nil || job.Title != "Build review" {
+		t.Fatalf("worker did not receive the assignment: %+v, %v", job, err)
+	}
+	if _, err := s.claimLane(ctx, true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the unconfirmed local job was claimable: %v", err)
+	}
+}
+
+func TestBackgroundPlannerKeepsTheSubmittedWorkspace(t *testing.T) {
+	for _, mode := range []string{"direct", "reply", "choice", "restored"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, s := t.Context(), teamTestStore(t)
+			const request = "Edit the release notes in your workspace."
+			agent, err := s.Agent(ctx, DefaultAgentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			agent.Workspace = t.TempDir()
+			agent, err = s.SaveAgent(ctx, agent.ID, agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := agent.Workspace
+			plan, _, err := s.SendMessage(ctx, DefaultConversationID, "original", MessageRequest{Text: request, Background: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			claim := func(id string) {
+				t.Helper()
+				task, err := s.claimLane(ctx, false, original)
+				if err != nil || task.ID != id || task.Repository != "" {
+					t.Fatalf("planner should run independently of the workspace: %+v, %v", task, err)
+				}
+			}
+			claim(plan.ID)
+			if mode != "direct" {
+				action := &TurnAction{backgroundQuestion: true}
+				if mode == "choice" {
+					action = &TurnAction{Card: &ChoiceCard{Question: "Which release?", Options: []string{"Beta", "Stable"}}}
+				}
+				if err := s.finishTurn(ctx, plan.ID, Succeeded, "Replied.", "Which release?", action); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "restored" {
+				if err := s.PrepareRestoredHome(ctx); err != nil {
+					t.Fatal(err)
+				}
+				agent.ConfirmWorkspace = true
+			}
+			agent.Workspace = t.TempDir()
+			agent, err = s.SaveAgent(ctx, agent.ID, agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			action := &TurnAction{backgroundPlan: true, Handoffs: []Handoff{{Title: "Release notes", Brief: request}}}
+			// An otherwise identical job already exists in the new checkout.
+			if _, err := s.QueueVoiceAssignments(ctx, DefaultConversationID, agent.ID, "call", "new-workspace", action.Handoffs); err != nil {
+				t.Fatal(err)
+			}
+			var final = plan
+			switch mode {
+			case "reply", "restored":
+				final, _, err = s.SendMessage(ctx, DefaultConversationID, "answer", MessageRequest{Text: "Beta", BackgroundAnswer: plan.ID})
+			case "choice":
+				final, _, err = s.AnswerCard(ctx, DefaultConversationID, plan.ID, 0)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode != "direct" {
+				claim(final.ID)
+			}
+			if err := s.finishTurn(ctx, final.ID, Succeeded, "Replied.", "", action); err != nil {
+				t.Fatal(err)
+			}
+			work, err := s.WorkOverview(ctx, DefaultConversationID)
+			if mode == "restored" {
+				updated, getErr := s.Get(ctx, final.ID)
+				if err != nil || getErr != nil || len(work) != 1 || updated.Status != Failed {
+					t.Fatalf("restored request used an unconfirmed checkout: %+v, %v, %v", work, err, getErr)
+				}
+				return
+			}
+			if err != nil || len(work) != 2 {
+				t.Fatalf("expected separate jobs for distinct checkouts: %+v, %v", work, err)
+			}
+			job, err := s.claimLane(ctx, true, agent.Workspace)
+			if err != nil || job.Repository != original {
+				t.Fatalf("job lost its original working folder: %+v, %v", job, err)
+			}
+		})
+	}
+}
+
+func TestBackgroundPlannerKeepsNamedBudsSubmittedWorkspace(t *testing.T) {
+	for _, mode := range []string{"reply", "choice", "restored"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, store := t.Context(), teamTestStore(t)
+			forge, err := store.CreateAgent(ctx, Agent{Name: "Forge"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			forge.Workspace, forge.AllowEdits = t.TempDir(), true
+			forge, err = store.SaveAgent(ctx, forge.ID, forge)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := forge.Workspace
+			chat := DefaultConversationID
+			const brief = "Have Forge edit the release notes in its workspace."
+			plan, _, err := store.SendMessage(ctx, chat, "forge-plan", MessageRequest{Text: brief, Background: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.claimLane(ctx, false); err != nil {
+				t.Fatal(err)
+			}
+			question := &TurnAction{backgroundQuestion: true}
+			if mode == "choice" {
+				question = &TurnAction{Card: &ChoiceCard{Question: "Which release?", Options: []string{"Beta", "Stable"}}}
+			}
+			if err := store.finishTurn(ctx, plan.ID, Succeeded, "Replied.", "Which release?", question); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "restored" {
+				if err := store.PrepareRestoredHome(ctx); err != nil {
+					t.Fatal(err)
+				}
+				forge.ConfirmWorkspace = true
+			}
+			forge.Workspace = t.TempDir()
+			if _, err := store.SaveAgent(ctx, forge.ID, forge); err != nil {
+				t.Fatal(err)
+			}
+			var answer Task
+			if mode == "choice" {
+				answer, _, err = store.AnswerCard(ctx, chat, plan.ID, 0)
+			} else {
+				answer, _, err = store.SendMessage(ctx, chat, "forge-answer", MessageRequest{Text: "Beta", BackgroundAnswer: plan.ID})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.claimLane(ctx, false); err != nil {
+				t.Fatal(err)
+			}
+			action := &TurnAction{backgroundPlan: true, Handoffs: []Handoff{{AgentID: forge.ID, Title: "Release notes", Brief: brief}}}
+			if err := store.finishTurn(ctx, answer.ID, Succeeded, "Replied.", "", action); err != nil {
+				t.Fatal(err)
+			}
+			job, err := store.claimLane(ctx, true)
+			if mode == "restored" {
+				finished, getErr := store.Get(ctx, answer.ID)
+				if !errors.Is(err, ErrNotFound) || getErr != nil || finished.Status != Failed {
+					t.Fatalf("restored plan used Forge's unconfirmed workspace: %+v, %v, %v", job, err, getErr)
+				}
+				return
+			}
+			if err != nil || job.Repository != original {
+				t.Fatalf("job did not keep Forge's original workspace: %+v, %v", job, err)
+			}
+		})
+	}
+}
+
+func TestArchivedGroupReopensBackgroundClarification(t *testing.T) {
+	for _, choice := range []bool{false, true} {
+		name := "typed answer"
+		if choice {
+			name = "choice card"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, store := t.Context(), teamTestStore(t)
+			forge, err := store.CreateAgent(ctx, Agent{Name: "Forge"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			group, err := store.CreateGroup(ctx, GroupRequest{Name: "Review", Members: []string{DefaultAgentID, forge.ID}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, _, err := store.SendMessage(ctx, group.ID, "review-plan", MessageRequest{Text: "Review the logs.", Background: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.claimLane(ctx, false); err != nil {
+				t.Fatal(err)
+			}
+			action := &TurnAction{backgroundQuestion: true, backgroundPlan: true}
+			if choice {
+				action = &TurnAction{Card: &ChoiceCard{Question: "Which build?", Options: []string{"Beta", "Stable"}}, backgroundPlan: true}
+			}
+			if err := store.finishTurn(ctx, plan.ID, Succeeded, "Replied.", "Which build?", action); err != nil {
+				t.Fatal(err)
+			}
+			answer := func(key string) Task {
+				t.Helper()
+				var task Task
+				var created bool
+				var err error
+				if choice {
+					task, created, err = store.AnswerCard(ctx, group.ID, plan.ID, 0)
+				} else {
+					task, created, err = store.SendMessage(ctx, group.ID, key, MessageRequest{Text: "Beta", BackgroundAnswer: plan.ID})
+				}
+				if err != nil || !created {
+					t.Fatalf("answer was rejected: %+v, %v", task, err)
+				}
+				if _, err := store.claimLane(ctx, false); err != nil {
+					t.Fatal(err)
+				}
+				return task
+			}
+			first := answer("first")
+			if err := store.SetGroupArchived(ctx, group.ID, true); err != nil {
+				t.Fatal(err)
+			}
+			finish := func(id string) {
+				t.Helper()
+				action := &TurnAction{backgroundPlan: true, Handoffs: []Handoff{{Title: "Review logs", Brief: "Review the Beta build logs."}}}
+				if err := store.finishTurn(ctx, id, Succeeded, "Replied.", "", action); err != nil {
+					t.Fatal(err)
+				}
+			}
+			finish(first.ID)
+			if task, err := store.Get(ctx, first.ID); err != nil || task.Status != Failed {
+				t.Fatalf("archived turn was accepted: %+v, %v", task, err)
+			}
+			if _, err := store.claimLane(ctx, true); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("a job was queued while archived: %v", err)
+			}
+			if err := store.SetGroupArchived(ctx, group.ID, false); err != nil {
+				t.Fatal(err)
+			}
+			retry := answer("retry")
+			finish(retry.ID)
+			if job, err := store.claimLane(ctx, true); err != nil || job.Kind != BackgroundWork {
+				t.Fatalf("retry did not queue the job: %+v, %v", job, err)
+			}
+		})
 	}
 }

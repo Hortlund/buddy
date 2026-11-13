@@ -78,7 +78,7 @@ func (a *desktop) runtimes(c *ui.Context) {
 				label = "Status unavailable"
 			}
 			connectionDetail(c, runtimeMark, "Codex", detail)
-			connectionBadge(c, label, ready)
+			connectionStatus(c, label, ready)
 			action := "Manage"
 			if label == "Available" || label == "Install required" {
 				action = "Set up"
@@ -98,22 +98,18 @@ func (a *desktop) runtimes(c *ui.Context) {
 		if a.authOpen {
 			a.codexConnection(c)
 		}
-		if a.serverProtocol >= api.DesktopProtocol {
+		if a.serverProtocol >= api.ExecutionProtocol {
 			ui.Row(c).Padding(11, 13).Gap(9).Children(func() {
 				configured := a.online && (a.auth.Source == "saved_key" || a.auth.Source == "environment_key")
 				label := "API key needed"
 				if configured {
 					label = "Configured"
 				}
-				connectionDetail(c, pictureMark, "Image generation", "Generate PNGs in chat using the server’s OpenAI API key")
-				connectionBadge(c, label, configured)
+				connectionDetail(c, pictureMark, "Image generation", "")
+				connectionStatus(c, label, configured)
 			})
 		}
 		a.voiceSettings(c)
-		ui.Row(c).Padding(11, 13).Gap(9).Children(func() {
-			connectionDetail(c, runtimeMark, "Claude Code", "Anthropic CLI")
-			connectionBadge(c, "Planned", false)
-		})
 	})
 }
 

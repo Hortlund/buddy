@@ -17,8 +17,8 @@ var callMark = svg(`<path d="m5.5 4 3-.5 2 4.5-2 1.8a13 13 0 0 0 5.7 5.7l1.8-2 4
 func (a *desktop) voiceSettings(c *ui.Context) {
 	compatible := a.serverProtocol >= api.VoiceProtocol
 	ui.Row(c).Padding(11, 13).Gap(9).AlignItems(ui.Center).Children(func() {
-		connectionDetail(c, callMark, "Live voice", "Calls with one or more Buds")
-		label := "Set up"
+		connectionDetail(c, callMark, "Live voice", "")
+		label := "API key needed"
 		switch {
 		case !a.online:
 			label = "Server offline"
@@ -29,7 +29,7 @@ func (a *desktop) voiceSettings(c *ui.Context) {
 		case !a.voiceAuthLoaded:
 			label = "Available"
 		}
-		connectionBadge(c, label, a.voiceAuth.Source != "")
+		connectionStatus(c, label, a.voiceAuth.Source != "")
 		action := "Set up"
 		if a.voiceAuth.Source != "" {
 			action = "Manage"
@@ -91,7 +91,7 @@ func (a *desktop) callView(c *ui.Context) {
 	call := a.voice
 	a.refreshWork(c, &call.work, call.chat)
 	bar := c.TitleBar()
-	ui.Column(c.Key("call-room")).Fill().Background(callCanvas).TextColor(callWhite).Children(func() {
+	ui.Column(c.Key("call-room")).Fill().Gradient(callCanvas.Mix(callAccent, .10), callCanvas, 165).TextColor(callWhite).Children(func() {
 		ui.Row(c).Height(max(48, bar.Height)).Padding(0, max(22, bar.Right+14), 0, max(22, bar.Left+16)).
 			AlignItems(ui.Center).Gap(8).DragWindow().Children(func() {
 			ui.Text(c, "Buddy").FontSize(16).FontWeight(730).TextColor(callWhite)

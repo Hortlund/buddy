@@ -18,6 +18,7 @@ import (
 
 const (
 	AgentTurn             = "agent_turn"
+	backgroundRequest     = "background_request"
 	DefaultAgentID        = "agt_buddy"
 	DefaultConversationID = "conv_buddy"
 	DefaultCodexModel     = "gpt-6.1-terra"
@@ -108,51 +109,53 @@ type Agent struct {
 }
 
 type Message struct {
-	ID                int64             `json:"id"`
-	TaskID            string            `json:"task_id"`
-	Role              string            `json:"role"`
-	Text              string            `json:"text"`
-	At                time.Time         `json:"at"`
-	Status            Status            `json:"status,omitempty"`
-	Activity          string            `json:"activity,omitempty"`
-	DidWork           bool              `json:"did_work,omitempty"`
-	Steering          []SteeringMessage `json:"steering,omitempty"`
-	AgentID           string            `json:"agent_id,omitempty"`
-	AgentName         string            `json:"agent_name,omitempty"`
-	Origin            string            `json:"origin,omitempty"`
-	Title             string            `json:"title,omitempty"`
-	Card              *ChoiceCard       `json:"card,omitempty"`
-	AnswerTo          string            `json:"answer_to,omitempty"`
-	Attachments       []Attachment      `json:"attachments,omitempty"`
-	GeneratedImage    bool              `json:"generated_image,omitempty"`
-	Reactions         []MessageReaction `json:"reactions,omitempty"`
-	ReactionRevision  int64             `json:"reaction_revision,omitempty"`
-	JobID             string            `json:"job_id,omitempty"`
-	JobTitle          string            `json:"job_title,omitempty"`
-	JobConversationID string            `json:"job_conversation_id,omitempty"`
-	SkillName         string            `json:"skill_name,omitempty"`
-	BudProposal       *BudProposal      `json:"bud_proposal,omitempty"`
-	GitHub            *GitHubResult     `json:"github,omitempty"`
-	ConnectionCard    *ConnectionCard   `json:"connection_card,omitempty"`
+	ID                 int64             `json:"id"`
+	TaskID             string            `json:"task_id"`
+	Role               string            `json:"role"`
+	Text               string            `json:"text"`
+	At                 time.Time         `json:"at"`
+	Status             Status            `json:"status,omitempty"`
+	Activity           string            `json:"activity,omitempty"`
+	DidWork            bool              `json:"did_work,omitempty"`
+	Steering           []SteeringMessage `json:"steering,omitempty"`
+	AgentID            string            `json:"agent_id,omitempty"`
+	AgentName          string            `json:"agent_name,omitempty"`
+	Origin             string            `json:"origin,omitempty"`
+	Title              string            `json:"title,omitempty"`
+	Card               *ChoiceCard       `json:"card,omitempty"`
+	BackgroundQuestion bool              `json:"background_question,omitempty"`
+	AnswerTo           string            `json:"answer_to,omitempty"`
+	Attachments        []Attachment      `json:"attachments,omitempty"`
+	GeneratedImage     bool              `json:"generated_image,omitempty"`
+	Reactions          []MessageReaction `json:"reactions,omitempty"`
+	ReactionRevision   int64             `json:"reaction_revision,omitempty"`
+	JobID              string            `json:"job_id,omitempty"`
+	JobTitle           string            `json:"job_title,omitempty"`
+	JobConversationID  string            `json:"job_conversation_id,omitempty"`
+	SkillName          string            `json:"skill_name,omitempty"`
+	BudProposal        *BudProposal      `json:"bud_proposal,omitempty"`
+	GitHub             *GitHubResult     `json:"github,omitempty"`
+	ConnectionCard     *ConnectionCard   `json:"connection_card,omitempty"`
 }
 
 type Conversation struct {
-	ID                 string           `json:"id"`
-	Archived           bool             `json:"archived,omitempty"`
-	TranscriptRevision int64            `json:"transcript_revision,omitempty"`
-	Agent              Agent            `json:"agent"`
-	Messages           []Message        `json:"messages"`
-	Before             int64            `json:"before,omitempty"`
-	Active             *ActiveRun       `json:"active,omitempty"`
-	EarlierUpdates     []Message        `json:"earlier_updates,omitempty"`
-	ReactionOptions    []ReactionOption `json:"reaction_options,omitempty"`
-	ReactionRevision   int64            `json:"reaction_revision"`
-	ReactionUpdates    []ReactionUpdate `json:"reaction_updates,omitempty"`
-	Name               string           `json:"name,omitempty"`
-	Members            []AgentRef       `json:"members,omitempty"`
-	Profiles           []Agent          `json:"profiles,omitempty"`
-	Work               []WorkItem       `json:"work,omitempty"`
-	Routines           []Routine        `json:"routines,omitempty"`
+	ID                      string           `json:"id"`
+	Archived                bool             `json:"archived,omitempty"`
+	TranscriptRevision      int64            `json:"transcript_revision,omitempty"`
+	Agent                   Agent            `json:"agent"`
+	Messages                []Message        `json:"messages"`
+	Before                  int64            `json:"before,omitempty"`
+	Active                  *ActiveRun       `json:"active,omitempty"`
+	EarlierUpdates          []Message        `json:"earlier_updates,omitempty"`
+	OpenBackgroundQuestions []string         `json:"open_background_questions"`
+	ReactionOptions         []ReactionOption `json:"reaction_options,omitempty"`
+	ReactionRevision        int64            `json:"reaction_revision"`
+	ReactionUpdates         []ReactionUpdate `json:"reaction_updates,omitempty"`
+	Name                    string           `json:"name,omitempty"`
+	Members                 []AgentRef       `json:"members,omitempty"`
+	Profiles                []Agent          `json:"profiles,omitempty"`
+	Work                    []WorkItem       `json:"work,omitempty"`
+	Routines                []Routine        `json:"routines,omitempty"`
 }
 
 type Turn struct {
@@ -182,6 +185,7 @@ type Turn struct {
 	BuddyTeam          TeamContext
 	Work               []WorkItem
 	coordinate         bool
+	revisingBud        bool
 	routing            bool
 	workspaceRoot      string
 	action             *TurnAction
@@ -241,6 +245,19 @@ func (s *Store) CreateAgent(ctx context.Context, a Agent) (Agent, error) {
 }
 
 func (s *Store) saveAgent(ctx context.Context, id string, a Agent, create bool) (Agent, error) {
+	tx, err := s.beginMobileWrite(ctx)
+	if err != nil {
+		return Agent{}, err
+	}
+	defer tx.Rollback()
+	saved, err := s.saveAgentInTx(ctx, tx, id, a, create, false)
+	if err != nil {
+		return Agent{}, err
+	}
+	return saved, tx.Commit()
+}
+
+func (s *Store) saveAgentInTx(ctx context.Context, tx *sql.Tx, id string, a Agent, create, staged bool) (Agent, error) {
 	a.ID, a.Name = id, strings.TrimSpace(a.Name)
 	a.Model = strings.TrimSpace(a.Model)
 	a.Role = strings.TrimSpace(a.Role)
@@ -260,7 +277,7 @@ func (s *Store) saveAgent(ctx context.Context, id string, a Agent, create bool) 
 	}
 	var priorSoul string
 	if !create {
-		saved, err := s.Agent(ctx, id)
+		saved, err := scanAgent(tx.QueryRowContext(ctx, "SELECT "+agentFields+" FROM agents a"+agentSettings+" WHERE a.id=?", id))
 		if err != nil {
 			return Agent{}, err
 		}
@@ -286,27 +303,26 @@ func (s *Store) saveAgent(ctx context.Context, id string, a Agent, create bool) 
 		}
 		a.Workspace = workspace
 	} else if s.workspaceRoot != "" {
-		workspace, err := s.managedWorkspace(id)
-		if err != nil {
-			return Agent{}, err
+		if staged {
+			a.Workspace = filepath.Join(s.workspaceRoot, id)
+		} else {
+			workspace, err := s.managedWorkspace(id)
+			if err != nil {
+				return Agent{}, &budProvisionError{err}
+			}
+			a.Workspace = workspace
 		}
-		a.Workspace = workspace
 		if create {
 			a.AllowEdits = true
 		}
 	} else if a.AllowEdits {
 		return Agent{}, &InputError{"Choose a working folder before enabling edits."}
 	}
-	if create {
+	if create && !staged {
 		if _, err := s.personality(id); err != nil {
-			return Agent{}, err
+			return Agent{}, &budProvisionError{err}
 		}
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Agent{}, err
-	}
-	defer tx.Rollback()
 	conversationID := ""
 	if create {
 		conversationID = "conv_" + strings.TrimPrefix(id, "agt_")
@@ -376,7 +392,7 @@ func (s *Store) saveAgent(ctx context.Context, id string, a Agent, create bool) 
 			return Agent{}, err
 		}
 	}
-	return a, tx.Commit()
+	return a, nil
 }
 
 const conversationAgent = `SELECT ` + agentFields + `
@@ -392,13 +408,18 @@ const messageFields = `m.id,m.task_id,m.role,m.text,m.created,t.status,t.summary
 	CASE WHEN m.role='user' OR t.kind='background_work' THEN ` + steeringJSON + ` ELSE '[]' END,
 	COALESCE(td.agent_id,''),ct.agent_name,COALESCE(td.origin,'chat'),COALESCE(td.title,''),
 	m.role='assistant' AND EXISTS(SELECT 1 FROM generated_images g WHERE g.task_id=t.id),
-	CASE WHEN m.role='assistant' THEN COALESCE((SELECT json_object('question',q.question,'options',json(q.options),'choice',q.choice,
+	CASE WHEN m.role='assistant' THEN COALESCE((SELECT json_object('question',q.question,'options',json(q.options),
+		'choice',CASE WHEN ` + retryableChoice + ` THEN NULL ELSE q.choice END,
 		'detail',d.detail,'option_details',json(d.option_details),
 		'confirmation',COALESCE(mc.style,CASE WHEN gw.task_id IS NOT NULL THEN 'github' ELSE '' END))
 		FROM choice_cards q LEFT JOIN choice_card_details d ON d.task_id=q.task_id
 		LEFT JOIN management_confirmations mc ON mc.task_id=q.task_id
 		LEFT JOIN github_write_cards gw ON gw.task_id=q.task_id WHERE q.task_id=t.id),'null') ELSE 'null' END,
-	CASE WHEN m.role='user' THEN COALESCE((SELECT q.question FROM choice_cards q WHERE q.answer_task_id=t.id),
+	m.role='assistant' AND EXISTS(SELECT 1 FROM background_clarifications q WHERE q.task_id=t.id AND ` + openBackgroundQuestion + `),
+	CASE WHEN m.role='user' THEN COALESCE((SELECT q.question FROM choice_card_answers a
+		JOIN choice_cards q ON q.task_id=a.question_task_id WHERE a.answer_task_id=t.id),
+		(SELECT question.text FROM background_clarification_answers q JOIN messages question ON question.task_id=q.question_task_id
+		WHERE q.answer_task_id=t.id AND question.role='assistant'),
 		(SELECT question.text FROM messages question WHERE t.kind='work_input' AND question.task_id=t.id AND question.role='assistant'),'') ELSE '' END,
 	CASE WHEN m.role='user' THEN (SELECT json_group_array(json_object('name',name,'type',media_type,'size',size))
 	FROM (SELECT name,media_type,length(data) AS size FROM chat_attachments f WHERE f.task_id=t.id ORDER BY position)) ELSE '[]' END,
@@ -409,6 +430,9 @@ const messageFields = `m.id,m.task_id,m.role,m.text,m.created,t.status,t.summary
 		WHERE q.task_id=t.id),'') ELSE '' END,
 	CASE WHEN m.role='user' THEN COALESCE((SELECT name FROM turn_skills WHERE task_id=t.id),'') ELSE '' END,
 	CASE WHEN m.role='assistant' THEN COALESCE((SELECT json_object('name',p.name,'role',p.role,'instructions',p.instructions,
+		'needs_revision',json(CASE WHEN EXISTS(SELECT 1 FROM bud_choice_cards b WHERE b.task_id=p.task_id) THEN 'true' ELSE 'false' END),
+		'pending_work',json(CASE WHEN c.id IS NULL THEN (SELECT json_group_array(json_extract(j.value,'$.title'))
+			FROM bud_proposal_work w,json_each(w.handoffs) j WHERE w.task_id=p.task_id) ELSE '[]' END),
 		'conversation_id',COALESCE(c.id,'')) FROM bud_proposals p LEFT JOIN conversations c ON c.agent_id=p.bud_id
 		AND c.id='conv_' || substr(p.bud_id,5) WHERE p.task_id=t.id),'null') ELSE 'null' END,
 	CASE WHEN m.role='assistant' THEN COALESCE((SELECT result FROM github_chat_results WHERE task_id=t.id),'null') ELSE 'null' END,
@@ -482,6 +506,10 @@ func (s *Store) ConversationWithReactions(ctx context.Context, id string, before
 	}
 	if before == 0 {
 		conversation.ReactionOptions = reactionOptions
+		conversation.OpenBackgroundQuestions, err = backgroundQuestions(ctx, tx, id)
+		if err != nil {
+			return Conversation{}, err
+		}
 		if reactionsAfter >= 0 && reactionsAfter < conversation.ReactionRevision && next != 0 {
 			conversation.ReactionUpdates, err = reactionUpdates(ctx, tx, id, reactionsAfter, next)
 			if err != nil {
@@ -512,8 +540,8 @@ func (s *Store) ConversationWithReactions(ctx context.Context, id string, before
 			return Conversation{}, err
 		}
 		if next != 0 {
-			// A turn's user message can age out while queued or running.
-			// Keep sending it through the poll that first delivers its reply.
+			// Refresh older turns whose reply, choice, or draft approval
+			// changed after a client loaded that part of the transcript.
 			rows, err := tx.QueryContext(ctx, `
 				SELECT `+messageFields+` FROM messages m
 				JOIN chat_turns ct ON ct.task_id=m.task_id JOIN tasks t ON t.id=m.task_id LEFT JOIN turn_details td ON td.task_id=t.id
@@ -522,8 +550,12 @@ func (s *Store) ConversationWithReactions(ctx context.Context, id string, before
 					SELECT id FROM tasks WHERE status IN ('queued','running','cancelling')
 					UNION ALL SELECT task_id FROM messages WHERE role='assistant' AND id>=?
 				)) OR (m.role='assistant' AND EXISTS(SELECT 1 FROM choice_cards q JOIN messages answer
-					ON answer.task_id=q.answer_task_id AND answer.role='user' WHERE q.task_id=m.task_id AND answer.id>=?)))
-				ORDER BY m.id`, id, next, next, next)
+					ON answer.task_id=q.answer_task_id WHERE q.task_id=m.task_id
+					AND (answer.id>=? OR (`+retryableChoice+`))))
+				OR (m.role='assistant' AND ?>=0 AND EXISTS(
+					SELECT 1 FROM reaction_versions v JOIN bud_proposal_approvals p ON p.task_id=m.task_id
+					WHERE v.message_id=m.id AND v.revision>?)))
+				ORDER BY m.id`, id, next, next, next, reactionsAfter, reactionsAfter)
 			if err != nil {
 				return Conversation{}, err
 			}
@@ -544,7 +576,7 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 		var at int64
 		var steering, card, attachments, proposal, github, connection, reactions string
 		if err := rows.Scan(&m.ID, &m.TaskID, &m.Role, &m.Text, &at, &m.Status, &m.Activity, &m.DidWork, &steering,
-			&m.AgentID, &m.AgentName, &m.Origin, &m.Title, &m.GeneratedImage, &card, &m.AnswerTo, &attachments, &m.JobID, &m.JobTitle,
+			&m.AgentID, &m.AgentName, &m.Origin, &m.Title, &m.GeneratedImage, &card, &m.BackgroundQuestion, &m.AnswerTo, &attachments, &m.JobID, &m.JobTitle,
 			&m.JobConversationID, &m.SkillName, &proposal, &github, &connection, &m.ReactionRevision, &reactions); err != nil {
 			return nil, err
 		}
@@ -594,11 +626,13 @@ func (s *Store) SendWithWork(ctx context.Context, conversation, target, text, ke
 }
 
 type MessageRequest struct {
-	Text        string       `json:"text"`
-	AgentID     string       `json:"agent_id,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
-	JobID       string       `json:"job_id,omitempty"`
-	SkillName   string       `json:"skill_name,omitempty"`
+	Text             string       `json:"text"`
+	AgentID          string       `json:"agent_id,omitempty"`
+	Attachments      []Attachment `json:"attachments,omitempty"`
+	JobID            string       `json:"job_id,omitempty"`
+	SkillName        string       `json:"skill_name,omitempty"`
+	Background       bool         `json:"background,omitempty"`
+	BackgroundAnswer string       `json:"background_answer,omitempty"`
 }
 
 func (s *Store) SendMessage(ctx context.Context, conversation, key string, input MessageRequest) (Task, bool, error) {
@@ -609,6 +643,11 @@ func (s *Store) SendMessage(ctx context.Context, conversation, key string, input
 	text, target, jobID := strings.TrimSpace(input.Text), input.AgentID, input.JobID
 	if (text == "" && len(files) == 0) || len(text) > 12000 {
 		return Task{}, false, &InputError{"Write a message or attach a file. Messages can be up to 12,000 bytes."}
+	}
+	background := input.Background || input.BackgroundAnswer != ""
+	if background && (jobID != "" || input.SkillName != "" ||
+		input.BackgroundAnswer == "" && (text == "" || strings.HasPrefix(text, "/"))) {
+		return Task{}, false, &InputError{"Write a standalone background assignment. Send slash commands and job replies in chat."}
 	}
 	tx, err := s.beginMobileWrite(ctx)
 	if err != nil {
@@ -621,16 +660,17 @@ func (s *Store) SendMessage(ctx context.Context, conversation, key string, input
 	t, err := scanTask(tx.QueryRowContext(ctx,
 		"SELECT "+fields+" FROM tasks WHERE kind=? AND request_key IN (?,?)", AgentTurn, namespacedKey(AgentTurn, key), "chat:"+key))
 	if err == nil {
-		var body, id, actual, defaultID, savedJob, savedSkill string
+		var body, id, actual, defaultID, savedJob, savedSkill, origin, savedQuestion string
 		var usedDefault bool
 		if err := tx.QueryRowContext(ctx, `
 			SELECT m.text,ct.conversation_id,COALESCE(td.agent_id,c.agent_id),c.agent_id,
 			EXISTS(SELECT 1 FROM chat_default_recipients WHERE task_id=ct.task_id),
 			COALESCE((SELECT job_id FROM work_questions WHERE task_id=ct.task_id),''),
-			COALESCE((SELECT name FROM turn_skills WHERE task_id=ct.task_id),'')
+			COALESCE((SELECT name FROM turn_skills WHERE task_id=ct.task_id),''), COALESCE(td.origin,'chat'),
+			COALESCE((SELECT question_task_id FROM background_clarification_answers WHERE answer_task_id=ct.task_id),'')
 			FROM messages m JOIN chat_turns ct ON ct.task_id=m.task_id
 			JOIN conversations c ON c.id=ct.conversation_id LEFT JOIN turn_details td ON td.task_id=ct.task_id
-			WHERE m.task_id=? AND m.role='user'`, t.ID).Scan(&body, &id, &actual, &defaultID, &usedDefault, &savedJob, &savedSkill); err != nil {
+			WHERE m.task_id=? AND m.role='user'`, t.ID).Scan(&body, &id, &actual, &defaultID, &usedDefault, &savedJob, &savedSkill, &origin, &savedQuestion); err != nil {
 			return Task{}, false, err
 		}
 		// An omitted recipient uses the original recipient on retry, even
@@ -641,7 +681,8 @@ func (s *Store) SendMessage(ctx context.Context, conversation, key string, input
 				target = actual
 			}
 		}
-		if body != text || id != conversation || target != actual || savedJob != jobID || (input.SkillName != "" && input.SkillName != savedSkill) {
+		if body != text || id != conversation || target != actual || savedJob != jobID ||
+			background != (origin == backgroundRequest) || input.BackgroundAnswer != savedQuestion || (input.SkillName != "" && input.SkillName != savedSkill) {
 			return Task{}, false, ErrConflict
 		}
 		saved, err := readAttachments(ctx, tx, t.ID)
@@ -660,6 +701,35 @@ func (s *Store) SendMessage(ctx context.Context, conversation, key string, input
 		return Task{}, false, err
 	}
 	usedDefault := target == ""
+	if input.BackgroundAnswer != "" {
+		var requester string
+		var open bool
+		err := tx.QueryRowContext(ctx, `SELECT td.agent_id,`+openBackgroundQuestion+` FROM background_clarifications q
+			JOIN chat_turns ct ON ct.task_id=q.task_id JOIN turn_details td ON td.task_id=q.task_id
+			WHERE q.task_id=? AND ct.conversation_id=?`, input.BackgroundAnswer, conversation).Scan(&requester, &open)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Task{}, false, &InputError{"Choose an open background question from this chat."}
+		}
+		if err != nil {
+			return Task{}, false, err
+		}
+		if !open {
+			return Task{}, false, &InputError{"This background question has already been answered."}
+		}
+		if target != "" && target != requester {
+			return Task{}, false, &InputError{"Reply to the Bud who asked the background question."}
+		}
+		target = requester
+		if len(files) != 0 {
+			inherited, err := readRequestAttachments(ctx, tx, input.BackgroundAnswer)
+			if err != nil {
+				return Task{}, false, err
+			}
+			if _, err := PrepareAttachments(append(inherited, files...)); err != nil {
+				return Task{}, false, &InputError{"Background work can carry up to five files totaling 8 MB, including files you already attached."}
+			}
+		}
+	}
 	if usedDefault && jobID != "" {
 		// A group can answer through the Bud assigned to the referenced job.
 		// Outside workers aren't participants in the originating conversation.
@@ -676,12 +746,21 @@ func (s *Store) SendMessage(ctx context.Context, conversation, key string, input
 	if err != nil {
 		return Task{}, false, err
 	}
+	origin := "chat"
+	if background {
+		origin = backgroundRequest
+	}
 	if err := checkQueue(ctx, tx, false); err != nil {
 		return Task{}, false, err
 	}
-	t, err = enqueueTurn(ctx, tx, AgentTurn, key, conversation, agent, workRequest{origin: "chat"})
+	t, err = enqueueTurn(ctx, tx, AgentTurn, key, conversation, agent, workRequest{origin: origin, backgroundQuestion: input.BackgroundAnswer})
 	if err != nil {
 		return Task{}, false, err
+	}
+	if input.BackgroundAnswer != "" {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO background_clarification_answers VALUES (?,?)", t.ID, input.BackgroundAnswer); err != nil {
+			return Task{}, false, err
+		}
 	}
 	if usedDefault {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO chat_default_recipients SELECT ?
@@ -693,8 +772,10 @@ func (s *Store) SendMessage(ctx context.Context, conversation, key string, input
 		t.ID, text, t.CreatedAt.UnixMicro()); err != nil {
 		return Task{}, false, err
 	}
-	if err := bindSkill(ctx, tx, t.ID, text, input.SkillName); err != nil {
-		return Task{}, false, err
+	if !background {
+		if err := bindSkill(ctx, tx, t.ID, text, input.SkillName); err != nil {
+			return Task{}, false, err
+		}
 	}
 	if jobID != "" {
 		result, err := tx.ExecContext(ctx, `INSERT INTO work_questions(task_id,job_id)
@@ -739,6 +820,9 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 		Scan(&turn.Agent.ID, &conv, &turn.Agent.Name, &turn.Agent.Instructions, &turn.Agent.AllowEdits, &turn.Agent.Model,
 			&turn.Agent.Role, &turn.Origin, &turn.Title, &turn.Brief, &parent); err != nil {
 		return Turn{}, err
+	}
+	if turn.Origin == backgroundRequest {
+		turn.Agent.Workspace = ""
 	}
 	if turn.Origin == WatchOrigin {
 		var raw string
@@ -812,7 +896,17 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 	}
 	turn.CanRequestInput = task.Kind == BackgroundWork
 	turn.workspaceRoot = s.workspaceRoot
-	turn.coordinate = s.workspaceRoot != "" && task.Kind == AgentTurn && turn.Origin != "peer_reply"
+	turn.coordinate = task.Kind == AgentTurn && (turn.Origin == backgroundRequest || s.workspaceRoot != "" && turn.Origin != "peer_reply")
+	if task.Kind == AgentTurn {
+		turn.revisingBud, err = isBudRevision(ctx, s.db, task.ID)
+		if err != nil {
+			return Turn{}, err
+		}
+		turn.coordinate = turn.coordinate || turn.revisingBud
+		if turn.revisingBud {
+			turn.Agent.Workspace, turn.Agent.AllowEdits, turn.CanLearn = "", false, false
+		}
+	}
 	if turn.Skill, err = skillForTurn(ctx, s.db, task.ID, parent); err != nil {
 		return Turn{}, err
 	}
@@ -871,14 +965,14 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 	if parent != "" {
 		cutoff = parent
 	}
-	// An answer can refer to a card long outside the normal transcript window.
+	// An answer can refer to a question long outside the normal transcript window.
 	// Follow its question chain and reserve room for the originating request.
 	rows, err := s.db.QueryContext(ctx, `
-		WITH RECURSIVE card_context(task_id) AS (
-			SELECT task_id FROM choice_cards WHERE answer_task_id=?
-			UNION SELECT q.task_id FROM choice_cards q JOIN card_context c ON q.answer_task_id=c.task_id
-		), original_card(task_id) AS (
-			SELECT t.id FROM tasks t JOIN card_context c ON c.task_id=t.id ORDER BY t.rowid LIMIT 1
+		WITH RECURSIVE question_links(task_id,answer_task_id) AS (`+chatQuestionLinks+`), question_context(task_id) AS (
+			SELECT task_id FROM question_links WHERE answer_task_id=?
+			UNION SELECT q.task_id FROM question_links q JOIN question_context c ON q.answer_task_id=c.task_id
+		), original_question(task_id) AS (
+			SELECT t.id FROM tasks t JOIN question_context c ON c.task_id=t.id ORDER BY t.rowid LIMIT 1
 		)
 		SELECT `+messageFields+` FROM chat_turns ct JOIN tasks t ON t.id=ct.task_id JOIN messages m ON m.task_id=t.id
 		LEFT JOIN turn_details td ON td.task_id=t.id
@@ -891,8 +985,8 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 			OR (m.role='assistant' AND t.kind='background_work' AND m.created<=(SELECT started FROM tasks WHERE id=?)))
 		ORDER BY CASE
 			WHEN m.task_id=? AND m.role='user' THEN 3
-			WHEN m.task_id=(SELECT task_id FROM original_card) AND m.role='user' THEN 2
-			WHEN m.task_id IN (SELECT task_id FROM card_context) THEN 1
+			WHEN m.task_id=(SELECT task_id FROM original_question) AND m.role='user' THEN 2
+			WHEN m.task_id IN (SELECT task_id FROM question_context) THEN 1
 		ELSE 0 END DESC, m.id DESC LIMIT 40`, cutoff, conv, assignmentOnly, task.ID, teamCall, teamCall, teamCall, cutoff, teamReleased, teamReleased, task.ID, cutoff)
 	if err != nil {
 		return Turn{}, err
@@ -927,6 +1021,9 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 			for _, option := range m.Card.Options {
 				size += len(option)
 			}
+		}
+		if m.BudProposal != nil {
+			size += len(m.BudProposal.Name) + len(m.BudProposal.Role) + len(m.BudProposal.Instructions)
 		}
 		for _, correction := range m.Steering {
 			if correction.State == steerApplied {
@@ -969,7 +1066,7 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 			turn.Attachments, err = readWorkAttachments(ctx, s.db, task.ID, turn.attachmentSource)
 		}
 	} else if err == nil && turn.attachmentSource != "" {
-		turn.Attachments, err = readAttachments(ctx, s.db, turn.attachmentSource)
+		turn.Attachments, err = readRequestAttachments(ctx, s.db, turn.attachmentSource)
 	}
 	if err == nil && task.Kind == AgentTurn && request != nil && request.JobID != "" {
 		// The persisted link authorizes this reference even if inviting a

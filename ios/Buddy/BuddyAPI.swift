@@ -52,6 +52,25 @@ struct BuddyError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+struct ChatUpload: Encodable, Equatable, Sendable {
+    let name: String
+    let data: Data
+
+    static func read(_ urls: [URL], remainingBytes: Int) throws -> [Self] {
+        var remaining = remainingBytes
+        return try urls.map { url in
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let file = try FileHandle(forReadingFrom: url)
+            defer { try? file.close() }
+            let data = try file.read(upToCount: remaining + 1) ?? Data()
+            guard data.count <= remaining else { throw BuddyError("Attachments can total up to 8 MB.") }
+            remaining -= data.count
+            return ChatUpload(name: url.lastPathComponent, data: data)
+        }
+    }
+}
+
 private final class ServerTrust: NSObject, URLSessionTaskDelegate {
     let pin: String
 
@@ -185,11 +204,49 @@ final class BuddyAPI: Sendable {
         return image.data
     }
 
-    func send(chat: String, text: String, agent: String? = nil, job: String? = nil, key: String) async throws {
-        var body = ["text": text]
-        body["agent_id"] = agent
-        body["job_id"] = job
-        _ = try await data("/v1/conversations/\(chat)/messages", method: "POST", body: body, key: key)
+    func send(chat: String, text: String, agent: String? = nil, job: String? = nil,
+              background: Bool = false, backgroundAnswer: String? = nil,
+              attachments: [ChatUpload] = [], key: String) async throws {
+        struct Message: Encodable {
+            let text: String
+            let agent_id: String?
+            let job_id: String?
+            let background: Bool?
+            let background_answer: String?
+            let attachments: [ChatUpload]?
+        }
+        let body = Message(text: text, agent_id: agent, job_id: job, background: background ? true : nil,
+                           background_answer: backgroundAnswer, attachments: attachments.isEmpty ? nil : attachments)
+        do {
+            _ = try await data("/v1/conversations/\(chat)/messages", method: "POST", body: body, key: key)
+        } catch let error as BuddyError where background && error.status == 400 && error.message == "Invalid request." {
+            throw BuddyError("Update the Buddy server to run work directly from the composer.")
+        }
+    }
+
+    enum BudApproval: String, Encodable {
+        case createOnly = "create_only"
+        case startWork = "start_work"
+    }
+
+    func createProposedBud(chat: String, task: String, approval: BudApproval?) async throws -> Bud {
+        do {
+            let path = "/v1/conversations/\(chat)/bud-proposals/\(task)"
+            if let approval {
+                return try await load(path + "/approval", method: "POST", body: ["approval": approval])
+            }
+            return try await load(path, method: "POST")
+        } catch let error as BuddyError where error.status == 403 || error.status == 404 && error.message == "Buddy returned HTTP 404." {
+            throw BuddyError("Update the Buddy server to approve this draft.")
+        }
+    }
+
+    func stopWork(_ job: String) async throws {
+        do {
+            _ = try await data("/v1/work/\(job)/cancel", method: "POST")
+        } catch let error as BuddyError where error.status == 403 || error.status == 405 {
+            throw BuddyError("Update the Buddy server to stop jobs from iPhone.")
+        }
     }
 
     func markRead(chat: String, through: Int64) async throws {

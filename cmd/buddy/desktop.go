@@ -38,6 +38,7 @@ type desktop struct {
 	loadedLanguages, loadingLanguages, savingLanguages bool
 
 	section                  string
+	connectionTab            connectionsTab
 	chat                     tasks.Conversation
 	edit                     tasks.Agent
 	draft                    string
@@ -97,80 +98,83 @@ type desktop struct {
 	retryTarget     string
 	retryJob        string
 	retrySkill      string
+	retryBackground bool
+	retryQuestion   string
 
-	conversationID  string
-	inspectedAgent  string
-	directory       tasks.Directory
-	workspace       tasks.Workspace
-	workspaceErr    string
-	inspectorClosed bool
-	otherAvatars    map[string]*avatarCache
-	drafts          map[string]string
-	jobDrafts       map[string]tasks.WorkItem
-	chatReads       map[string]chatReadProgress
-	chatViewport    chatViewport
-	creatingAgent   bool
-	editLoading     bool
-	editReturn      string
-	budPictures     map[string]*budPicture
-	budSettingsErr  string
-	primarySaving   string
-	removingBud     string
-	showRemovedBuds bool
-	groupLeadSaving bool
-	group           tasks.GroupRequest
-	routine         tasks.Routine
-	routineInterval string
-	routineCadence  int
-	inspectorErr    string
-	answeringCard   string
-	hostFile        string
-	localServer     *localServer
-	onboarding      bool
-	hostGuideOpen   bool
-	hasSavedHost    bool
-	canRelaunchHost bool
-	remoteHost      bool
-	hostBusy        bool
-	hostPending     bool
-	hostNotice      string
-	devices         []tasks.Device
-	deviceErr       string
-	pairOpen        bool
-	pairName        string
-	pairAddress     string
-	pairFilename    string
-	pairNotice      string
-	moveOpen        bool
-	moveAddress     string
-	moveListen      string
-	moveExporting   bool
-	moveArchive     string
-	movedTo         string
-	moveNotice      string
-	moveSourceDir   string
-	removingDevice  string
-	deviceNotice    string
-	pairID          string
-	pairSameHost    bool
-	pairTunnel      bool
-	pairSSH         string
-	pairWorkspace   string
-	pairPool        bool
-	pairEdits       bool
-	authOpen        bool
-	voice           *desktopVoice
-	voiceErr        string
-	directVoiceMic  bool
-	micCheckCancel  context.CancelFunc
-	micCheckLevel   float32
-	micCheckStatus  string
-	voiceAuth       api.VoiceAuth
-	voiceAuthLoaded bool
-	voiceKeyOpen    bool
-	voiceKeyBusy    bool
-	voiceKeyDraft   string
-	voiceKeyErr     string
+	conversationID    string
+	inspectedAgent    string
+	directory         tasks.Directory
+	workspace         tasks.Workspace
+	workspaceErr      string
+	inspectorClosed   bool
+	otherAvatars      map[string]*avatarCache
+	drafts            map[string]string
+	jobDrafts         map[string]tasks.WorkItem
+	backgroundAnswers map[string]string
+	chatReads         map[string]chatReadProgress
+	chatViewport      chatViewport
+	creatingAgent     bool
+	editLoading       bool
+	editReturn        string
+	budPictures       map[string]*budPicture
+	budSettingsErr    string
+	primarySaving     string
+	removingBud       string
+	showRemovedBuds   bool
+	groupLeadSaving   bool
+	group             tasks.GroupRequest
+	routine           tasks.Routine
+	routineInterval   string
+	routineCadence    int
+	inspectorErr      string
+	answeringCard     string
+	hostFile          string
+	localServer       *localServer
+	onboarding        bool
+	hostGuideOpen     bool
+	hasSavedHost      bool
+	canRelaunchHost   bool
+	remoteHost        bool
+	hostBusy          bool
+	hostPending       bool
+	hostNotice        string
+	devices           []tasks.Device
+	deviceErr         string
+	pairOpen          bool
+	pairName          string
+	pairAddress       string
+	pairFilename      string
+	pairNotice        string
+	moveOpen          bool
+	moveAddress       string
+	moveListen        string
+	moveExporting     bool
+	moveArchive       string
+	movedTo           string
+	moveNotice        string
+	moveSourceDir     string
+	removingDevice    string
+	deviceNotice      string
+	pairID            string
+	pairSameHost      bool
+	pairTunnel        bool
+	pairSSH           string
+	pairWorkspace     string
+	pairPool          bool
+	pairEdits         bool
+	authOpen          bool
+	voice             *desktopVoice
+	voiceErr          string
+	directVoiceMic    bool
+	micCheckCancel    context.CancelFunc
+	micCheckLevel     float32
+	micCheckStatus    string
+	voiceAuth         api.VoiceAuth
+	voiceAuthLoaded   bool
+	voiceKeyOpen      bool
+	voiceKeyBusy      bool
+	voiceKeyDraft     string
+	voiceKeyErr       string
 }
 
 func (a *desktop) refresh(c *ui.Context) {
@@ -254,7 +258,14 @@ func (a *desktop) refresh(c *ui.Context) {
 				chat.Messages = mergeMessages(a.chat.Messages, chat.Messages)
 			}
 			if len(chat.EarlierUpdates) != 0 {
-				chat.Messages = mergeMessages(chat.Messages, chat.EarlierUpdates)
+				loaded := make(map[int64]bool, len(chat.Messages))
+				for _, message := range chat.Messages {
+					loaded[message.ID] = true
+				}
+				updates := slices.DeleteFunc(chat.EarlierUpdates, func(message tasks.Message) bool {
+					return message.BudProposal != nil && message.BudProposal.ConversationID != "" && !loaded[message.ID]
+				})
+				chat.Messages = mergeMessages(chat.Messages, updates)
 			}
 			applyReactionUpdates(chat.Messages, chat.ReactionUpdates)
 			a.chat = chat
@@ -444,24 +455,30 @@ func copyAgent(agent tasks.Agent) tasks.Agent {
 	return agent
 }
 
-func (a *desktop) send() { a.submit("") }
+func (a *desktop) send() { a.submit("", false) }
+
+func (a *desktop) sendBackground() { a.submit("", true) }
 
 func (a *desktop) canSendAttachments() bool {
 	return a.protocolChecked.IsZero() || a.serverProtocol >= api.AttachmentProtocol
 }
 
-func (a *desktop) submit(target string) {
+func (a *desktop) submit(target string, background bool) {
 	if a.chat.Archived || a.chat.Agent.Removed {
 		return
 	}
 	id := a.currentConversation()
 	job := a.jobDrafts[id]
+	question := a.backgroundAnswers[id]
 	text := strings.TrimSpace(a.draft)
 	skill := a.skillForDraft(text)
+	if question != "" {
+		skill = ""
+	}
 	if skill != "" {
 		target = ""
 	}
-	if target != "" && (!a.canSteer(target) || len(a.attachments) != 0 || job.ID != "") {
+	if target != "" && (!a.canSteer(target) || len(a.attachments) != 0 || job.ID != "" || question != "") {
 		return
 	}
 	if (text == "" && len(a.attachments) == 0) || a.sending || a.pickingFiles || !a.online || a.window == nil {
@@ -484,8 +501,9 @@ func (a *desktop) submit(target string) {
 	}
 	a.sending, a.chatErr = true, ""
 	jobKey := job.ID + "/" + job.InputID
-	if a.retryKey == "" || a.retryText != text || a.retryTarget != target || a.retryJob != jobKey || a.retrySkill != skill {
+	if a.retryKey == "" || a.retryText != text || a.retryTarget != target || a.retryJob != jobKey || a.retrySkill != skill || a.retryBackground != background || a.retryQuestion != question {
 		a.retryKey, a.retryText, a.retryTarget, a.retryJob, a.retrySkill = rand.Text(), text, target, jobKey, skill
+		a.retryBackground, a.retryQuestion = background, question
 	}
 	files := slices.Clone(a.attachments)
 	win, key := a.window, a.retryKey
@@ -498,7 +516,7 @@ func (a *desktop) submit(target string) {
 			err = a.client.Steer(a.ctx, target, text, key)
 		default:
 			_, err = a.client.SendMessage(a.ctx, id, key, tasks.MessageRequest{
-				Text: text, Attachments: files, JobID: job.ID, SkillName: skill,
+				Text: text, Attachments: files, JobID: job.ID, SkillName: skill, Background: background, BackgroundAnswer: question,
 			})
 		}
 		win.Update(func() {
@@ -513,6 +531,7 @@ func (a *desktop) submit(target string) {
 			}
 			a.setAttachments(nil)
 			delete(a.jobDrafts, id)
+			delete(a.backgroundAnswers, id)
 			if strings.TrimSpace(a.draft) == text {
 				a.draft = ""
 				delete(a.selectedSkills, id)

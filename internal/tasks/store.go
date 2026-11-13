@@ -102,9 +102,26 @@ func OpenStore(ctx context.Context, path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("upgrade MCP settings: %w", err)
 	}
+	if err := migrateBudChoiceCards(ctx, db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("upgrade Bud choice cards: %w", err)
+	}
+	if err := migrateBudProposalWork(ctx, db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("upgrade saved Bud assignments: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, fileReferenceSchema+mobileSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize file references and iPhone access: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET status='failed'
+		WHERE status='succeeded' AND id IN (SELECT task_id FROM turn_details WHERE origin=?)
+		AND EXISTS(SELECT 1 FROM messages m WHERE m.task_id=tasks.id AND m.role='assistant'
+			AND (m.text=? OR substr(m.text,-length(?))=?))
+		AND NOT EXISTS(SELECT 1 FROM turn_details child WHERE child.parent_id=tasks.id)`,
+		backgroundRequest, archivedReplyMessage, "\n\n"+archivedReplyMessage, "\n\n"+archivedReplyMessage); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("reopen interrupted background requests: %w", err)
 	}
 	return &Store{db: db, dbPath: path, startedAt: time.Now().UTC()}, nil
 }
@@ -224,15 +241,16 @@ func (s *Store) claimLane(ctx context.Context, background bool, occupied ...stri
 	}
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, `
-		SELECT t.id,t.repo FROM tasks t WHERE t.status='queued' AND (t.kind='background_work')=?
+		SELECT t.id,CASE WHEN td.origin=? THEN '' ELSE t.repo END FROM tasks t
+		LEFT JOIN turn_details td ON td.task_id=t.id WHERE t.status='queued' AND (t.kind='background_work')=?
 			AND NOT EXISTS(SELECT 1 FROM device_runs dr WHERE dr.task_id=t.id)
 			AND NOT EXISTS(SELECT 1 FROM pooled_work p WHERE p.task_id=t.id)
-			AND NOT EXISTS(SELECT 1 FROM restored_workspace_tasks h WHERE h.task_id=t.id)
+			AND (td.origin=? OR NOT EXISTS(SELECT 1 FROM restored_workspace_tasks h WHERE h.task_id=t.id))
 			AND NOT EXISTS(SELECT 1 FROM voice_team_steps step JOIN voice_team_runs run ON run.call_id=step.call_id
 				LEFT JOIN tasks previous ON previous.id=step.previous_task
 				WHERE step.task_id=t.id AND (run.released_at=0 OR previous.status IN ('queued','running','needs_input','cancelling')))
 			AND `+dependenciesReady+`
-			ORDER BY EXISTS(SELECT 1 FROM standing_inbox i WHERE i.task_id=t.id),t.rowid`, background)
+			ORDER BY EXISTS(SELECT 1 FROM standing_inbox i WHERE i.task_id=t.id),t.rowid`, backgroundRequest, background, backgroundRequest)
 	if err != nil {
 		return Task{}, err
 	}
@@ -249,7 +267,7 @@ func (s *Store) claimLane(ctx context.Context, background bool, occupied ...stri
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return Task{}, err
 	}
-	var id string
+	var id, runRepo string
 	for _, candidate := range candidates {
 		plan, err := readExecutionPlan(ctx, tx, candidate.id)
 		if err != nil {
@@ -285,7 +303,7 @@ func (s *Store) claimLane(ctx context.Context, background bool, occupied ...stri
 		_, gitErr := os.Stat(filepath.Join(candidate.repo, ".git"))
 		isolatedProject := plan.ProjectID != "" && gitErr == nil
 		if isolatedProject || candidate.repo == "" || !workspaceOccupied(candidate.repo, occupied) {
-			id = candidate.id
+			id, runRepo = candidate.id, candidate.repo
 			break
 		}
 	}
@@ -301,6 +319,7 @@ func (s *Store) claimLane(ctx context.Context, background bool, occupied ...stri
 	if err != nil {
 		return Task{}, err
 	}
+	t.Repository = runRepo
 	if t.Kind == RepoCheck {
 		if err := addEvent(ctx, tx, t.ID, "system", "Started repository check.\n"); err != nil {
 			return Task{}, err
@@ -325,7 +344,7 @@ func workspaceOccupied(repo string, occupied []string) bool {
 }
 
 func (s *Store) cancel(ctx context.Context, id string, queuedOnly bool) (Task, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginMobileWrite(ctx)
 	if err != nil {
 		return Task{}, err
 	}
@@ -434,16 +453,22 @@ func (s *Store) finishTurn(ctx context.Context, id string, status Status, summar
 		return err
 	}
 	defer tx.Rollback()
-	if err := finishTask(ctx, tx, id, status, summary, reply, action); err != nil {
+	if err := s.finishTask(ctx, tx, id, status, summary, reply, action); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func finishTask(ctx context.Context, tx *sql.Tx, id string, status Status, summary, reply string, action *TurnAction) error {
+const archivedReplyMessage = "This group was archived during the reply."
+
+func (s *Store) finishTask(ctx context.Context, tx *sql.Tx, id string, status Status, summary, reply string, action *TurnAction) error {
 	var current Status
-	var kind string
-	if err := tx.QueryRowContext(ctx, "SELECT status,kind FROM tasks WHERE id=?", id).Scan(&current, &kind); err != nil {
+	var kind, origin string
+	var archived bool
+	if err := tx.QueryRowContext(ctx, `SELECT t.status,t.kind,COALESCE(td.origin,''),
+		EXISTS(SELECT 1 FROM chat_turns ct JOIN archived_groups a ON a.conversation_id=ct.conversation_id WHERE ct.task_id=t.id)
+		FROM tasks t LEFT JOIN turn_details td ON td.task_id=t.id WHERE t.id=?`, id).
+		Scan(&current, &kind, &origin, &archived); err != nil {
 		return err
 	}
 	if current == Cancelling {
@@ -454,6 +479,24 @@ func finishTask(ctx context.Context, tx *sql.Tx, id string, status Status, summa
 	}
 	if current != Running && current != Cancelling {
 		return ErrInactive
+	}
+	var revisingBud bool
+	if status == Succeeded && kind == AgentTurn {
+		var err error
+		revisingBud, err = isBudRevision(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+	}
+	if archived && status == Succeeded && kind == AgentTurn && (action == nil || !action.githubWriteRun) {
+		summary = archivedReplyMessage
+		if origin == backgroundRequest || revisingBud {
+			status = Failed
+		}
+		if action != nil {
+			*action = TurnAction{}
+		}
+		reply = summary
 	}
 	var finished any
 	if status != NeedsInput {
@@ -475,17 +518,40 @@ func finishTask(ctx context.Context, tx *sql.Tx, id string, status Status, summa
 		if status == NeedsInput && kind == BackgroundWork {
 			return requestWorkInput(ctx, tx, id, reply)
 		}
-		if status == Succeeded && kind == AgentTurn && action != nil {
+		if revisingBud && status == Succeeded {
+			saved, err := saveBudRevision(ctx, tx, id, action)
+			if err != nil {
+				return err
+			}
+			switch {
+			case !saved:
+				status, summary = Failed, "Couldn't save the revised Bud draft."
+				reply = summary + " Choose an answer again to retry."
+				if _, err := tx.ExecContext(ctx, "UPDATE tasks SET status=?,summary=? WHERE id=?", status, summary, id); err != nil {
+					return err
+				}
+			case action.Card == nil:
+				reply = "Your Bud draft is ready."
+			default:
+				reply = ""
+			}
+		} else if status == Succeeded && kind == AgentTurn && action != nil && (!archived || action.githubWriteRun) {
 			if !action.hasManagement() {
 				if err := saveLearning(ctx, tx, id, action.Learning); err != nil {
 					return err
 				}
 			}
-			note, err := saveTurnAction(ctx, tx, id, action, reply)
+			note, err := s.saveTurnAction(ctx, tx, id, action, reply)
 			if err != nil {
 				return err
 			}
-			if action.hasHandoff() || action.hasRoutines() || action.hasManagement() {
+			if action.backgroundPlanFailed {
+				status, summary = Failed, "Couldn't queue background work."
+				if _, err := tx.ExecContext(ctx, "UPDATE tasks SET status=?,summary=? WHERE id=?", status, summary, id); err != nil {
+					return err
+				}
+			}
+			if action.BudProposal != nil || action.hasHandoff() || action.hasRoutines() || action.hasManagement() {
 				// Only acknowledge changes that were actually saved.
 				reply = note
 			} else if note != "" {

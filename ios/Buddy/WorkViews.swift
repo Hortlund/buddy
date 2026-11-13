@@ -256,6 +256,7 @@ struct WorkDetail: View {
     @State private var actionError: String?
     @State private var busy = false
     @State private var frame: ExecutionFrame?
+    @State private var confirmStop = false
     private var currentChat: String { detail?.item.conversationId ?? chat }
 
     private struct ReplyRequest {
@@ -276,6 +277,11 @@ struct WorkDetail: View {
                             Label("Open chat", systemImage: "bubble.left")
                         }
                         .font(.callout)
+                        if ["queued", "running", "needs_input"].contains(detail.item.status) {
+                            Button("Stop job", role: .destructive) { confirmStop = true }
+                                .buttonStyle(.bordered)
+                                .disabled(busy)
+                        }
                     }
                     if let project = detail.item.projectName?.nilIfEmpty { Label(project, systemImage: "folder").font(.headline) }
                     if let sessions = detail.sessions, !sessions.isEmpty {
@@ -357,6 +363,9 @@ struct WorkDetail: View {
         .navigationBarTitleDisplayMode(.inline)
         .task(id: phase) { await refreshWhileActive(phase, load: load) }
         .refreshable { await load() }
+        .confirmationDialog("Stop this job?", isPresented: $confirmStop, titleVisibility: .visible) {
+            Button("Stop job", role: .destructive, action: stop)
+        }
     }
 
     private func section(_ title: String, _ body: String) -> some View {
@@ -384,6 +393,22 @@ struct WorkDetail: View {
             if detail?.item.requirements?.contains(where: { ["browser", "desktop"].contains($0) }) == true { frame = try? await api.executionFrame(job:id) }
             loadError = nil
         } catch where !Task.isCancelled { loadError = error.localizedDescription } catch {}
+    }
+
+    private func stop() {
+        guard !busy else { return }
+        busy = true
+        actionError = nil
+        Task {
+            defer { busy = false }
+            do {
+                try await api.stopWork(id)
+                await load()
+            } catch {
+                actionError = error.localizedDescription
+                await load()
+            }
+        }
     }
 
     private func send(_ field: Binding<String>, input: String?) {

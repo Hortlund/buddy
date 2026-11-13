@@ -74,6 +74,13 @@ func (v *executionView) finishRefresh(hosts []tasks.Device, projects []tasks.Pro
 
 func (a *desktop) executionSettings(c *ui.Context) {
 	if a.serverProtocol < api.ExecutionProtocol {
+		message := "Update the Buddy server to manage execution."
+		if !a.online {
+			message = "Connect to a Buddy server to manage execution."
+		} else if a.protocolChecked.IsZero() {
+			message = "Checking server compatibility…"
+		}
+		ui.Text(c, message).TextColor(c.Theme().TextMuted)
 		return
 	}
 	a.refreshExecution(c)
@@ -88,7 +95,7 @@ func (a *desktop) executionSettings(c *ui.Context) {
 					if host.Online {
 						state = "Online"
 					}
-					connectionBadge(c, state, host.Online)
+					connectionStatus(c, state, host.Online)
 				})
 				if host.Profile == nil || host.Profile.OS == "" {
 					ui.Text(c, "Update buddyworker to discover this host's tools and projects.").FontSize(12).TextColor(c.Theme().TextMuted)
@@ -96,18 +103,18 @@ func (a *desktop) executionSettings(c *ui.Context) {
 				}
 				profile := host.Profile
 				ui.Text(c, profile.OS+" · "+profile.Architecture+" · "+profile.Environment+" · "+strconv.Itoa(profile.CPUs)+" CPUs · "+strconv.Itoa(profile.Slots)+" slots").FontSize(12).TextColor(c.Theme().TextMuted)
-				ui.Row(c).Wrap().Gap(6).Children(func() {
+				ui.Row(c).Wrap().Gap(12).Children(func() {
 					for _, cap := range profile.Capabilities {
 						if !cap.Installed {
 							continue
 						}
-						state := "Available"
+						label := cap.ID
 						if !cap.Enabled {
-							state = "Disabled"
+							label += " (disabled)"
 						} else if !cap.Ready {
-							state = "Needs setup"
+							label += " (needs setup)"
 						}
-						connectionBadge(c, cap.ID+" · "+state, cap.Ready)
+						ui.Text(c, label).FontSize(12).TextColor(c.Theme().TextMuted)
 					}
 				})
 				if len(profile.Projects) > 0 {
@@ -126,7 +133,7 @@ func (a *desktop) executionSettings(c *ui.Context) {
 							if enabled {
 								label = "Disable " + provider.name
 							}
-							ui.Button(c.Key(provider.id), label).Height(28).Disabled(v.busy).Tooltip("Enable the provider's discovered interaction tools for explicitly assigned work on this host").OnClick(func() {
+							ui.Button(c.Key(provider.id), label).Height(28).Disabled(v.busy).OnClick(func() {
 								a.changeExecution(func(ctx context.Context, client *api.Client) error {
 									return client.EnableAutomation(ctx, provider.id, !enabled)
 								})
@@ -157,7 +164,6 @@ func (a *desktop) executionSettings(c *ui.Context) {
 	}
 	sectionLabel(c, "Projects")
 	ui.Column(c).FillWidth().Gap(9).Children(func() {
-		ui.Text(c, "Give each project a checkout on the hosts that can work on it. Workers use their own Git branches and return deliverables here.").FontSize(12).TextColor(c.Theme().TextMuted)
 		for _, project := range v.projects {
 			ui.Row(c.Key(project.ID)).FillWidth().Padding(10).Gap(8).Radius(9).Border(1, c.Theme().Border).Children(func() {
 				ui.Button(c, "Edit "+project.Name).Grow(1).Justify(ui.Start).OnClick(func() {

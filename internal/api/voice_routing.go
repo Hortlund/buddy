@@ -36,10 +36,10 @@ func spokenFloorRequest(text string) string {
 
 // Authorize from the caller's own words, before sending the model any job data.
 // A correction without a job name is scoped to a just-created handoff.
-func spokenWorkStop(text string, agents []tasks.AgentRef, recentJob string) (bool, string) {
+func spokenWorkStop(text string, agents []tasks.AgentRef, recentJobs []string) (requested bool, targetJob string, ambiguous bool) {
 	text = strings.TrimSpace(text)
 	if strings.HasPrefix(text, `"`) || strings.HasPrefix(text, "“") {
-		return false, ""
+		return false, "", false
 	}
 	if prefix, rest, ok := strings.Cut(text, ","); ok {
 		if id, length := addressedVoiceAgent(prefix, agents, false); id != "" && length == len(addressWords(prefix)) {
@@ -69,32 +69,35 @@ func spokenWorkStop(text string, agents []tasks.AgentRef, recentJob string) (boo
 			break
 		}
 	}
-	if recentJob != "" && slices.Contains([]string{
+	if len(recentJobs) != 0 && slices.Contains([]string{
 		"stop it", "cancel it", "cancel that", "don t do that", "do not do that", "never mind",
 		"avbryt det", "stoppa det", "gör inte det", "strunta i det",
 	}, command) {
-		return true, recentJob
+		if len(recentJobs) == 1 {
+			return true, recentJobs[0], false
+		}
+		return false, "", true
 	}
 	verb, target, ok := strings.Cut(command, " ")
 	if !ok || !slices.Contains([]string{"stop", "cancel", "abort", "avbryt", "avbryta", "stoppa"}, verb) {
-		return false, ""
+		return false, "", false
 	}
 	targetWords := strings.Fields(target)
 	if len(targetWords) > 1 && !slices.Contains([]string{"the", "this", "that", "my", "your", "our", "det", "den", "mitt", "min"}, targetWords[0]) {
-		return false, ""
+		return false, "", false
 	}
 	for _, word := range targetWords {
 		if slices.Contains([]string{"about", "after", "and", "before", "but", "during", "for", "from", "if", "not", "or", "unless", "until", "when",
 			"efter", "eller", "från", "före", "inte", "men", "när", "och", "om", "tills"}, word) {
-			return false, ""
+			return false, "", false
 		}
 	}
 	for _, noun := range []string{"job", "task", "work", "build", "run", "jobbet", "uppgiften", "arbetet", "körningen"} {
 		if target == noun || strings.HasSuffix(target, " "+noun) {
-			return true, ""
+			return true, "", false
 		}
 	}
-	return false, ""
+	return false, "", false
 }
 
 type voiceAddressMode uint8

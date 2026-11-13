@@ -92,19 +92,134 @@ func (s *Store) JoinVoiceGroup(ctx context.Context, conversation, callID, name, 
 }
 
 func (s *Store) AddVoiceRoutine(ctx context.Context, conversation, callID string, routine Routine) (Routine, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	saved, err := s.AddVoiceRoutines(ctx, conversation, callID, []Routine{routine})
 	if err != nil {
 		return Routine{}, err
+	}
+	return saved[0], nil
+}
+
+func (s *Store) AddVoiceRoutines(ctx context.Context, conversation, callID string, routines []Routine) ([]Routine, error) {
+	if len(routines) == 0 || len(routines) > 8 {
+		return nil, &InputError{"Schedule one to eight routines at a time."}
+	}
+	tx, err := s.beginMobileWrite(ctx)
+	if err != nil {
+		return nil, err
 	}
 	defer tx.Rollback()
-	routine, err = addRoutine(ctx, tx, conversation, routine)
+	saved := make([]Routine, 0, len(routines))
+	for _, routine := range routines {
+		routine, err = addRoutine(ctx, tx, conversation, routine)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO voice_call_routines VALUES (?,?)", routine.ID, callID); err != nil {
+			return nil, err
+		}
+		saved = append(saved, routine)
+	}
+	return saved, tx.Commit()
+}
+
+// SaveVoiceBud attaches the result to the call so it follows the transcript
+// when a one-to-one call becomes a group.
+func (s *Store) SaveVoiceBud(ctx context.Context, chat, call, speaker, request string, draft BudDraft, handoffs ...Handoff) (Agent, []AssignedWork, string, error) {
+	tx, err := s.beginMobileWrite(ctx)
 	if err != nil {
-		return Routine{}, err
+		return Agent{}, nil, "", err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO voice_call_routines VALUES (?,?)", routine.ID, callID); err != nil {
-		return Routine{}, err
+	defer tx.Rollback()
+	if err := requireOpenConversation(ctx, tx, chat); err != nil {
+		return Agent{}, nil, "", err
 	}
-	return routine, tx.Commit()
+	agent, err := conversationParticipant(ctx, tx, chat, speaker)
+	if err != nil {
+		return Agent{}, nil, "", err
+	}
+	line, err := newVoiceLine(ctx, tx, chat, call, agent)
+	if err != nil {
+		return Agent{}, nil, "", err
+	}
+	profile, err := saveBudProposal(ctx, tx, line.ID, draft)
+	if err != nil {
+		return Agent{}, nil, "", err
+	}
+	var pending []Handoff
+	if len(handoffs) != 0 {
+		var independent []Handoff
+		independent, pending, err = partitionBudWork(&TurnAction{Handoffs: handoffs})
+		if err != nil {
+			return Agent{}, nil, "", err
+		}
+		if len(independent) != 0 {
+			return Agent{}, nil, "", &InputError{"Use a separate handoff for jobs independent of the new Bud."}
+		}
+	}
+	if len(pending) != 0 {
+		if err := snapshotAssignmentWorkspaces(ctx, tx, line.ID); err != nil {
+			return Agent{}, nil, "", err
+		}
+		if err := saveBudProposalWork(ctx, tx, line.ID, pending, ""); err != nil {
+			return Agent{}, nil, "", err
+		}
+	}
+	if !draft.CreateNow || !authorizesBudCreation(request, draft.Evidence, agent.Name, profile.Name) {
+		if err := addReply(ctx, tx, line.ID, ""); err != nil {
+			return Agent{}, nil, "", err
+		}
+		return Agent{}, nil, "", tx.Commit()
+	}
+
+	// Preserve the proposal if the assignment or filesystem prevents creation.
+	if _, err := tx.ExecContext(ctx, "SAVEPOINT voice_bud"); err != nil {
+		return Agent{}, nil, "", err
+	}
+	saved, err := s.saveAgentInTx(ctx, tx, profile.ID, profile, true, true)
+	if err != nil {
+		return Agent{}, nil, "", err
+	}
+	var jobs []AssignedWork
+	var notice string
+	mode := CreateBudOnly
+	if len(pending) != 0 {
+		mode = CreateBudWithWork
+		jobs, notice, err = queueBudProposalWork(ctx, tx, line.ID, saved.ID, pending, "")
+	}
+	if err == nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO bud_proposal_approvals VALUES (?,?)", line.ID, mode); err != nil {
+			return Agent{}, nil, "", err
+		}
+		if err := addReply(ctx, tx, line.ID, notice); err != nil {
+			return Agent{}, nil, "", err
+		}
+		err = s.commitProposedBud(tx, saved)
+		if err == nil {
+			return saved, jobs, notice, nil
+		}
+	}
+	var invalid *InputError
+	var provision *budProvisionError
+	switch {
+	case errors.As(err, &invalid):
+		notice = "I saved the Bud and its assignments as a draft. " + invalid.Message
+	case errors.Is(err, ErrQueueFull):
+		notice = "I saved the Bud and its assignments as a draft because the work queue is full."
+	case errors.As(err, &provision):
+		notice = budProvisionNotice
+	default:
+		return Agent{}, nil, "", err
+	}
+	if _, err := tx.ExecContext(ctx, "ROLLBACK TO voice_bud"); err != nil {
+		return Agent{}, nil, "", err
+	}
+	if _, err := tx.ExecContext(ctx, "RELEASE voice_bud"); err != nil {
+		return Agent{}, nil, "", err
+	}
+	if err := addReply(ctx, tx, line.ID, notice); err != nil {
+		return Agent{}, nil, "", err
+	}
+	return Agent{}, nil, notice, tx.Commit()
 }
 
 // RecordVoiceLine inserts a completed transcript line, without scheduling a text turn.
@@ -167,11 +282,14 @@ func (s *Store) queueVoiceAssignments(ctx context.Context, conversation, request
 	if actionID == "" || len(actionID) > 512 || len(handoffs) == 0 || len(handoffs) > 8 {
 		return nil, &InputError{"Give one to eight clear assignments at a time."}
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginMobileWrite(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err := requireOpenConversation(ctx, tx, conversation); err != nil {
+		return nil, err
+	}
 	key := "voice:" + callID + ":" + actionID
 	var existing []AssignedWork
 	for i := range handoffs {

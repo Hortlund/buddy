@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -98,9 +99,9 @@ func (a *desktop) view(c *ui.Context) {
 }
 
 func (a *desktop) sidebar(c *ui.Context, header, inset float32) {
-	ui.Column(c).Width(186).Shrink(0).Background(c.Theme().SurfaceHover).BorderWidth(0, 1, 0, 0).BorderColor(c.Theme().Border).Children(func() {
+	ui.Column(c).Width(186).Shrink(0).Background(c.Theme().Background.Mix(c.Theme().SurfaceHover, .5)).BorderWidth(0, 1, 0, 0).BorderColor(c.Theme().Border).Children(func() {
 		ui.Row(c).Height(header).Shrink(0).FillWidth().Padding(0, 16).
-			BorderWidth(0, 0, 1, 0).BorderColor(c.Theme().Border).DragWindow().Children(func() {
+			DragWindow().Children(func() {
 			if inset == 0 {
 				buildWordmark(c)
 			}
@@ -135,7 +136,7 @@ func (a *desktop) sidebar(c *ui.Context, header, inset float32) {
 		case a.loaded:
 			text, dot = "Server offline", c.Theme().Danger
 		}
-		ui.Row(c).Padding(15, 19).Gap(8).Tooltip(a.endpoint).Children(func() {
+		ui.Row(c).Padding(13, 19).Gap(8).Tooltip(a.endpoint).Children(func() {
 			ui.Box(c).Size(6, 6).Radius(99).Background(dot)
 			ui.Text(c, text).FontSize(11).TextColor(c.Theme().TextMuted)
 		})
@@ -164,9 +165,6 @@ func (a *desktop) conversation(c *ui.Context, header, inset float32) {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, title).FontSize(14).FontWeight(680).SingleLine().MinWidth(0).Role(ui.RoleHeading)
-				if a.chat.Name == "" && a.chat.Agent.ID != "" && a.chat.Agent.ID == a.directory.PrimaryAgentID {
-					primaryBadge(c)
-				}
 			})
 			ui.Text(c, subtitle).FontSize(11).SingleLine().TextColor(c.Theme().TextMuted).Tooltip(subtitle)
 		})
@@ -323,6 +321,23 @@ func (a *desktop) reply(c *ui.Context, message tasks.Message, active *tasks.Acti
 				if message.BudProposal != nil {
 					a.budProposalCard(c, message)
 				}
+				backgroundQuestion := message.BackgroundQuestion
+				if a.chat.OpenBackgroundQuestions != nil {
+					backgroundQuestion = slices.Contains(a.chat.OpenBackgroundQuestions, message.TaskID)
+				}
+				if backgroundQuestion {
+					ui.Button(c.Key("reply-background"), "Reply").Height(27).AlignSelf(ui.Start).
+						Disabled(!a.online || a.sending || a.saving || a.chat.Archived).OnClick(func() {
+						id := a.currentConversation()
+						if a.backgroundAnswers == nil {
+							a.backgroundAnswers = make(map[string]string)
+						}
+						a.backgroundAnswers[id] = message.TaskID
+						delete(a.jobDrafts, id)
+						delete(a.selectedSkills, id)
+						a.chatErr, a.focusComposer = "", true
+					})
+				}
 				if message.GitHub != nil {
 					githubCard(c.Key("github-result"), message.GitHub)
 				}
@@ -398,7 +413,6 @@ func (a *desktop) emptyConversation(c *ui.Context) {
 	ui.Column(c).Grow(1).FillWidth().Center().Padding(24).Gap(13).Children(func() {
 		a.drawProfile(c, a.focusedAgent(), 108, true, orbIdle)
 		ui.Text(c, "What can I take off your plate?").FontSize(32).Bold().LetterSpacing(-.9).TextAlign(ui.Center)
-		ui.Text(c, "Talk through an idea or give me something to take care of.").FontSize(14).TextColor(c.Theme().TextMuted).TextAlign(ui.Center)
 		ui.Row(c).Gap(8).Wrap().Justify(ui.Center).Margin(5, 0, 0).Children(func() {
 			ui.Button(c.Key("starter-plan"), "Plan my workday").OnClick(func() {
 				a.draft = "Help me plan my workday."
@@ -479,6 +493,7 @@ func (a *desktop) composer(c *ui.Context) {
 	active := a.chat.Active
 	chatID := a.currentConversation()
 	job := a.jobDrafts[chatID]
+	question := a.backgroundAnswers[chatID]
 	if !a.dictationPending.IsZero() {
 		if time.Now().After(a.dictationPending) {
 			a.dictationPending = time.Time{}
@@ -522,8 +537,16 @@ func (a *desktop) composer(c *ui.Context) {
 					Disabled(a.sending).OnClick(func() { delete(a.jobDrafts, chatID) })
 			})
 		}
+		if question != "" {
+			ui.Row(c.Key("background-reference")).AlignSelf(ui.Start).Gap(5).Padding(2, 4, 2, 8).
+				Radius(9).Background(c.Theme().SurfacePressed).Children(func() {
+				ui.Text(c, "Replying to background work").FontSize(12)
+				ui.Button(c.Key("remove-background-reference"), "×").Label("Clear reply").Size(25, 25).
+					Disabled(a.sending).OnClick(func() { delete(a.backgroundAnswers, chatID) })
+			})
+		}
 		a.attachmentDrafts(c)
-		if job.InputID == "" {
+		if job.InputID == "" && question == "" {
 			a.skillSuggestions(c)
 		}
 		ui.Row(c.Key("composer-shell")).FillWidth().AlignItems(ui.End).Background(c.Theme().Surface).
@@ -540,11 +563,14 @@ func (a *desktop) composer(c *ui.Context) {
 			if job.InputID != "" {
 				placeholder = "Reply to this job…"
 			}
+			if question != "" {
+				placeholder = "Reply…"
+			}
 			input := ui.TextAreaBase(c.Key("chat-input"), &a.draft).Label("Message").
 				Placeholder(placeholder).Lines(1, 5).Padding(7, 7).Grow(1).MinWidth(0).MinHeight(34).FontSize(14).
 				OnPaste(func(string) bool { return a.pasteAttachment() }).
 				OnTextKey(func(k ui.TextKey) bool {
-					if k.Key == ui.KeyTab && k.Mods == 0 && a.online && a.serverProtocol >= api.SkillSelectionProtocol && job.InputID == "" && !a.sending {
+					if k.Key == ui.KeyTab && k.Mods == 0 && a.online && a.serverProtocol >= api.SkillSelectionProtocol && job.InputID == "" && question == "" && !a.sending {
 						if matches := skillMatches(k.Text(), a.directory.Skills); len(matches) > 0 {
 							a.fillSkill(matches[0].Name)
 							k.SetText(a.draft)
@@ -559,9 +585,9 @@ func (a *desktop) composer(c *ui.Context) {
 						a.draft = k.Text()
 						a.send()
 					case ui.Alt | ui.Cmd:
-						if active != nil && len(a.attachments) == 0 && job.ID == "" {
+						if active != nil && len(a.attachments) == 0 && job.ID == "" && question == "" {
 							a.draft = k.Text()
-							a.submit(active.ID)
+							a.submit(active.ID, false)
 						}
 					default:
 						return false
@@ -587,7 +613,11 @@ func (a *desktop) composer(c *ui.Context) {
 			hasDraft := strings.TrimSpace(a.draft) != "" || len(a.attachments) != 0
 			canSubmit := a.online && !a.sending && !a.pickingFiles && hasDraft &&
 				(len(a.attachments) == 0 || a.canSendAttachments())
-			if active == nil || job.InputID != "" {
+			if a.serverProtocol >= api.BackgroundComposerProtocol && job.ID == "" && question == "" && !strings.HasPrefix(strings.TrimSpace(a.draft), "/") && a.skillForDraft(a.draft) == "" {
+				quietIcon(c.Key("send-background"), "Run in background", workMark,
+					!canSubmit || strings.TrimSpace(a.draft) == "", a.sendBackground)
+			}
+			if active == nil || job.InputID != "" || question != "" {
 				label := "Send"
 				if a.sending {
 					label = "Sending…"
@@ -601,7 +631,7 @@ func (a *desktop) composer(c *ui.Context) {
 				if len(a.attachments) == 0 && job.ID == "" && a.skillForDraft(a.draft) == "" {
 					ui.Button(c.Key("steer-"+active.ID), "Steer now").Height(31).AlignSelf(ui.Center).
 						Disabled(!canSubmit || !active.CanSteer || active.Status != tasks.Running).
-						Tooltip("Send to the current run · ⌥ ⌘ Enter").OnClick(func() { a.submit(active.ID) })
+						Tooltip("Send to the current run · ⌥ ⌘ Enter").OnClick(func() { a.submit(active.ID, false) })
 				}
 			}
 			label := "Stop"
@@ -723,16 +753,5 @@ func (a *desktop) settings(c *ui.Context) {
 			ui.PrimaryButton(c.Key("agent-save"), label).Height(35).
 				Disabled(!a.online || a.saving || a.picturePicking || strings.TrimSpace(a.edit.Name) == "").OnClick(a.saveAgent)
 		})
-	})
-}
-
-func (a *desktop) connections(c *ui.Context) {
-	controlPage(c.Key("connections"), "Connections", "Choose where Buddy lives and what it can use.", nil, func() {
-		a.hosting(c)
-		a.mobileDevices(c)
-		a.runtimes(c)
-		a.executionSettings(c)
-		a.mcpSettings(c)
-		a.integrationSettings(c)
 	})
 }

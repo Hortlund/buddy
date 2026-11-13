@@ -67,7 +67,7 @@ Inspect a job’s result, rendered code, and progress in Work.
 ### iPhone
 
 Connect to the same Buddy home to chat, make decisions, and check work on the go.
-Choose Light, GitHub Dark, or your system appearance in Settings.
+Choose Light, Dark, or your system appearance in Settings.
 
 <p>
   <img src="docs/screenshots/iphone-chats.png" width="270" alt="Buddy for iPhone showing Buds and group chats">

@@ -185,7 +185,7 @@ func privateMemoryTurn(ctx context.Context, db queryer, task string, automatic b
 		WHERE td.task_id=? AND td.origin='chat'
 		AND NOT EXISTS(SELECT 1 FROM group_chats g WHERE g.conversation_id=ct.conversation_id)
 		AND NOT EXISTS(SELECT 1 FROM work_questions w WHERE w.task_id=td.task_id)
-		AND NOT EXISTS(SELECT 1 FROM choice_cards c WHERE c.answer_task_id=td.task_id)
+		AND NOT EXISTS(SELECT 1 FROM choice_card_answers c WHERE c.answer_task_id=td.task_id)
 		AND NOT EXISTS(SELECT 1 FROM chat_attachments f WHERE f.task_id=td.task_id)
 		AND NOT EXISTS(SELECT 1 FROM turn_skills k WHERE k.task_id=td.task_id)
 		AND (NOT ? OR NOT EXISTS(SELECT 1 FROM bud_learning_disabled d WHERE d.agent_id=td.agent_id))

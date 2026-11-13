@@ -229,9 +229,12 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT t.id,COALESCE(td.parent_id,''),dr.task_id IS NULL FROM tasks t
+		SELECT t.id,COALESCE(td.parent_id,''),dr.task_id IS NULL,COALESCE(b.draft_id,''),p.task_id IS NOT NULL,
+		COALESCE(checkout.path,''),EXISTS(SELECT 1 FROM work_inputs wi WHERE wi.job_id=t.id) FROM tasks t
 		JOIN turn_details td ON td.task_id=t.id JOIN chat_turns ct ON ct.task_id=t.id
 		LEFT JOIN device_runs dr ON dr.task_id=t.id LEFT JOIN pooled_work p ON p.task_id=t.id
+		LEFT JOIN bud_work_project_sources b ON b.task_id=t.id
+		LEFT JOIN device_project_checkouts checkout ON checkout.task_id=t.id
 		WHERE t.status='queued' AND (dr.device_id=? OR (? AND dr.task_id IS NULL AND p.task_id IS NOT NULL
 			AND (? OR ct.allow_edits=0))) AND NOT EXISTS(
 			SELECT 1 FROM device_runs busy JOIN tasks active ON active.id=busy.task_id
@@ -243,13 +246,13 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 		return nil, err
 	}
 	type candidate struct {
-		id, parent string
-		unassigned bool
+		id, parent, draft, checkout string
+		unassigned, pooled, resumed bool
 	}
 	var queued []candidate
 	for rows.Next() {
 		var item candidate
-		if err := rows.Scan(&item.id, &item.parent, &item.unassigned); err != nil {
+		if err := rows.Scan(&item.id, &item.parent, &item.unassigned, &item.draft, &item.pooled, &item.checkout, &item.resumed); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -269,6 +272,23 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 		workspace, reason, err := executionWorkspace(ctx, tx, id, plan)
 		if err != nil {
 			return nil, err
+		}
+		// Answering a device job requeues it and keeps its input history.
+		if reason == "" && item.resumed && item.checkout != "" && item.checkout != workspace {
+			reason = "This job already used a different project checkout. To use the current checkout, stop this job and start a new one."
+		}
+		if reason == "" && item.draft != "" {
+			var namedHost bool
+			if !item.pooled {
+				namedHost, err = draftJobNamesWorker(ctx, tx, item.id, item.draft)
+				if err != nil {
+					return nil, err
+				}
+			}
+			reason, err = validateSavedCheckout(ctx, tx, item.draft, plan.ProjectID, id, workspace, namedHost)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if reason != "" {
 			if _, err := tx.ExecContext(ctx, "UPDATE tasks SET summary=? WHERE id=?", reason, item.id); err != nil {
@@ -336,6 +356,14 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 		}
 		if item.unassigned {
 			if _, err := tx.ExecContext(ctx, "INSERT INTO device_runs(task_id,device_id) VALUES (?,?)", item.id, id); err != nil {
+				return nil, err
+			}
+		}
+		if plan.ProjectID != "" && (!item.resumed || item.checkout == "") {
+			// Before the first start, the path belongs to the current lease.
+			// A resumed job with a saved path keeps it across delivery retries.
+			if _, err := tx.ExecContext(ctx, `INSERT INTO device_project_checkouts VALUES (?,?)
+				ON CONFLICT(task_id) DO UPDATE SET path=excluded.path`, job.ID, workspace); err != nil {
 				return nil, err
 			}
 		}
@@ -505,7 +533,7 @@ func (s *Store) FinishDeviceJob(ctx context.Context, id, task string, report Dev
 	} else if report.Status != Succeeded {
 		summary = "Couldn't finish on the device."
 	}
-	if err := finishTask(ctx, tx, task, report.Status, summary, clipReply(report.Reply), nil); err != nil {
+	if err := s.finishTask(ctx, tx, task, report.Status, summary, clipReply(report.Reply), nil); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE device_runs SET reported=1 WHERE task_id=?", task); err != nil {

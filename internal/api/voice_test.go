@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -64,6 +65,52 @@ func newTestVoiceProvider(t *testing.T) (realtimeDial, <-chan testVoicePeer) {
 	}, peers
 }
 
+func TestVoiceBudCreationTracksJobsForImmediateCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	store, err := tasks.OpenStore(ctx, filepath.Join(t.TempDir(), "buddy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	chat, err := store.Conversation(ctx, tasks.DefaultConversationID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dial, peers := newTestVoiceProvider(t)
+	client, err := dial(ctx, "test-voice-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseNow()
+	<-peers
+	worker := tasks.NewWorker(store, nil, nil)
+	room := newVoiceRoom(ctx, client, store, worker, chat, "test-voice-secret", dial)
+	member := &roomMember{agent: chat.Agent}
+	room.tools, room.turn = voiceCaller, 1
+	room.callerWords = "Create a Bud named Finch and have Finch review the logs."
+	_, _, err = room.performTool(member, realtimeItem{Name: "create_bud", CallID: "create", Arguments: `{"name":"Finch","role":"Reviewer","instructions":"Review logs.","create_now":true,"evidence":"Create a Bud named Finch","assignments":[{"agent_id":"new_bud","title":"Review logs","brief":"Review the logs.","read_only":true}]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := store.WorkOverview(ctx, chat.ID)
+	if err != nil || len(jobs) != 1 || !slices.Equal(room.handoffJobs, []string{jobs[0].ID}) || room.handoffTurn != 1 {
+		t.Fatalf("create_bud did not track its job: %+v, %v, %v", jobs, room.handoffJobs, err)
+	}
+	room.turn++
+	room.requested = true // Inspect the route without starting a model response.
+	if err := room.routeUser(member, "Cancel that."); err != nil || !room.stopRequested || room.stopTarget != jobs[0].ID {
+		t.Fatalf("cancel that did not target the new job: %q, %v", room.stopTarget, err)
+	}
+	room.tools = voiceStopWork
+	if result := room.stopWork(jobs[0].ID); result != "The job was stopped." {
+		t.Fatal(result)
+	}
+	if stopped, err := store.Get(ctx, jobs[0].ID); err != nil || stopped.Status != tasks.Cancelled {
+		t.Fatalf("new Bud's work was not cancelled: %+v, %v", stopped, err)
+	}
+}
+
 func TestVoiceRoomRoutesAudioAndHandsOffWork(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
 	defer cancel()
@@ -97,7 +144,8 @@ func TestVoiceRoomRoutesAudioAndHandsOffWork(t *testing.T) {
 	}
 	started := make(chan tasks.Turn, 1)
 	worker := tasks.NewWorker(store, nil, func(ctx context.Context, turn tasks.Turn, _ tasks.Emit) (string, error) {
-		if turn.Title == "Review logs" {
+		switch turn.Title {
+		case "Review logs", "Release logs", "Check build", "Fetch logs", "Summarize findings":
 			return "Buddy reviewed the logs.", nil
 		}
 		if turn.TeamStep == "wrap_up" {
@@ -506,6 +554,118 @@ func TestVoiceRoomRoutesAudioAndHandsOffWork(t *testing.T) {
 		return err == nil && detail.Status == tasks.Cancelled
 	})
 
+	const createAndAssign = "Create a Bud named Finch, have Forge fetch the logs, then have Finch review them and Forge summarize the findings. Also check the build yourself, then ask Forge for their take, and let me know when it's done."
+	speak(first, "new-bud-work", createAndAssign)
+	receive(second, "conversation.item.create")
+	provide(first, "response.created", object{"response": object{"id": "new-bud"}})
+	provide(first, "response.done", object{"response": object{"id": "new-bud", "status": "completed", "output": []object{{
+		"type": "function_call", "name": "create_bud", "call_id": "create-finch",
+		"arguments": `{"name":"Finch","role":"CI reviewer","instructions":"Report failed test cases.","create_now":true,"evidence":"Create a Bud named Finch","assignments":[` +
+			`{"agent_id":"` + agent.ID + `","title":"Fetch logs","brief":"Fetch the logs.","read_only":true},` +
+			`{"agent_id":"new_bud","title":"Release logs","brief":"Review the release logs.","read_only":true,"after":[1]},` +
+			`{"agent_id":"` + agent.ID + `","title":"Summarize findings","brief":"Summarize Finch's findings.","read_only":true,"after":[2]}]}`,
+	}, {
+		"type": "function_call", "name": "ask_agent", "call_id": "ask-forge",
+		"arguments": `{"agent_id":"` + agent.ID + `","question":"What’s your take on the release?"}`,
+	}}}})
+	read("settled")
+	created := read("bud_saved")
+	if created.Item == "" || created.Text != "Finch was created" {
+		t.Fatalf("missing creation receipt: %+v", created)
+	}
+	fetchJob := read("work_queued")
+	if output := receive(first, "conversation.item.create")["item"].(map[string]any)["output"].(string); !strings.Contains(output, created.Item) {
+		t.Fatalf("tool result omitted the new Bud ID: %q", output)
+	}
+	receive(first, "conversation.item.create")
+	read("roster")
+	followup := receive(first, "response.create")["response"].(map[string]any)
+	tools, _ := followup["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "delegate_work" {
+		t.Fatalf("new Bud follow-up did not expose just delegation: %+v", followup)
+	}
+	read("responding")
+	provide(first, "response.created", object{"response": object{"id": "delegate-new-bud"}})
+	provide(first, "response.done", object{"response": object{"id": "delegate-new-bud", "status": "completed", "output": []object{{
+		"type": "function_call", "name": "delegate_work", "call_id": "build-job",
+		"arguments": `{"assignments":[{"title":"Check build","brief":"Check the build.","read_only":true}]}`,
+	}}}})
+	read("settled")
+	if event := read("work_queued"); event.Text != "Check build" {
+		t.Fatalf("missing independent job receipt: %+v", event)
+	}
+	work, err := store.WorkOverview(ctx, group.Chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(work, func(job tasks.WorkItem) bool { return job.Title == "Check build" && job.AgentID == buddy.ID }) {
+		t.Fatalf("the independent assignment did not queue after creation: %+v", work)
+	}
+	finch := slices.IndexFunc(work, func(job tasks.WorkItem) bool { return job.Title == "Release logs" })
+	if finch < 0 || work[finch].AgentID != created.Item {
+		t.Fatalf("job was not assigned to the new Bud: %+v", work)
+	}
+	finchJob := work[finch]
+	if detail, err := store.WorkDetails(ctx, group.Chat, finchJob.ID); err != nil ||
+		len(detail.Dependencies) != 1 || detail.Dependencies[0].ID != fetchJob.Item {
+		t.Fatalf("Finch's job lost its prerequisite: %+v, %v", detail.Dependencies, err)
+	}
+	summary := slices.IndexFunc(work, func(job tasks.WorkItem) bool { return job.Title == "Summarize findings" })
+	if summary < 0 || work[summary].AgentID != agent.ID {
+		t.Fatalf("dependent job was not assigned to Forge: %+v", work)
+	}
+	if detail, err := store.WorkDetails(ctx, group.Chat, work[summary].ID); err != nil ||
+		len(detail.Dependencies) != 1 || detail.Dependencies[0].ID != finchJob.ID {
+		t.Fatalf("dependent job did not wait for Finch: %+v, %v", detail.Dependencies, err)
+	}
+	receive(first, "conversation.item.create")
+	if reply := receive(first, "response.create")["response"].(map[string]any); reply["tool_choice"] != "none" {
+		t.Fatalf("follow-up could run twice: %+v", reply)
+	}
+	read("responding")
+	provide(first, "response.created", object{"response": object{"id": "finch-confirm"}})
+	provide(first, "response.done", object{"response": object{"id": "finch-confirm", "status": "completed"}})
+	read("settled")
+	if next := read("roster"); next.Agent != agent.ID {
+		t.Fatalf("delegation lost the requested speaker: %+v", next)
+	}
+	if next := receive(second, "response.create")["response"].(map[string]any); !strings.Contains(next["instructions"].(string), "your take on the release") {
+		t.Fatalf("handoff lost its question: %+v", next)
+	}
+	read("responding")
+	provide(second, "response.created", object{"response": object{"id": "forge-after-finch"}})
+	provide(second, "response.done", object{"response": object{"id": "forge-after-finch", "status": "completed"}})
+	read("settled")
+	read("roster")
+
+	const ambiguousStop = "Wait, cancel that."
+	provide(first, "input_audio_buffer.speech_started", object{"item_id": "cancel-which"})
+	read("listening")
+	provide(first, "input_audio_buffer.speech_stopped", object{"item_id": "cancel-which"})
+	provide(first, "conversation.item.input_audio_transcription.completed", object{"item_id": "cancel-which", "transcript": ambiguousStop})
+	read("final")
+	if clarification := receive(first, "response.create")["response"].(map[string]any); clarification["tool_choice"] != "none" ||
+		!strings.Contains(clarification["instructions"].(string), "name the job") {
+		t.Fatalf("ambiguous stop didn't ask for a target: %+v", clarification)
+	}
+	read("responding")
+	receive(second, "conversation.item.create")
+	provide(first, "response.created", object{"response": object{"id": "ask-which-job"}})
+	provide(first, "response.done", object{"response": object{"id": "ask-which-job", "status": "completed", "output": []object{{
+		"type": "function_call", "name": "stop_work", "call_id": "ambiguous-stop",
+		"arguments": `{"job_id":"` + finchJob.ID + `"}`,
+	}}}})
+	read("settled")
+	if detail, err := store.WorkDetails(ctx, group.Chat, finchJob.ID); err != nil || detail.Status == tasks.Cancelled || detail.Status == tasks.Cancelling {
+		t.Fatalf("ambiguous cancellation stopped a job: %+v, %v", detail, err)
+	}
+	conversation, err := store.Conversation(ctx, group.Chat, 0)
+	if err != nil || !slices.ContainsFunc(conversation.Messages, func(m tasks.Message) bool {
+		return m.BudProposal != nil && m.BudProposal.Name == "Finch" && m.BudProposal.ConversationID != ""
+	}) {
+		t.Fatalf("the new Bud was not linked in the call chat: %v", err)
+	}
+
 	// The caller addresses a named Bud while the lead receives the mic.
 	provide(first, "input_audio_buffer.speech_started", object{"item_id": "user4"})
 	read("listening")
@@ -575,14 +735,14 @@ func TestVoiceRoomRoutesAudioAndHandsOffWork(t *testing.T) {
 		var captions []string
 		teamFinished := false
 		for _, m := range chat.Messages {
-			if m.Origin == "voice" {
+			if m.Origin == "voice" && m.Text != "" && m.BudProposal == nil {
 				captions = append(captions, m.Text)
 			}
 			if m.Text == "Team wrap-up in the group chat." && m.AgentID == buddy.ID {
 				teamFinished = true
 			}
 		}
-		want := "Hello Buddy. Invite Forge.|Hello from Buddy.|Hi, everyone.|Hand over to Forge. Forge, prepare a status report, and Buddy, review the logs.|How is the report coming along?|I’m still here.|Wait, please stop that report job.|Forge, pass the floor to Buddy.|Could you keep working on the report together after I hang up?"
+		want := "Hello Buddy. Invite Forge.|Hello from Buddy.|Hi, everyone.|Hand over to Forge. Forge, prepare a status report, and Buddy, review the logs.|How is the report coming along?|I’m still here.|Wait, please stop that report job.|" + createAndAssign + "|" + ambiguousStop + "|Forge, pass the floor to Buddy.|Could you keep working on the report together after I hang up?"
 		return teamFinished && strings.Join(captions, "|") == want
 	})
 	private, err := store.Conversation(ctx, chatID, 0)
@@ -619,10 +779,17 @@ func TestSpokenWorkStopRequiresADirectCommand(t *testing.T) {
 		{text: "Stop.", recent: "job-1"},
 		{text: `"Stop the job."`},
 	} {
-		allowed, target := spokenWorkStop(test.text, agents, test.recent)
-		if allowed != test.allowed || target != test.target {
+		var recent []string
+		if test.recent != "" {
+			recent = []string{test.recent}
+		}
+		allowed, target, ambiguous := spokenWorkStop(test.text, agents, recent)
+		if allowed != test.allowed || target != test.target || ambiguous {
 			t.Errorf("spokenWorkStop(%q) = %v, %q, want %v, %q", test.text, allowed, target, test.allowed, test.target)
 		}
+	}
+	if allowed, target, ambiguous := spokenWorkStop("Wait, cancel that.", agents, []string{"job-1", "job-2"}); allowed || target != "" || !ambiguous {
+		t.Fatalf("ambiguous cancellation matched a job: %v, %q, %v", allowed, target, ambiguous)
 	}
 }
 

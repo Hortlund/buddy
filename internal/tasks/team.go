@@ -80,6 +80,16 @@ func (s *Store) TeamContext(ctx context.Context, chat, self string) (TeamContext
 	return team, tx.Commit()
 }
 
+// Model-visible titles outside the originating chat must also cover jobs
+// delegated by a composer assignment's workers.
+const sharedWorkTitle = `CASE WHEN EXISTS (
+	WITH RECURSIVE ancestors(id) AS (
+		SELECT td.parent_id WHERE td.parent_id IS NOT NULL
+		UNION SELECT parent.parent_id FROM turn_details parent JOIN ancestors a ON parent.task_id=a.id
+		WHERE parent.parent_id IS NOT NULL
+	) SELECT 1 FROM ancestors a JOIN turn_details parent ON parent.task_id=a.id WHERE parent.origin=?
+) THEN 'Background assignment' ELSE td.title END`
+
 func readTeamContext(ctx context.Context, db queryer, chat, self string) (TeamContext, error) {
 	team := TeamContext{SelfID: self, ConversationID: chat}
 	if err := db.QueryRowContext(ctx, `SELECT p.agent_id,c.agent_id FROM workspace_primary p
@@ -100,14 +110,16 @@ func readTeamContext(ctx context.Context, db queryer, chat, self string) (TeamCo
 	if team.Members, err = groupMembers(ctx, db, chat); err != nil {
 		return team, err
 	}
-	rows, err = db.QueryContext(ctx, `SELECT t.id,td.agent_id,a.name,td.title,t.status,t.created,ct.conversation_id,COALESCE(we.project_id,''),COALESCE(p.name,''),COALESCE(we.role,'general'),COALESCE(d.name,'Buddy server')
+	rows, err = db.QueryContext(ctx, `SELECT t.id,td.agent_id,a.name,
+		CASE WHEN ct.conversation_id=? THEN td.title ELSE `+sharedWorkTitle+` END,
+		t.status,t.created,ct.conversation_id,COALESCE(we.project_id,''),COALESCE(p.name,''),COALESCE(we.role,'general'),COALESCE(d.name,'Buddy server')
 		FROM tasks t JOIN turn_details td ON td.task_id=t.id JOIN chat_turns ct ON ct.task_id=t.id
 		JOIN agents a ON a.id=td.agent_id
  LEFT JOIN work_execution we ON we.task_id=t.id LEFT JOIN projects p ON p.id=we.project_id LEFT JOIN device_runs dr ON dr.task_id=t.id LEFT JOIN devices d ON d.id=dr.device_id
 		WHERE t.kind='background_work' AND (t.status IN ('queued','running','needs_input','cancelling')
 			OR ct.conversation_id=? AND t.finished>=?)
 		ORDER BY (t.status IN ('queued','running','needs_input','cancelling')) DESC,(ct.conversation_id=?) DESC,t.rowid DESC LIMIT 41`,
-		chat, time.Now().Add(-24*time.Hour).UnixMicro(), chat)
+		chat, backgroundRequest, chat, time.Now().Add(-24*time.Hour).UnixMicro(), chat)
 	if err != nil {
 		return team, err
 	}

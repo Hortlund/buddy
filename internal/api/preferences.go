@@ -39,6 +39,15 @@ func preferencesRoutes(mux *http.ServeMux, store *tasks.Store, worker *tasks.Wor
 		detail, err := store.ReferencedWorkDetails(r.Context(), r.PathValue("job"))
 		result(w, http.StatusOK, detail, err)
 	})
+	mux.HandleFunc("POST /v1/work/{job}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("job")
+		if _, err := store.ReferencedWorkDetails(r.Context(), id); err != nil {
+			result(w, 0, nil, err)
+			return
+		}
+		job, err := worker.Cancel(r.Context(), id, false)
+		result(w, http.StatusOK, job, err)
+	})
 	mux.HandleFunc("GET /v1/conversations/{chat}/work/{job}", func(w http.ResponseWriter, r *http.Request) {
 		detail, err := store.WorkDetails(r.Context(), r.PathValue("chat"), r.PathValue("job"))
 		result(w, http.StatusOK, detail, err)

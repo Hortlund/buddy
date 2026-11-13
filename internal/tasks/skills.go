@@ -33,6 +33,26 @@ CREATE TABLE IF NOT EXISTS bud_proposals (
 	task_id TEXT PRIMARY KEY REFERENCES chat_turns(task_id), bud_id TEXT NOT NULL UNIQUE,
 	name TEXT NOT NULL, role TEXT NOT NULL, instructions TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS bud_proposal_work (
+	task_id TEXT PRIMARY KEY REFERENCES chat_turns(task_id),
+	handoffs TEXT NOT NULL,
+	earlier_attachment_source TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS bud_proposal_approvals (
+	task_id TEXT PRIMARY KEY REFERENCES bud_proposals(task_id),
+	mode TEXT NOT NULL CHECK(mode IN ('create_only','start_work'))
+);
+CREATE TABLE IF NOT EXISTS bud_project_checkouts (
+	task_id TEXT NOT NULL REFERENCES chat_turns(task_id),
+	project_id TEXT NOT NULL,
+	host_id TEXT NOT NULL,
+	path TEXT NOT NULL,
+	PRIMARY KEY(task_id,project_id,host_id)
+);
+CREATE TABLE IF NOT EXISTS bud_work_project_sources (
+	task_id TEXT PRIMARY KEY REFERENCES tasks(id),
+	draft_id TEXT NOT NULL REFERENCES bud_proposals(task_id)
+);
 `
 
 type SkillInfo struct {

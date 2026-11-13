@@ -20,7 +20,11 @@ func (a *desktop) workerDevices(c *ui.Context) {
 	sectionLabel(c, "Worker devices")
 	connectionSection(c, func() {
 		ui.Row(c).Padding(11, 13).Gap(9).Children(func() {
-			connectionDetail(c, deviceMark, "Run jobs on other machines", "Each worker uses a folder you choose on that device.")
+			name := "No workers connected"
+			if len(a.devices) > 0 {
+				name = "Paired workers"
+			}
+			connectionDetail(c, deviceMark, name, "")
 			label := "Add device"
 			if a.pairOpen {
 				label = "Close setup"
@@ -39,9 +43,6 @@ func (a *desktop) workerDevices(c *ui.Context) {
 		}
 		if a.deviceErr != "" {
 			ui.Text(c, a.deviceErr).Padding(9, 13).FontSize(12).TextColor(c.Theme().Danger)
-		} else if len(a.devices) == 0 && !a.pairOpen {
-			ui.Text(c, "No workers yet. Add a device to give Buddy another place to run jobs.").
-				Padding(9, 13).FontSize(12).TextColor(c.Theme().TextMuted)
 		}
 		if a.deviceNotice != "" {
 			ui.Text(c, a.deviceNotice).Padding(9, 13).FontSize(12).TextColor(c.Theme().TextMuted)
@@ -220,7 +221,7 @@ func (a *desktop) pairFinish(c *ui.Context) {
 	}
 	ui.Row(c).Gap(8).Children(func() {
 		sectionLabel(c, "Step 2 of 2 · Start "+strings.TrimSpace(a.pairName))
-		connectionBadge(c, status, ready)
+		connectionStatus(c, status, ready)
 	})
 	ui.Text(c, "Install buddyworker and Codex on the worker. Open a terminal in the folder containing "+a.pairFilename+" and run the copied command.").
 		FontSize(12).TextColor(c.Theme().TextMuted)
@@ -254,13 +255,13 @@ func (a *desktop) deviceRow(c *ui.Context, device tasks.Device) {
 		} else if !device.Seen {
 			status, action = "Awaiting setup", "Cancel setup"
 		}
-		connectionBadge(c, status, device.Online)
+		connectionStatus(c, status, device.Online)
 		if device.Pool {
 			label := "Pool · read only"
 			if device.PoolEdits {
 				label = "Pool · edits allowed"
 			}
-			connectionBadge(c, label, false)
+			connectionStatus(c, label, false)
 		}
 		if device.ID == a.pairID && !a.pairOpen && !device.Seen {
 			ui.Button(c.Key("resume-"+device.ID), "Show setup").Height(27).Disabled(a.hostBusy || a.hostPending).

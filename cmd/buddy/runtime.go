@@ -43,6 +43,13 @@ func (a *desktop) showConnections() {
 	}
 }
 
+func (a *desktop) showConnectionTab(tab connectionsTab) {
+	if !a.saving {
+		a.connectionTab = tab
+		a.showConnections()
+	}
+}
+
 func (a *desktop) changeAuth(action string) {
 	if !a.online || a.authBusy || a.window == nil {
 		return

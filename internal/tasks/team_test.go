@@ -29,6 +29,214 @@ func teamTestStore(t *testing.T) *Store {
 	return s
 }
 
+func TestBackgroundChoiceAndDelegationPreserveTitlePrivacy(t *testing.T) {
+	ctx, s := t.Context(), teamTestStore(t)
+	other, err := s.CreateAgent(ctx, Agent{Name: "Other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const request = "Review the release. Ask which checkout to use before starting."
+	job, _, err := s.SendMessage(ctx, DefaultConversationID, "release-review", MessageRequest{Text: request, Background: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish := func(id, response string) {
+		t.Helper()
+		claimed, err := s.claimLane(ctx, false)
+		if err != nil || claimed.ID != id {
+			t.Fatalf("claim planner: %+v, %v", claimed, err)
+		}
+		turn, err := s.turn(ctx, claimed)
+		if err != nil || turn.Origin != backgroundRequest || !slices.ContainsFunc(turn.Messages, func(m Message) bool { return m.Text == request }) {
+			t.Fatalf("planner lost the original request: %+v, %v", turn, err)
+		}
+		turn.action = new(TurnAction)
+		reply, err := turn.decodeReply(response, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.finishTurn(ctx, id, Succeeded, "Replied.", reply, turn.action); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finish(job.ID, `{"reply":"","card":{"question":"Which checkout?","options":["Stable","Beta"]},"handoff":{"title":"Premature handoff","brief":"Review the release"}}`)
+	chat, err := s.Conversation(ctx, DefaultConversationID, 0)
+	if err != nil || len(chat.Work) != 0 || len(chat.Messages) != 2 || chat.Messages[1].Card == nil {
+		t.Fatalf("planner did not wait for the choice: %+v, %v", chat, err)
+	}
+	answer, _, err := s.AnswerCard(ctx, DefaultConversationID, job.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish(answer.ID, `{"reply":"","handoffs":[{"title":"Private release","brief":"Review the stable checkout"}]}`)
+	root, err := s.claimLane(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.controlWork(ctx, root.ID, "delegate", json.RawMessage(`{"request_id":"child","title":"Private subtask","brief":"Check the release logs","read_only":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	team, err := s.TeamContext(ctx, other.ConversationID, other.ID)
+	if err != nil || len(team.Assignments) != 2 || slices.ContainsFunc(team.Assignments, func(item TeamAssignment) bool { return item.Title != "Background assignment" }) {
+		t.Fatalf("shared team context leaked a title: %+v, %v", team.Assignments, err)
+	}
+	work, err := s.WorkContext(ctx, other.ConversationID, DefaultAgentID)
+	if err != nil || len(work) != 2 || slices.ContainsFunc(work, func(item WorkItem) bool { return item.Title != "Background assignment" }) {
+		t.Fatalf("shared work context leaked a title: %+v, %v", work, err)
+	}
+	work, err = s.WorkOverview(ctx, DefaultConversationID)
+	if err != nil || len(work) != 2 || !slices.ContainsFunc(work, func(item WorkItem) bool { return item.Title == "Private subtask" }) {
+		t.Fatalf("original chat lost its titles: %+v, %v", work, err)
+	}
+}
+
+func TestTypedBackgroundClarificationKeepsRequestAndRouting(t *testing.T) {
+	ctx, s := t.Context(), teamTestStore(t)
+	other, err := s.CreateAgent(ctx, Agent{Name: "Other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const request = "Review the attached release. Ask me which build to use before starting."
+	const question = "What build identifier should I use?"
+	plan, _, err := s.SendMessage(ctx, DefaultConversationID, "plan-review", MessageRequest{
+		Text: request, Background: true, Attachments: []Attachment{{Name: "release.txt", Data: []byte("release notes")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish := func(id, response string) Turn {
+		t.Helper()
+		claimed, err := s.claimLane(ctx, false)
+		if err != nil || claimed.ID != id {
+			t.Fatalf("claim planner: %+v, %v", claimed, err)
+		}
+		turn, err := s.turn(ctx, claimed)
+		if err != nil || turn.Origin != backgroundRequest || !turn.coordinate {
+			t.Fatalf("unexpected planner turn: %+v, %v", turn, err)
+		}
+		turn.action = new(TurnAction)
+		reply, err := turn.decodeReply(response, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.finishTurn(ctx, id, Succeeded, "Replied.", reply, turn.action); err != nil {
+			t.Fatal(err)
+		}
+		return turn
+	}
+	finish(plan.ID, `{"reply":"","clarification":"What build identifier should I use?","handoffs":[{"title":"Too soon","brief":"Review the release"}]}`)
+	chat, err := s.Conversation(ctx, DefaultConversationID, 0)
+	if err != nil || len(chat.Work) != 0 || len(chat.Messages) != 2 || !chat.Messages[1].BackgroundQuestion || chat.Messages[1].Text != question {
+		t.Fatalf("missing pending background question: %+v, %v", chat, err)
+	}
+	input := MessageRequest{BackgroundAnswer: plan.ID,
+		Attachments: []Attachment{{Name: "manifest.txt", Data: []byte("build manifest")}}}
+	if _, _, err := s.SendMessage(ctx, other.ConversationID, "cross-chat", input); err == nil {
+		t.Fatal("another chat answered the background question")
+	}
+	answer, _, err := s.SendMessage(ctx, DefaultConversationID, "answer-build", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry, created, err := s.SendMessage(ctx, DefaultConversationID, "answer-build", input); err != nil || created || retry.ID != answer.ID {
+		t.Fatalf("retry did not return the original turn: %+v, %v, %v", retry, created, err)
+	}
+	if _, _, err := s.SendMessage(ctx, DefaultConversationID, "second-answer", input); err == nil {
+		t.Fatal("another turn answered the same question")
+	}
+	turn := finish(answer.ID, `{"reply":"","handoffs":[{"title":"Private build v1.2","brief":"Review the attached release for v1.2"}]}`)
+	if !slices.ContainsFunc(turn.Messages, func(m Message) bool { return m.Text == request }) ||
+		!slices.ContainsFunc(turn.Messages, func(m Message) bool { return m.Text == input.Text && m.AnswerTo == question }) ||
+		len(turn.Attachments) != 2 || turn.Attachments[0].Name != "release.txt" || turn.Attachments[1].Name != "manifest.txt" {
+		t.Fatalf("planner lost the original request or the linked answer: %+v", turn)
+	}
+	job, err := s.claimLane(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerTurn, err := s.turn(ctx, job)
+	if err != nil || len(workerTurn.Attachments) != 2 ||
+		string(workerTurn.Attachments[0].Data) != "release notes" || string(workerTurn.Attachments[1].Data) != "build manifest" {
+		t.Fatalf("worker lost clarification files: %+v, %v", workerTurn.Attachments, err)
+	}
+	work, err := s.WorkContext(ctx, other.ConversationID, DefaultAgentID)
+	if err != nil || len(work) != 1 || work[0].Title != "Background assignment" {
+		t.Fatalf("resumed plan leaked the title: %+v, %v", work, err)
+	}
+}
+
+func TestBackgroundClarificationReopensAfterCancelledOrFailedAnswer(t *testing.T) {
+	ctx, s := t.Context(), teamTestStore(t)
+	plan, _, err := s.SendMessage(ctx, DefaultConversationID, "plan", MessageRequest{Text: "Review the build.", Background: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.claimLane(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.finishTurn(ctx, plan.ID, Succeeded, "Replied.", "Which build?", &TurnAction{backgroundQuestion: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, attempt := range []struct {
+		key     string
+		outcome Status
+		result  string
+	}{
+		{"cancelled", Cancelled, ""},
+		{"failed", Failed, ""},
+		{"invalid-worker", Failed, `{"reply":"","handoffs":[{"agent_id":"agt_missing","title":"Review","brief":"Review the build."}]}`},
+		{"empty-promise", Failed, `{"reply":"Thanks, I’ll start that now."}`},
+		{"succeeded", Succeeded, `{"reply":"","handoffs":[{"title":"Review","brief":"Review the build at /tmp/build."}]}`},
+	} {
+		key, outcome := attempt.key, attempt.outcome
+		input := MessageRequest{Text: "/tmp/build", BackgroundAnswer: plan.ID}
+		answer, _, err := s.SendMessage(ctx, DefaultConversationID, key, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chat, err := s.Conversation(ctx, DefaultConversationID, 0)
+		if err != nil || len(chat.OpenBackgroundQuestions) != 0 {
+			t.Fatalf("accepted answer didn't reserve the question: %v, %v", chat.OpenBackgroundQuestions, err)
+		}
+		if outcome == Cancelled {
+			if _, err := s.cancel(ctx, answer.ID, true); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			claimed, err := s.claimLane(ctx, false)
+			if err != nil || claimed.ID != answer.ID {
+				t.Fatalf("claim answer: %+v, %v", claimed, err)
+			}
+			if attempt.result != "" {
+				turn, err := s.turn(ctx, claimed)
+				if err != nil || turn.Skill != nil {
+					t.Fatalf("path reply was not a literal answer: %+v, %v", turn.Skill, err)
+				}
+				turn.action = new(TurnAction)
+				reply, err := turn.decodeReply(attempt.result, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := s.finishTurn(ctx, answer.ID, Succeeded, "Replied.", reply, turn.action); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := s.finish(ctx, answer.ID, outcome, "Finished.", ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if saved, err := s.Get(ctx, answer.ID); err != nil || saved.Status != outcome {
+			t.Fatalf("answer status = %s, want %s: %v", saved.Status, outcome, err)
+		}
+		chat, err = s.Conversation(ctx, DefaultConversationID, 0)
+		if err != nil || slices.Contains(chat.OpenBackgroundQuestions, plan.ID) != (outcome != Succeeded) {
+			t.Fatalf("question state after %s: %v, %v", outcome, chat.OpenBackgroundQuestions, err)
+		}
+		if retry, created, err := s.SendMessage(ctx, DefaultConversationID, key, input); err != nil || created || retry.ID != answer.ID {
+			t.Fatalf("retried request lost its original answer: %+v, %v, %v", retry, created, err)
+		}
+	}
+}
+
 func TestTeamContextFollowsNamesLeadershipAndDepartures(t *testing.T) {
 	ctx, s := t.Context(), teamTestStore(t)
 	peer, err := s.CreateAgent(ctx, Agent{Name: "Aster", Role: "Builder"})

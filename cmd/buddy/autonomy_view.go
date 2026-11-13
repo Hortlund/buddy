@@ -208,7 +208,7 @@ func (a *desktop) watchSettings(c *ui.Context) {
 		if choices := a.availableWatchConnections(); len(choices) != 0 {
 			ui.PrimaryButton(c.Key("new-watch"), "New watch").OnClick(func() { a.newConnectionWatch(choices[0]) })
 		} else {
-			ui.Button(c.Key("connect-watch-source"), "Connect a service").OnClick(a.showConnections)
+			ui.Button(c.Key("connect-watch-source"), "Connect a service").OnClick(func() { a.showConnectionTab(connectionsIntegrations) })
 		}
 	})
 	if v.draft.Source != "" {
@@ -315,7 +315,7 @@ func (a *desktop) watchSettings(c *ui.Context) {
 					})
 				}
 				if disconnected {
-					ui.Button(c.Key("watch-reconnect-"+watch.ID), "Connections").OnClick(a.showConnections)
+					ui.Button(c.Key("watch-reconnect-"+watch.ID), "Connections").OnClick(func() { a.showConnectionTab(connectionsIntegrations) })
 					return
 				}
 				ui.Button(c.Key("watch-toggle-"+watch.ID), label).Disabled(v.busy).OnClick(func() {

@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS work_execution (
  task_id TEXT PRIMARY KEY REFERENCES tasks(id), project_id TEXT NOT NULL,
  role TEXT NOT NULL, requirements TEXT NOT NULL, environment TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS device_project_checkouts (
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id), path TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS worker_sessions (
  id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), host_id TEXT NOT NULL,
  workspace TEXT NOT NULL, branch TEXT NOT NULL, started INTEGER NOT NULL, ended INTEGER,
@@ -260,13 +263,33 @@ func executionWorkspace(ctx context.Context, db queryer, host string, plan Execu
 	if plan.ProjectID == "" {
 		return "", "", nil
 	}
+	return projectCheckout(ctx, db, host, plan.ProjectID)
+}
+
+func projectCheckout(ctx context.Context, db queryer, host, project string) (string, string, error) {
 	var workspace string
-	err = db.QueryRowContext(ctx, `SELECT b.path FROM project_bindings b JOIN projects p ON p.id=b.project_id
-		WHERE b.project_id=? AND b.host_id=? AND p.archived=0`, plan.ProjectID, host).Scan(&workspace)
+	err := db.QueryRowContext(ctx, `SELECT b.path FROM project_bindings b JOIN projects p ON p.id=b.project_id
+		WHERE b.project_id=? AND b.host_id=? AND p.archived=0`, project, host).Scan(&workspace)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "This project has no checkout configured on this host.", nil
 	}
 	return workspace, "", err
+}
+
+const changedBudCheckout = "The project checkout changed or was unavailable when this work was drafted. Use the original checkout or request the work again."
+
+func validateSavedCheckout(ctx context.Context, tx *sql.Tx, draft, project, host, path string, namedHost bool) (string, error) {
+	if draft == "" || project == "" {
+		return "", nil
+	}
+	saved, err := savedProjectCheckout(ctx, tx, draft, project, host, namedHost)
+	if err != nil {
+		return "", err
+	}
+	if saved == "" || path != saved {
+		return changedBudCheckout, nil
+	}
+	return "", nil
 }
 
 func readExecutionPlan(ctx context.Context, db queryer, job string) (ExecutionPlan, error) {
@@ -377,12 +400,31 @@ func routeExecution(ctx context.Context, tx *sql.Tx, agent *Agent, request *work
 		}
 	}
 	if request.device != "" && request.device != DevicePool {
+		if request.projectDraft != "" && plan.ProjectID != "" {
+			path, _, err := projectCheckout(ctx, tx, request.device, plan.ProjectID)
+			if err != nil {
+				return err
+			}
+			reason, err := validateSavedCheckout(ctx, tx, request.projectDraft, plan.ProjectID, request.device, path, true)
+			if err != nil {
+				return err
+			}
+			if reason != "" {
+				return &InputError{reason}
+			}
+		}
 		return nil
 	} // Explicit offline hosts keep their queue.
 	if request.device == "" {
 		workspace, reason, err := executionWorkspace(ctx, tx, "server", plan)
 		if err != nil {
 			return err
+		}
+		if reason == "" {
+			reason, err = validateSavedCheckout(ctx, tx, request.projectDraft, plan.ProjectID, "server", workspace, explicitServer)
+			if err != nil {
+				return err
+			}
 		}
 		if reason != "" && explicitServer {
 			return &InputError{reason}
@@ -395,37 +437,61 @@ func routeExecution(ctx context.Context, tx *sql.Tx, agent *Agent, request *work
 			return nil
 		}
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT d.id FROM devices d JOIN device_pool_members p ON p.device_id=d.id
-		WHERE d.revoked=0 AND d.last_seen>? AND (?=0 OR p.allow_edits=1)
-		ORDER BY (SELECT count(*) FROM device_runs dr JOIN tasks t ON t.id=dr.task_id WHERE dr.device_id=d.id AND t.status IN ('running','cancelling')),d.name`, time.Now().Add(-deviceLeaseDuration).UnixMicro(), agent.AllowEdits)
+	hosts, err := eligiblePoolCheckouts(ctx, tx, plan, agent.AllowEdits, false)
 	if err != nil {
 		return err
+	}
+	for _, host := range hosts {
+		reason, err := validateSavedCheckout(ctx, tx, request.projectDraft, plan.ProjectID, host.id, host.path, false)
+		if err != nil {
+			return err
+		}
+		if reason == "" {
+			if request.device == "" {
+				request.device = host.id
+			}
+			return nil
+		}
+	}
+	if request.projectDraft != "" && plan.ProjectID != "" {
+		return &InputError{"No ready host has the saved project checkout. Choose Create Bud only or request the work again."}
+	}
+	return &InputError{"No ready host has the required tools and project checkout. Check host capabilities in Connections or choose a configured device."}
+}
+
+type workerCheckout struct{ id, path string }
+
+// Offline members can still claim a queued job when they reconnect.
+func eligiblePoolCheckouts(ctx context.Context, tx *sql.Tx, plan ExecutionPlan, allowEdits, includeOffline bool) ([]workerCheckout, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT d.id FROM devices d JOIN device_pool_members p ON p.device_id=d.id
+		WHERE d.revoked=0 AND (? OR d.last_seen>?) AND (?=0 OR p.allow_edits=1)
+		ORDER BY (SELECT count(*) FROM device_runs dr JOIN tasks t ON t.id=dr.task_id WHERE dr.device_id=d.id AND t.status IN ('running','cancelling')),d.name`, includeOffline, time.Now().Add(-deviceLeaseDuration).UnixMicro(), allowEdits)
+	if err != nil {
+		return nil, err
 	}
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return err
+			return nil, err
 		}
 		ids = append(ids, id)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
+		return nil, err
 	}
+	var hosts []workerCheckout
 	for _, host := range ids {
-		_, reason, err := executionWorkspace(ctx, tx, host, plan)
+		workspace, reason, err := executionWorkspace(ctx, tx, host, plan)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if reason == "" {
-			if request.device == "" {
-				request.device = host
-			}
-			return nil
+			hosts = append(hosts, workerCheckout{host, workspace})
 		}
 	}
-	return &InputError{"No ready host has the required tools and project checkout. Check host capabilities in Connections or choose a configured device."}
+	return hosts, nil
 }
 
 func workDependencies(ctx context.Context, db queryer, job string) ([]TeamAssignment, error) {

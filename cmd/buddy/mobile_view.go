@@ -68,7 +68,7 @@ func (a *desktop) mobileDevices(c *ui.Context) {
 	sectionLabel(c, "iPhone")
 	connectionSection(c, func() {
 		ui.Row(c).Padding(11, 13).Gap(9).AlignItems(ui.Center).Children(func() {
-			connectionDetail(c, deviceMark, "Buddy for iPhone", "Use your Buds, inbox, and background work from your phone.")
+			connectionDetail(c, deviceMark, "Buddy for iPhone", "")
 			label := "Pair iPhone"
 			if v.open {
 				label = "Close pairing"

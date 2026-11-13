@@ -33,6 +33,8 @@ struct Conversation: Decodable {
     let agent: Bud
     let name: String?
     let messages: [ChatMessage]?
+    let earlierUpdates: [ChatMessage]?
+    let openBackgroundQuestions: [String]?
     let active: ActiveReply?
     let before: Int64?
     let members: [Bud]?
@@ -56,7 +58,9 @@ struct ChatMessage: Decodable, Identifiable {
     let agentName: String?
     let origin: String?
     let card: ChoiceCard?
+    let backgroundQuestion: Bool?
     let connectionCard: ConnectionCard?
+    let budProposal: BudProposal?
     let github: GitHubCard?
     let jobId: String?
     let jobConversationId: String?
@@ -64,6 +68,15 @@ struct ChatMessage: Decodable, Identifiable {
     let generatedImage: Bool?
     let reactions: [MessageReaction]?
     let reactionRevision: Int64?
+}
+
+struct BudProposal: Decodable {
+    let name: String
+    let role: String
+    let instructions: String
+    let conversationId: String?
+    let needsRevision: Bool?
+    let pendingWork: [String]?
 }
 
 struct ReactionOption: Decodable, Identifiable {

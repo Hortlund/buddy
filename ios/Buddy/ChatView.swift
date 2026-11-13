@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ChatList: View {
     let api: BuddyAPI
@@ -7,57 +8,88 @@ struct ChatList: View {
     @State private var error: String?
 
     var body: some View {
-        List {
-            if let directory {
-                Section("Buds") {
-                    ForEach(directory.agents ?? []) { bud in
-                        if let chat = bud.conversationId {
-                            NavigationLink(value: Destination.chat(chat, bud.name)) {
-                                HStack(spacing: 12) {
-                                    BudFace(appearance: bud.avatar)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        HStack {
-                                            Text(bud.name).font(.headline)
-                                            if bud.id == directory.primaryAgentId {
-                                            Image(systemName: "star.fill").font(.caption).foregroundStyle(BuddyStyle.accent)
-                                                    .accessibilityLabel("Primary Bud")
-                                            }
-                                        }
-                                        if let role = bud.role?.nilIfEmpty {
-                                            Text(role).font(.subheadline).foregroundStyle(.secondary)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 19) {
+                if let directory {
+                    if let buds = directory.agents, !buds.isEmpty {
+                        chatSection("Buds") {
+                            ForEach(buds) { bud in
+                                if let chat = bud.conversationId {
+                                    NavigationLink(value: Destination.chat(chat, bud.name)) {
+                                        chatRow(title: bud.name, detail: bud.role?.nilIfEmpty,
+                                                primary: bud.id == directory.primaryAgentId,
+                                                unread: bud.hasNewResult == true) {
+                                            BudFace(appearance: bud.avatar, size: 38)
                                         }
                                     }
-                                    Spacer()
-                                    if bud.hasNewResult == true { unreadDot }
+                                    .buttonStyle(.plain)
                                 }
-                                .padding(.vertical, 4)
                             }
-                            .listRowBackground(BuddyStyle.surface)
+                        }
+                    }
+                    if let groups = directory.groups, !groups.isEmpty {
+                        chatSection("Group chats") {
+                            ForEach(groups) { chat in
+                                NavigationLink(value: Destination.chat(chat.id, chat.name)) {
+                                    chatRow(title: chat.name, detail: nil, primary: false, unread: chat.hasNewResult == true) {
+                                        Image(systemName: "person.2")
+                                            .font(.callout.weight(.medium)).foregroundStyle(BuddyStyle.accent)
+                                            .frame(width: 38, height: 38)
+                                            .background(BuddyStyle.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 11))
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
                 }
-                if let groups = directory.groups, !groups.isEmpty {
-                    Section("Group chats") {
-                        ForEach(groups) { chat in
-                            NavigationLink(value: Destination.chat(chat.id, chat.name)) {
-                                HStack {
-                                    Label(chat.name, systemImage: "person.2")
-                                    Spacer()
-                                    if chat.hasNewResult == true { unreadDot }
-                                }
-                            }
-                            .listRowBackground(BuddyStyle.surface)
-                        }
-                    }
-                }
+                if let error { ConnectionError(message: error) }
             }
-            if let error { ConnectionError(message: error) }
+            .frame(maxWidth: 620)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity)
         }
         .buddyPage()
         .overlay { if directory == nil && error == nil { ProgressView("Connecting to Buddy…") } }
         .navigationTitle("Chats")
         .task(id: phase) { await refreshWhileActive(phase, every: .seconds(12), load: load) }
         .refreshable { await load() }
+    }
+
+    private func chatSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(BuddyStyle.muted)
+                .accessibilityAddTraits(.isHeader)
+                .padding(.leading, 4)
+            VStack(spacing: 0, content: content)
+                .background(BuddyStyle.surface, in: RoundedRectangle(cornerRadius: 17))
+                .overlay(RoundedRectangle(cornerRadius: 17).strokeBorder(BuddyStyle.border))
+        }
+    }
+
+    private func chatRow<Icon: View>(title: String, detail: String?, primary: Bool, unread: Bool,
+                                     @ViewBuilder icon: () -> Icon) -> some View {
+        HStack(spacing: 11) {
+            icon()
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Text(title).font(.headline)
+                    if primary {
+                        Image(systemName: "star.fill").font(.caption2).foregroundStyle(BuddyStyle.accent)
+                            .accessibilityLabel("Primary Bud")
+                    }
+                }
+                if let detail { Text(detail).font(.subheadline).foregroundStyle(BuddyStyle.muted) }
+            }
+            Spacer()
+            if unread { unreadDot }
+            Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(BuddyStyle.muted)
+                .accessibilityHidden(true)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 9)
+        .contentShape(Rectangle())
     }
 
     private func load() async {
@@ -89,6 +121,7 @@ struct ChatView: View {
     let name: String
     @Environment(\.scenePhase) private var phase
     @Environment(PhoneVoiceSession.self) private var voice
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var conversation: Conversation?
     @State private var older: [ChatMessage] = []
     @State private var cursor: Int64?
@@ -102,10 +135,18 @@ struct ChatView: View {
     @State private var outgoing: Outgoing?
     @State private var reactionOverrides: [Int64: ReactionUpdate] = [:]
     @State private var reactionCursor: Int64?
+    @State private var createdBuds: [String: String] = [:]
+    @State private var backgroundAnswer: String?
+    @State private var pickingFiles = false
+    @State private var draftFiles: [ChatUpload] = []
+    @FocusState private var composerFocused: Bool
 
     private struct Outgoing {
         let text: String
         let key: String
+        let background: Bool
+        let backgroundAnswer: String?
+        let attachments: [ChatUpload]
     }
 
     private var messages: [ChatMessage] {
@@ -137,7 +178,18 @@ struct ChatView: View {
                                           }
                                       },
                                       onChoice: { index in perform { try await api.answerCard(chat: id, card: message.taskId, choice: index) } },
-                                      onActivate: { perform { try await api.activateWatch(chat: id, task: message.taskId) } })
+                                      onBackgroundReply: isOpenBackgroundQuestion(message) ? {
+                                          backgroundAnswer = message.taskId
+                                          composerFocused = true
+                                      } : nil,
+                                      onActivate: { perform { try await api.activateWatch(chat: id, task: message.taskId) } },
+                                      createdBud: createdBuds[message.taskId],
+                                      onCreateBud: { approval in
+                                          perform {
+                                              let bud = try await api.createProposedBud(chat: id, task: message.taskId, approval: approval)
+                                              createdBuds[message.taskId] = bud.conversationId
+                                          }
+                                      })
                             .id(message.id)
                     }
                     if let active = conversation?.active {
@@ -153,7 +205,7 @@ struct ChatView: View {
             }
             .defaultScrollAnchor(.bottom)
             .onChange(of: messages.last?.id) { _, _ in
-                withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
             }
             .overlay {
                 if conversation == nil && loadError == nil { ProgressView("Loading conversation…") }
@@ -171,6 +223,9 @@ struct ChatView: View {
             }
         }
         .buddyPage()
+        .fileImporter(isPresented: $pickingFiles, allowedContentTypes: [.data], allowsMultipleSelection: true) {
+            importFiles($0)
+        }
         .navigationTitle(conversation?.name?.nilIfEmpty ?? conversation?.agent.name ?? name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -191,24 +246,113 @@ struct ChatView: View {
             if let message = actionError ?? (conversation == nil ? nil : loadError) {
                 ConnectionError(message: message)
             }
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField(conversation?.name?.nilIfEmpty == nil ? "Message" : "Message the group", text: $draft, axis: .vertical)
+            if backgroundAnswer != nil {
+                HStack(spacing: 4) {
+                    Text("Replying to background work").font(.footnote).foregroundStyle(.secondary)
+                    Button {
+                        backgroundAnswer = nil
+                    } label: {
+                        Image(systemName: "xmark").font(.caption.weight(.semibold)).frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear reply")
+                    .disabled(busy)
+                }
+            }
+            ForEach(draftFiles.indices, id: \.self) { index in
+                HStack {
+                    Label(draftFiles[index].name, systemImage: "doc").lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button {
+                        draftFiles.remove(at: index)
+                    } label: {
+                        Image(systemName: "xmark").frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Remove \(draftFiles[index].name)")
+                    .disabled(busy)
+                }
+                .font(.footnote)
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                Button { pickingFiles = true } label: {
+                    Image(systemName: "paperclip").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Attach files")
+                .accessibilityIdentifier("chat-attach")
+                .disabled(busy || conversation == nil || draftFiles.count >= 5)
+                TextField(composerPlaceholder, text: $draft, axis: .vertical)
                     .lineLimit(1...5)
                     .textFieldStyle(.plain)
-                    .padding(11)
-                    .background(BuddyStyle.raised, in: RoundedRectangle(cornerRadius: 16))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 12)
                     .accessibilityIdentifier("chat-composer")
+                    .focused($composerFocused)
                     .disabled(busy)
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 34))
+                if backgroundAnswer == nil {
+                    Button { send(background: true) } label: {
+                        Image(systemName: "briefcase").font(.body.weight(.medium))
+                            .frame(width: 40, height: 44)
+                    }
+                    .accessibilityLabel("Run in background")
+                    .accessibilityIdentifier("chat-run-background")
+                    .disabled(!canRunInBackground)
+                }
+                Button { send(background: false) } label: {
+                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 32))
+                        .frame(width: 42, height: 44)
                 }
                 .accessibilityLabel("Send")
-                .disabled(busy || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || conversation == nil)
+                .disabled(!canSend)
             }
+            .padding(3)
+            .background(BuddyStyle.surface, in: RoundedRectangle(cornerRadius: 20))
+            .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(BuddyStyle.border))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
         .background(BuddyStyle.background)
+    }
+
+    private var composerPlaceholder: String {
+        if backgroundAnswer != nil { return "Reply…" }
+        return conversation?.name?.nilIfEmpty == nil ? "Message" : "Message the group"
+    }
+
+    private var canSend: Bool {
+        !busy && conversation != nil &&
+            (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draftFiles.isEmpty)
+    }
+
+    private var canRunInBackground: Bool {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return canSend && !text.isEmpty && !text.hasPrefix("/")
+    }
+
+    private func importFiles(_ selection: Result<[URL], Error>) {
+        guard !busy, let conversation, conversation.archived != true else { return }
+        do {
+            let urls = try selection.get()
+            guard !urls.isEmpty else { return }
+            guard draftFiles.count + urls.count <= 5 else {
+                throw BuddyError("Attach up to five files.")
+            }
+            let remaining = (8 << 20) - draftFiles.reduce(0) { $0 + $1.data.count }
+            busy = true
+            actionError = nil
+            Task {
+                defer { busy = false }
+                do {
+                    draftFiles += try await Task.detached {
+                        try ChatUpload.read(urls, remainingBytes: remaining)
+                    }.value
+                } catch {
+                    actionError = error.localizedDescription
+                }
+            }
+        } catch {
+            actionError = error.localizedDescription
+        }
     }
 
     private func avatar(for message: ChatMessage) -> BudAppearance? {
@@ -238,6 +382,10 @@ struct ChatView: View {
                 // Bridge pages are returned newest page first. Store the
                 // contiguous history in display order before exposing the live page.
                 older += (recent + bridge).filter { $0.id > known && $0.id < first.id }.sorted { $0.id < $1.id }
+                if let updates = snapshot.earlierUpdates, !updates.isEmpty {
+                    let byID = Dictionary(uniqueKeysWithValues: updates.map { ($0.id, $0) })
+                    older = older.map { byID[$0.id] ?? $0 }
+                }
             }
             conversation = snapshot
             reactionCursor = snapshot.reactionRevision
@@ -301,17 +449,29 @@ struct ChatView: View {
         }
     }
 
-    private func send() {
+    private func send(background: Bool) {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        let retry = outgoing.flatMap { $0.text == text ? $0 : nil }
-        let message = retry ?? Outgoing(text: text, key: UUID().uuidString)
+        guard background ? canRunInBackground : canSend else { return }
+        let retry = outgoing.flatMap {
+            $0.text == text && $0.background == background && $0.backgroundAnswer == backgroundAnswer &&
+                $0.attachments == draftFiles ? $0 : nil
+        }
+        let message = retry ?? Outgoing(text: text, key: UUID().uuidString, background: background,
+                                        backgroundAnswer: backgroundAnswer, attachments: draftFiles)
         outgoing = message
         perform {
-            try await api.send(chat: id, text: message.text, agent: nil, key: message.key)
+            try await api.send(chat: id, text: message.text, background: message.background,
+                               backgroundAnswer: message.backgroundAnswer, attachments: message.attachments, key: message.key)
+            backgroundAnswer = nil
+            draftFiles = []
             draft = ""
             outgoing = nil
         }
+    }
+
+    private func isOpenBackgroundQuestion(_ message: ChatMessage) -> Bool {
+        guard message.role == "assistant" else { return false }
+        return conversation?.openBackgroundQuestions?.contains(message.taskId) ?? (message.backgroundQuestion == true)
     }
 
     private func perform(_ action: @escaping @MainActor () async throws -> Void) {
@@ -338,7 +498,10 @@ private struct MessageBubble: View {
     let reactionOptions: [ReactionOption]
     let onReaction: (String) -> Void
     let onChoice: (Int) -> Void
+    let onBackgroundReply: (() -> Void)?
     let onActivate: () -> Void
+    let createdBud: String?
+    let onCreateBud: (BuddyAPI.BudApproval?) -> Void
 
     private var outgoing: Bool { message.role == "user" }
 
@@ -355,6 +518,10 @@ private struct MessageBubble: View {
                     GeneratedChatImage(api: api, task: message.taskId)
                 }
                 if let card = message.card { choice(card) }
+                if let bud = message.budProposal { budCard(bud) }
+                if let onBackgroundReply {
+                    Button("Reply", action: onBackgroundReply).buttonStyle(.bordered).disabled(busy)
+                }
                 if let card = message.connectionCard {
                     evidence(title: card.heading, detail: card.detail, body: card.body, url: card.url, items: card.items)
                     if card.watchDraft == true {
@@ -388,6 +555,39 @@ private struct MessageBubble: View {
                 Spacer(minLength: 8)
             }
         }
+    }
+
+    private func budCard(_ bud: BudProposal) -> some View {
+        let destination = createdBud ?? bud.conversationId?.nilIfEmpty
+        return VStack(alignment: .leading, spacing: 9) {
+            Label(bud.name, systemImage: "person.crop.circle").font(.headline)
+            Text(bud.role).font(.subheadline).foregroundStyle(.secondary)
+            Text(bud.instructions).font(.callout)
+            if let destination {
+                NavigationLink(value: Destination.chat(destination, bud.name)) {
+                    Label("Open chat", systemImage: "arrow.up.right")
+                }
+                .buttonStyle(.bordered)
+            } else if !(bud.needsRevision ?? (message.card != nil)) {
+                let work = bud.pendingWork ?? []
+                ForEach(work.indices, id: \.self) { index in
+                    Label(work[index], systemImage: "briefcase").font(.footnote).foregroundStyle(.secondary)
+                }
+                Button(work.isEmpty ? "Create Bud" : "Create Bud and start work") {
+                    onCreateBud(work.isEmpty ? nil : .startWork)
+                }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(busy)
+                if !work.isEmpty {
+                    Button("Create Bud only") { onCreateBud(.createOnly) }
+                        .buttonStyle(.bordered)
+                        .disabled(busy)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(13)
+        .background(BuddyStyle.raised, in: RoundedRectangle(cornerRadius: 13))
     }
 
     private var reactionPicker: some View {

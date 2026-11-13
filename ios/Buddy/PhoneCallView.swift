@@ -6,6 +6,7 @@ struct PhoneCallView: View {
     @State private var showInvite = false
     @State private var showWork = false
     @State private var workPath: [Destination] = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let accent = Color(red: 0.73, green: 0.68, blue: 1)
 
     var body: some View {
@@ -35,16 +36,23 @@ struct PhoneCallView: View {
                         .font(.footnote).foregroundStyle(.orange)
                         .padding(.horizontal, 20).padding(.top, 12)
                 }
+                callActions
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: voice.budNotice)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: voice.queuedWork)
                 controls.padding(20)
             }
-            .background(Color(red: 0.055, green: 0.065, blue: 0.09))
+            .background {
+                Color(red: 0.071, green: 0.071, blue: 0.082).ignoresSafeArea()
+                RadialGradient(colors: [accent.opacity(0.14), .clear],
+                               center: .top, startRadius: 12, endRadius: 420).ignoresSafeArea()
+            }
             .foregroundStyle(.white)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { voice.presented = false } label: { Label("Chat", systemImage: "chevron.down") }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { showWork = true } label: { Label("Work", systemImage: "briefcase") }
+                    Button { workPath = []; showWork = true } label: { Label("Work", systemImage: "briefcase") }
                 }
             }
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -78,6 +86,44 @@ struct PhoneCallView: View {
         .interactiveDismissDisabled(voice.active)
     }
 
+    @ViewBuilder private var callActions: some View {
+        if voice.budNotice != nil || voice.queuedWork != nil {
+            VStack(spacing: 0) {
+                if let notice = voice.budNotice {
+                    actionRow(notice, icon: "person.crop.circle") { voice.presented = false }
+                }
+                if voice.budNotice != nil && voice.queuedWork != nil {
+                    Divider().padding(.horizontal, 12)
+                }
+                if let work = voice.queuedWork {
+                    actionRow(work.title, icon: "briefcase") {
+                        workPath = [.work(voice.chat, work.id)]
+                        showWork = true
+                    }
+                }
+            }
+            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+            .padding(.horizontal, 20).padding(.top, 10)
+            .transition(.opacity)
+        }
+    }
+
+    private func actionRow(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Image(systemName: icon).foregroundStyle(accent)
+                Text(title).lineLimit(2)
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+            }
+            .font(.footnote.weight(.medium))
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private var header: some View {
         VStack(spacing: 6) {
             Text(voice.title).font(.title2.bold()).multilineTextAlignment(.center)
@@ -105,7 +151,7 @@ struct PhoneCallView: View {
                         .rotationEffect(.degrees(speaking ? -4 : 0))
                 }
                 .frame(width: 98, height: 98)
-                .animation(speaking ? .easeInOut(duration: 0.6).repeatForever(autoreverses: true) : .default, value: speaking)
+                .animation(reduceMotion ? nil : speaking ? .easeInOut(duration: 0.6).repeatForever(autoreverses: true) : .default, value: speaking)
                 HStack(spacing: 4) {
                     Text(member.name).lineLimit(1)
                     if member.id == voice.lead { Image(systemName: "star.fill").font(.caption2).foregroundStyle(accent) }

@@ -90,7 +90,11 @@ func visualAttachment(media string) bool {
 }
 
 func readAttachments(ctx context.Context, db queryer, task string) ([]Attachment, error) {
-	rows, err := db.QueryContext(ctx, "SELECT name,media_type,data FROM chat_attachments WHERE task_id=? ORDER BY position", task)
+	return queryAttachments(ctx, db, "SELECT name,media_type,data FROM chat_attachments WHERE task_id=? ORDER BY position", task)
+}
+
+func queryAttachments(ctx context.Context, db queryer, query string, args ...any) ([]Attachment, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -139,21 +143,27 @@ func AttachmentDigest(files []Attachment) [32]byte {
 	return digest
 }
 
+const requestAttachmentChain = questionRequestChain + `, attachment_requests AS (
+	SELECT t.id,t.rowid FROM requests r JOIN tasks t ON t.id=r.id
+	WHERE t.status NOT IN ('cancelled','cancelling')
+)`
+
 func requestAttachmentSource(ctx context.Context, db queryer, task string) (string, error) {
 	var id string
-	err := db.QueryRowContext(ctx, `
-		WITH RECURSIVE requests(id) AS (
-			VALUES (?)
-			UNION SELECT q.task_id FROM choice_cards q JOIN requests r ON q.answer_task_id=r.id
-		)
-		SELECT t.id FROM requests r JOIN tasks t ON t.id=r.id
-		WHERE t.status NOT IN ('cancelled','cancelling')
-		  AND EXISTS(SELECT 1 FROM chat_attachments f WHERE f.task_id=t.id)
+	err := db.QueryRowContext(ctx, requestAttachmentChain+`
+		SELECT t.id FROM attachment_requests t
+		WHERE EXISTS(SELECT 1 FROM chat_attachments f WHERE f.task_id=t.id)
 		ORDER BY t.rowid DESC LIMIT 1`, task).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return id, err
+}
+
+func readRequestAttachments(ctx context.Context, db queryer, task string) ([]Attachment, error) {
+	return queryAttachments(ctx, db, requestAttachmentChain+`
+		SELECT f.name,f.media_type,f.data FROM attachment_requests r
+		JOIN chat_attachments f ON f.task_id=r.id ORDER BY r.rowid,f.position`, task)
 }
 
 func handoffAttachmentSource(ctx context.Context, db queryer, task, parent string) (string, error) {

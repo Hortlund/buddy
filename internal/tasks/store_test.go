@@ -260,6 +260,49 @@ func TestLatestConversationRefreshesEarlierSteering(t *testing.T) {
 	check(Succeeded, steerMissed)
 }
 
+func TestLatestConversationRefreshesEarlierBudApproval(t *testing.T) {
+	ctx, s := t.Context(), teamTestStore(t)
+	const chat = DefaultConversationID
+	draft := BudDraft{Name: "Finch", Role: "Reviewer", Instructions: "Review logs."}
+	if _, _, _, err := s.SaveVoiceBud(ctx, chat, "draft-call", DefaultAgentID, "Draft a Bud named Finch.", draft,
+		Handoff{AgentID: newBudAssignee, Title: "Review logs", Brief: "Review the logs."}); err != nil {
+		t.Fatal(err)
+	}
+	buddy, err := s.Agent(ctx, DefaultAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 120 {
+		if err := s.RecordVoiceLine(ctx, chat, "newer-call", buddy, "user", "Newer caption."); err != nil {
+			t.Fatal(err)
+		}
+	}
+	latest, err := s.Conversation(ctx, chat, 0)
+	if err != nil || latest.Before == 0 {
+		t.Fatalf("expected paginated chat: %d, %v", latest.Before, err)
+	}
+	older, err := s.Conversation(ctx, chat, latest.Before)
+	if err != nil || len(older.Messages) != 1 || older.Messages[0].BudProposal == nil || older.Messages[0].BudProposal.ConversationID != "" {
+		t.Fatalf("expected older draft: %+v, %v", older.Messages, err)
+	}
+	bud, err := s.CreateProposedBud(ctx, chat, older.Messages[0].TaskID, CreateBudOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update, err := s.ConversationWithReactions(ctx, chat, 0, latest.ReactionRevision)
+	if err != nil || len(update.EarlierUpdates) != 1 {
+		t.Fatalf("approval did not reach polling client: %+v, %v", update.EarlierUpdates, err)
+	}
+	message := update.EarlierUpdates[0]
+	if message.ID != older.Messages[0].ID || message.BudProposal == nil || message.BudProposal.ConversationID != bud.ConversationID {
+		t.Fatalf("approval update did not link the Bud: %+v", message)
+	}
+	next, err := s.ConversationWithReactions(ctx, chat, 0, update.ReactionRevision)
+	if err != nil || len(next.EarlierUpdates) != 0 {
+		t.Fatalf("approval update was repeated after the cursor advanced: %+v, %v", next.EarlierUpdates, err)
+	}
+}
+
 func TestUndeliveredSteeringDoesNotDisplaceTurnContext(t *testing.T) {
 	ctx := t.Context()
 	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "buddy.db"))

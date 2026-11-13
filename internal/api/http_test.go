@@ -19,6 +19,30 @@ import (
 	"buddy/internal/tasks"
 )
 
+func TestExplicitBudApprovalDoesNotFallBackToLegacyCreate(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := testToken(t, dir); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/conversations/{id}/bud-proposals/{turn}", func(w http.ResponseWriter, _ *http.Request) {
+		// Older servers ignore the body and start saved work on this route.
+		t.Error("explicit approval reached the legacy route")
+		write(w, http.StatusOK, tasks.Agent{Name: "Finch"})
+	})
+	server := startTestServer(t, dir, mux)
+	defer server.Close()
+	client := NewClient(server.URL, filepath.Join(dir, localconfig.TokenName))
+	defer client.Close()
+	for _, mode := range []tasks.BudApproval{tasks.CreateBudOnly, tasks.CreateBudWithWork} {
+		_, err := client.CreateProposedBud(t.Context(), tasks.DefaultConversationID, "draft", mode)
+		var remote *HTTPError
+		if !errors.As(err, &remote) || remote.Status != http.StatusNotFound || !strings.Contains(remote.Message, "Update the Buddy server") {
+			t.Fatalf("explicit approval against an older server returned %v", err)
+		}
+	}
+}
+
 func TestRepoCheckOutlivesClient(t *testing.T) {
 	ctx, stop := context.WithTimeout(t.Context(), 12*time.Second)
 	defer stop()

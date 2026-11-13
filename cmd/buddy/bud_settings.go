@@ -233,12 +233,7 @@ func (a *desktop) draftGroupLead() string {
 }
 
 func primaryBadge(c *ui.Context) {
-	fg, bg := ui.Hex("#285C44"), ui.Hex("#E3F1E8")
-	if c.Theme().Dark {
-		fg, bg = c.Theme().Success, c.Theme().Success.Alpha(.13)
-	}
-	ui.Text(c, "Primary").FontSize(10).FontWeight(650).SingleLine().Shrink(0).TextColor(fg).
-		Background(bg).Radius(5).Padding(3, 6)
+	ui.Text(c, "Primary").FontSize(11).SingleLine().Shrink(0).TextColor(c.Theme().TextMuted)
 }
 
 func (a *desktop) budSettings(c *ui.Context) {
