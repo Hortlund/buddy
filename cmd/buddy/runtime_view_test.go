@@ -16,6 +16,14 @@ func TestAutomaticWorkerSettingsAndFixedOverride(t *testing.T) {
 	if a.edit.ModelPreferences == nil || a.edit.ModelPreferences.Mode != "auto" {
 		t.Fatal("workers should choose settings by default")
 	}
+	for _, label := range []string{"Worker settings", "Choose default model"} {
+		if control, ok := view.Find(label); !ok || control.W > 320 {
+			t.Fatalf("%s is not compact: %+v", label, control)
+		}
+	}
+	if _, found := view.Find("Default model ID"); found {
+		t.Fatal("model picker still has a duplicate ID field")
+	}
 	if err := view.Click("Worker settings"); err != nil {
 		t.Fatal(err)
 	}
@@ -47,9 +55,11 @@ func TestAutomaticWorkerSettingsAndFixedOverride(t *testing.T) {
 	if err := view.Click("Choose default model"); err != nil {
 		t.Fatal(err)
 	}
-	if err := view.Click("Default model"); err != nil {
-		t.Fatal(err)
+	option, ok := view.AccessByRole(ui.RoleListItem, "Default model")
+	if !ok {
+		t.Fatal("default model is missing from the picker")
 	}
+	view.ClickAt(option.Bounds.X+option.Bounds.W/2, option.Bounds.Y+option.Bounds.H/2)
 	if p.Effort != "" || p.Speed != "" {
 		t.Fatal("model change retained unsupported options")
 	}

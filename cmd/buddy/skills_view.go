@@ -109,13 +109,15 @@ func (a *desktop) skillSuggestions(c *ui.Context) {
 			highlighted := first+i == selected
 			button := ui.ButtonBase(c.Key("use-skill-"+skill.Name)).Label("/"+skill.Name).Description(skill.Description).
 				FillWidth().MinHeight(29).Justify(ui.Start).Padding(3, 6).Radius(6).Gap(8).Selected(highlighted)
+			nameColor := c.Theme().Text
 			if highlighted {
 				button.Background(c.Theme().SurfacePressed)
+				nameColor = c.Theme().Accent
 			} else if button.Hovered() {
 				button.Background(c.Theme().SurfaceHover)
 			}
 			button.OnClick(func() { a.fillSkill(skill.Name) }).Children(func() {
-				ui.Text(c, "/"+skill.Name).FontSize(12).FontWeight(670).Shrink(0)
+				ui.Text(c, "/"+skill.Name).FontSize(12).FontWeight(670).Shrink(0).TextColor(nameColor)
 				ui.Text(c, skill.Description).FontSize(12).SingleLine().MinWidth(0).TextColor(c.Theme().TextMuted)
 			})
 		}

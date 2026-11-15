@@ -36,10 +36,10 @@ func smallIcon(c *ui.Context, label string, mark *ui.SVG, enabled bool, action f
 func (a *desktop) chatNav(c *ui.Context, id, title string, icon *ui.SVG, unread bool) {
 	selected := id == a.currentConversation() && (a.section == "" || a.section == "routine")
 	label := unreadChatLabel(title, unread)
-	btn := ui.ButtonBase(c.Key("chat-"+id)).Label(label).Tooltip(label).Selected(selected).FillWidth().Height(33).
+	btn := ui.ButtonBase(c.Key("chat-"+id)).Label(label).Selected(selected).FillWidth().Height(33).
 		Gap(8).Padding(0, 8).Radius(10).Justify(ui.Start).OnClick(func() { a.openConversation(id) })
 	if a.compactSidebar {
-		btn.Justify(ui.Center)
+		btn.Justify(ui.Center).Tooltip(title)
 	}
 	if a.serverProtocol >= api.ConversationHistoryProtocol {
 		btn.ContextMenu(func(menu *ui.Menu) {
@@ -63,7 +63,8 @@ func (a *desktop) chatNav(c *ui.Context, id, title string, icon *ui.SVG, unread 
 	btn.Children(func() {
 		ui.Icon(c, icon).Size(15, 15).Shrink(0).TextColor(c.Theme().TextMuted)
 		if !a.compactSidebar {
-			ui.Text(c, title).Grow(1).SingleLine().MinWidth(0).FontSize(13).FontWeight(530).TextColor(c.Theme().Text)
+			text := ui.Text(c, title).Grow(1).SingleLine().MinWidth(0).FontSize(13).FontWeight(530).TextColor(c.Theme().Text)
+			clippedTextTooltip(c, text, title, 13, 530)
 		}
 		if unread {
 			sidebarUnreadDot(c)
@@ -84,15 +85,11 @@ func (a *desktop) budNav(c *ui.Context, bud tasks.AgentRef) {
 			detail += " · " + role
 		}
 	}
-	tooltip := label
-	if detail != "" {
-		tooltip += " · " + detail
-	}
-	btn := ui.ButtonBase(c.Key("chat-"+bud.ConversationID)).Label(label).Description(detail).Tooltip(tooltip).Selected(selected).
+	btn := ui.ButtonBase(c.Key("chat-"+bud.ConversationID)).Label(label).Description(detail).Selected(selected).
 		FillWidth().Height(43).Padding(0, 8).Gap(7).Radius(10).Justify(ui.Start).
 		OnClick(func() { a.openConversation(bud.ConversationID) })
 	if a.compactSidebar {
-		btn.Height(45).Justify(ui.Center)
+		btn.Height(45).Justify(ui.Center).Tooltip(bud.Name)
 	}
 	if selected {
 		btn.Background(c.Theme().SurfacePressed)
@@ -119,7 +116,8 @@ func (a *desktop) budNav(c *ui.Context, bud tasks.AgentRef) {
 			a.drawProfile(c, profile, 27, live, mood)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
 				ui.Row(c).Gap(4).Children(func() {
-					ui.Text(c, bud.Name).FontSize(13).FontWeight(570).MinWidth(0).SingleLine().TextColor(c.Theme().Text)
+					text := ui.Text(c, bud.Name).FontSize(13).FontWeight(570).MinWidth(0).SingleLine().TextColor(c.Theme().Text)
+					clippedTextTooltip(c, text, bud.Name, 13, 570)
 					if primary {
 						ui.Icon(c, primaryMark).Size(12, 12).Shrink(0).TextColor(c.Theme().Accent)
 					}
@@ -133,6 +131,17 @@ func (a *desktop) budNav(c *ui.Context, bud tasks.AgentRef) {
 			sidebarUnreadDot(c)
 		}
 	})
+}
+
+// Bounds come from the last layout, so resizing also updates whether a title
+// needs help. Fully visible names stay quiet when the pointer rests on them.
+func clippedTextTooltip(c *ui.Context, element ui.Element, text string, size float32, weight int) {
+	if room := element.Bounds().W; room > 0 {
+		width, _ := c.MeasureText(0, ui.Span{Text: text, Font: c.Theme().Font, Size: size, Weight: weight})
+		if width > room+.5 {
+			element.Tooltip(text)
+		}
+	}
 }
 
 func unreadChatLabel(name string, unread bool) string {
@@ -376,9 +385,35 @@ func (a *desktop) scheduledRoutines(c *ui.Context) {
 			if requested != nil {
 				enabled = *requested
 			}
-			ui.Row(c.Key("routine-" + routine.ID)).Gap(7).MinHeight(34).Children(func() {
-				ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
-					ui.Text(c, routine.Name).SingleLine().FontSize(12).FontWeight(580).Tooltip(routine.Prompt)
+			ui.Column(c.Key("routine-" + routine.ID)).Gap(3).FillWidth().Children(func() {
+				canManage := a.online && !a.chat.Archived && !pending
+				ui.Row(c).Gap(7).FillWidth().Children(func() {
+					text := ui.Text(c, routine.Name).Grow(1).MinWidth(0).SingleLine().FontSize(12).FontWeight(580).Description(routine.Prompt)
+					clippedTextTooltip(c, text, routine.Name, 12, 580)
+					label := "Resume " + routine.Name
+					if enabled {
+						label = "Pause " + routine.Name
+					}
+					ui.Themed(c, routineTheme(c.Theme())).Background(ui.Transparent).Shrink(0).Children(func() {
+						toggle := ui.Switch(c.Key("routine-switch-"+routine.ID), &enabled).
+							Label(label).Disabled(!canManage || removed || routine.DeviceDisconnected)
+						if toggle.Changed() && canManage && !removed && !routine.DeviceDisconnected {
+							a.changeRoutine(routine.ID, &enabled)
+						}
+					})
+					button := ui.ButtonBase(c.Key("routine-menu-"+routine.ID)).Label("Manage "+routine.Name).Size(20, 26).
+						Radius(6).Center().Shrink(0).Disabled(!canManage)
+					if button.Hovered() {
+						button.Background(c.Theme().SurfacePressed)
+					}
+					button.Children(func() { ui.Icon(c, moreMark).Size(14, 14).TextColor(c.Theme().TextMuted) })
+					button.PopoverMenuButton(func(menu *ui.Menu) {
+						if menu.Item("Delete routine").Chosen() {
+							a.changeRoutine(routine.ID, nil)
+						}
+					})
+				})
+				ui.Column(c).Gap(3).FillWidth().MinWidth(0).Children(func() {
 					status := "Paused"
 					switch {
 					case removed:
@@ -388,39 +423,16 @@ func (a *desktop) scheduledRoutines(c *ui.Context) {
 					case pending:
 						status = "Updating…"
 					case enabled:
-						status = "Next " + routineDate(routine.NextAt, c.Now())
+						status = routineDate(routine.NextAt, c.Now())
 					}
 					if routine.Device != "" {
 						status = routine.Device + " · " + status
 					}
 					ui.Text(c, tasks.RoutineCadence(routine.Minutes)+" · "+status).
-						FontSize(11).TextColor(c.Theme().TextMuted)
+						SingleLine().FontSize(11).TextColor(c.Theme().TextMuted)
 					if routine.ResearchScopeMissing && routine.DeviceID == "" {
-						ui.Text(c, "To use web search, recreate this routine.").
-							FontSize(11).TextColor(c.Theme().TextMuted)
-					}
-				})
-				canManage := a.online && !a.chat.Archived && !pending
-				label := "Resume " + routine.Name
-				if enabled {
-					label = "Pause " + routine.Name
-				}
-				ui.Themed(c, routineTheme(c.Theme())).Background(ui.Transparent).Shrink(0).Children(func() {
-					toggle := ui.Switch(c.Key("routine-switch-"+routine.ID), &enabled).
-						Label(label).Tooltip(label).Disabled(!canManage || removed || routine.DeviceDisconnected)
-					if toggle.Changed() && canManage && !removed && !routine.DeviceDisconnected {
-						a.changeRoutine(routine.ID, &enabled)
-					}
-				})
-				button := ui.ButtonBase(c.Key("routine-menu-"+routine.ID)).Label("Manage "+routine.Name).Size(20, 26).
-					Radius(6).Center().Shrink(0).Disabled(!canManage)
-				if button.Hovered() {
-					button.Background(c.Theme().SurfacePressed)
-				}
-				button.Children(func() { ui.Icon(c, moreMark).Size(14, 14).TextColor(c.Theme().TextMuted) })
-				button.PopoverMenuButton(func(menu *ui.Menu) {
-					if menu.Item("Delete routine").Chosen() {
-						a.changeRoutine(routine.ID, nil)
+						ui.Text(c, "Recreate to enable web search.").
+							SingleLine().FontSize(11).TextColor(c.Theme().TextMuted)
 					}
 				})
 			})
@@ -549,11 +561,11 @@ func routineDate(at, now time.Time) string {
 	at, now = at.Local(), now.Local()
 	switch at.Format(time.DateOnly) {
 	case now.Format(time.DateOnly):
-		return "today at " + at.Format("15:04")
+		return "Today, " + at.Format("15:04")
 	case now.AddDate(0, 0, 1).Format(time.DateOnly):
-		return "tomorrow at " + at.Format("15:04")
+		return "Tomorrow, " + at.Format("15:04")
 	default:
-		return at.Format("Jan 2 at 15:04")
+		return at.Format("Jan 2, 15:04")
 	}
 }
 
@@ -581,13 +593,10 @@ func (a *desktop) drawProfile(c *ui.Context, profile tasks.Agent, size float32, 
 	avatar(c, size, look, cache.image(look.Image), live, mood)
 }
 
-func notificationLabel(message tasks.Message, author string) string {
+func notificationLabel(author string) string {
 	label := "Routine result"
 	if author != "" {
 		label = author + " · " + label
-	}
-	if !message.At.IsZero() {
-		label += " · " + message.At.Local().Format(time.Kitchen)
 	}
 	return label
 }

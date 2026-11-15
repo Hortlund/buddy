@@ -86,7 +86,8 @@ func main() {
 		}
 		app.window = mygo.NewWindow(mygo.WindowOptions{
 			Title: "Buddy", TitleBarStyle: mygo.TitleBarHiddenInset,
-			Width: 1120, Height: 750, MinWidth: 820, MinHeight: 590,
+			TrafficLightPosition: &mygo.Point{X: 19, Y: 15},
+			Width:                1120, Height: 750, MinWidth: 820, MinHeight: 590,
 			Content: ui.View(app.view),
 		})
 		app.window.OnClose(func(e *mygo.CloseEvent) {

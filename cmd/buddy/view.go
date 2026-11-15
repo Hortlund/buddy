@@ -106,7 +106,7 @@ func (a *desktop) sidebar(c *ui.Context, header, inset float32) {
 	ui.Column(c).Width(width).Shrink(0).Background(c.Theme().Background.Mix(c.Theme().Surface, .24)).
 		BorderWidth(0, 1, 0, 0).BorderColor(c.Theme().Border).Children(func() {
 		ui.Row(c).Height(header).Shrink(0).FillWidth().Padding(0, 10, 0, max(14, inset+8)).
-			DragWindow().Children(func() {
+			AlignItems(ui.Center).DragWindow().Children(func() {
 			if !a.compactSidebar {
 				buildWordmark(c.Key("buddy-wordmark"))
 			}
@@ -324,9 +324,6 @@ func (a *desktop) reply(c *ui.Context, message tasks.Message, active *tasks.Acti
 		}
 		bubble := ui.Column(c.Key("reply-bubble")).MinWidth(0).MaxWidth(610).MinHeight(36).
 			Justify(ui.Center).Padding(8, 12).Background(replySurface(c)).Radius(15)
-		if !message.At.IsZero() {
-			bubble.Tooltip(name + " · " + message.At.Local().Format("15:04"))
-		}
 		if a.canReact(message) {
 			bubble.ContextMenu(func(menu *ui.Menu) { a.reactionMenu(message, menu) })
 		}
@@ -336,7 +333,7 @@ func (a *desktop) reply(c *ui.Context, message tasks.Message, active *tasks.Acti
 				if a.chat.Name != "" {
 					author = name
 				}
-				ui.Text(c, notificationLabel(message, author)).FontSize(11).TextColor(c.Theme().TextMuted)
+				ui.Text(c, notificationLabel(author)).FontSize(11).TextColor(c.Theme().TextMuted)
 				ui.Text(c, message.Title).FontSize(13).FontWeight(650)
 			} else if message.Origin == "voice" || a.chat.Name != "" || (id != "" && id != a.chat.Agent.ID) {
 				ui.Text(c, name).FontSize(11).FontWeight(650).TextColor(c.Theme().TextMuted)
@@ -404,6 +401,7 @@ func (a *desktop) reply(c *ui.Context, message tasks.Message, active *tasks.Acti
 				})
 			}
 		})
+		messageTime(c, message.At)
 	})
 }
 
@@ -512,29 +510,32 @@ func (a *desktop) emptyConversation(c *ui.Context) {
 func (a *desktop) message(c *ui.Context, message tasks.Message) {
 	if message.Role == "user" {
 		ui.Column(c).Gap(6).FillWidth().Children(func() {
-			ui.Box(c).MaxWidth(530).AlignSelf(ui.End).Background(c.Theme().SurfacePressed).Radius(15).Padding(8, 12).
-				Tooltip("You · " + message.At.Local().Format("15:04")).Children(func() {
-				ui.Column(c).Gap(5).Children(func() {
-					if message.Origin == "voice" {
-						ui.Text(c, "You · Voice").FontSize(11).TextColor(c.Theme().TextMuted)
-					} else if message.AnswerTo != "" {
-						ui.Text(c, "Answer to: "+message.AnswerTo).FontSize(11).TextColor(c.Theme().TextMuted).MaxLines(2)
-					} else if message.SkillName != "" {
-						ui.Text(c, "Skill · /"+message.SkillName).FontSize(11).TextColor(c.Theme().TextMuted)
-					}
-					if message.JobID != "" {
-						ui.Button(c.Key("about-job"), "About "+message.JobTitle).MaxWidth(300).AlignSelf(ui.Start).
-							OnClick(func() {
-								a.openWork(tasks.WorkItem{ID: message.JobID, Title: message.JobTitle, ConversationID: message.JobConversationID})
-							})
-					}
-					if message.Text != "" {
-						a.referenceMarkdown(c.Key("sent-text"), message.Text, a.chat.Agent.ID, fileReferenceContext{task: message.TaskID})
-					}
-					for i, file := range message.Attachments {
-						ui.Button(c.Key(i), file.Name).Disabled(!a.online || a.savingFile).
-							Tooltip("Save attachment · " + file.Name).OnClick(func() { a.saveAttachment(message.TaskID, i, file.Name) })
-					}
+			ui.Row(c).FillWidth().Justify(ui.End).AlignItems(ui.Start).Gap(9).Children(func() {
+				messageTime(c, message.At)
+				ui.Box(c).MaxWidth(530).AlignSelf(ui.End).Background(c.Theme().SurfacePressed).Radius(15).Padding(8, 12).
+					MinWidth(0).Children(func() {
+					ui.Column(c).Gap(5).Children(func() {
+						if message.Origin == "voice" {
+							ui.Text(c, "You · Voice").FontSize(11).TextColor(c.Theme().TextMuted)
+						} else if message.AnswerTo != "" {
+							ui.Text(c, "Answer to: "+message.AnswerTo).FontSize(11).TextColor(c.Theme().TextMuted).MaxLines(2)
+						} else if message.SkillName != "" {
+							ui.Text(c, "Skill · /"+message.SkillName).FontSize(11).TextColor(c.Theme().TextMuted)
+						}
+						if message.JobID != "" {
+							ui.Button(c.Key("about-job"), "About "+message.JobTitle).MaxWidth(300).AlignSelf(ui.Start).
+								OnClick(func() {
+									a.openWork(tasks.WorkItem{ID: message.JobID, Title: message.JobTitle, ConversationID: message.JobConversationID})
+								})
+						}
+						if message.Text != "" {
+							a.referenceMarkdown(c.Key("sent-text"), message.Text, a.chat.Agent.ID, fileReferenceContext{task: message.TaskID})
+						}
+						for i, file := range message.Attachments {
+							ui.Button(c.Key(i), file.Name).Disabled(!a.online || a.savingFile).
+								Tooltip("Save attachment · " + file.Name).OnClick(func() { a.saveAttachment(message.TaskID, i, file.Name) })
+						}
+					})
 				})
 			})
 			a.messageReactions(c.Key("sent-reactions"), message, ui.End)
@@ -561,6 +562,13 @@ func (a *desktop) message(c *ui.Context, message tasks.Message) {
 		return
 	}
 	a.reply(c, message, nil)
+}
+
+func messageTime(c *ui.Context, at time.Time) {
+	if !at.IsZero() {
+		ui.Text(c.Key("message-time"), at.Local().Format("15:04")).
+			FontSize(10).TextColor(c.Theme().TextMuted).SingleLine().Shrink(0).Padding(11, 0, 0)
+	}
 }
 
 func correctionLabel(state string) string {

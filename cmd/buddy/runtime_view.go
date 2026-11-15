@@ -32,23 +32,9 @@ func (a *desktop) modelSettings(c *ui.Context) {
 			ui.Text(c, "Each worker chooses its model and effort for the task using the models available on its machine. Chat uses your default model.").FontSize(12).TextColor(c.Theme().TextMuted)
 		}
 		ui.Text(c, "Default model").FontSize(12).FontWeight(600)
-		ui.Row(c).Gap(7).Children(func() {
-			input := ui.TextInput(c.Key("agent-model"), &a.edit.Model).Label("Default model ID").Placeholder(tasks.DefaultCodexModel).Height(33).Grow(1).MinWidth(0)
-			if input.Changed() {
-				preferences.Effort, preferences.Speed = "", ""
-			}
-			options := []tasks.ModelSpeed{}
-			for _, model := range a.models {
-				name := model.Name
-				if name == "" {
-					name = model.ID
-				}
-				options = append(options, tasks.ModelSpeed{ID: model.ID, Name: name})
-			}
-			if len(options) != 0 && modelOption(c.Key("default-model-picker"), &a.edit.Model, "Choose model", "Choose default model", options) {
-				preferences.Effort, preferences.Speed = "", ""
-			}
-		})
+		if modelPicker(c.Key("default-model-picker"), &a.edit.Model, a.models) {
+			preferences.Effort, preferences.Speed = "", ""
+		}
 		if preferences.Mode == "fixed" {
 			efforts := []tasks.ModelSpeed{{ID: "", Name: "Model default"}}
 			speeds := []tasks.ModelSpeed{{ID: "", Name: "Account default"}}
@@ -77,6 +63,103 @@ func (a *desktop) modelSettings(c *ui.Context) {
 	})
 }
 
+func modelChoices(models []tasks.Model) []tasks.ModelSpeed {
+	seen, names := map[string]bool{}, map[string]int{}
+	options := []tasks.ModelSpeed{}
+	for _, model := range models {
+		if seen[model.ID] || model.ID == "" {
+			continue
+		}
+		seen[model.ID] = true
+		name := model.Name
+		if name == "" {
+			name = model.ID
+		}
+		options = append(options, tasks.ModelSpeed{ID: model.ID, Name: name})
+		names[name]++
+	}
+	for i := range options {
+		if names[options[i].Name] > 1 {
+			options[i].Name += " · " + options[i].ID
+		}
+	}
+	return options
+}
+
+// One editable picker supports both the catalog and a manually entered model ID.
+func modelPicker(c *ui.Context, value *string, models []tasks.Model) bool {
+	options := modelChoices(models)
+	display := func(id string) string {
+		if id == "" {
+			id = tasks.DefaultCodexModel
+		}
+		for _, option := range options {
+			if option.ID == id {
+				return option.Name
+			}
+		}
+		return id
+	}
+	before := *value
+	ui.Box(c).Width(290).MaxWidth(320).MinWidth(0).AlignSelf(ui.Start).Children(func() {
+		box := ui.Row(c).FillWidth()
+		draft := ui.Local(box, "model-draft", func() string { return display(*value) })
+		last := ui.Local(box, "model-value", func() string { return *value })
+		if *last != *value {
+			*draft, *last = display(*value), *value
+		}
+		box.Children(func() {
+			picker := ui.ComboboxBase(c.Key("model-input"), draft)
+			picker.Input.Label("Choose default model").Placeholder(tasks.DefaultCodexModel).FillWidth().Height(34).
+				Padding(0, 29, 0, 10).FontSize(12).Radius(8).Border(1, c.Theme().Border).Background(c.Theme().Surface)
+			if !picker.Input.Focused() && !picker.Input.Changed() {
+				*draft = display(*value)
+			}
+			if picker.Input.Focused() {
+				picker.Input.BorderColor(c.Theme().Accent)
+			}
+			if picker.Input.Changed() {
+				*value = strings.TrimSpace(*draft)
+				for _, option := range options {
+					if strings.EqualFold(*value, option.Name) {
+						*value = option.ID
+						break
+					}
+				}
+				*last = *value
+			}
+			picker.Popup(func(menu ui.Element) {
+				menu.Background(c.Theme().Surface).Border(1, c.Theme().Border).Radius(9).Padding(4)
+				ui.Scroll(c).FillWidth().MaxHeight(280).Children(func() {
+					query := strings.ToLower(strings.TrimSpace(*draft))
+					matches := 0
+					for _, option := range options {
+						if picker.Filtering() && !strings.Contains(strings.ToLower(option.ID+" "+option.Name), query) {
+							continue
+						}
+						matches++
+						item := picker.Item(option.ID).Label(option.Name).Padding(8, 10).Radius(6)
+						if item.Highlighted() || *value == option.ID {
+							item.Background(c.Theme().SurfacePressed)
+						}
+						item.Children(func() { ui.Text(c, option.Name).FontSize(12).SingleLine() })
+					}
+					if matches == 0 {
+						ui.Text(c, "Enter a model ID").FontSize(12).TextColor(c.Theme().TextMuted).Padding(8, 10)
+					}
+				})
+			})
+			if choice, chosen := picker.Chosen(); chosen {
+				*value, *last, *draft = choice, choice, display(choice)
+			}
+			ui.Icon(c, chevronDownMark).Size(12, 12).Absolute().Right(10).Top(11).TextColor(c.Theme().TextMuted).IgnoreInput(true)
+		})
+	})
+	return before != *value
+}
+
+var chevronDownMark = svg(`<path d="m7 10 5 5 5-5"/>`)
+
 func modelOption(c *ui.Context, value *string, empty, label string, options []tasks.ModelSpeed) bool {
 	selectOption := ui.SelectBase(c, value)
 	title := *value
@@ -94,8 +177,11 @@ func modelOption(c *ui.Context, value *string, empty, label string, options []ta
 	if strings.HasSuffix(label, "speed") {
 		title = "Speed: " + title
 	}
-	selectOption.Trigger.Label(label).Height(31).Padding(0, 10).Radius(7).
-		Border(1, c.Theme().Border).Background(c.Theme().Surface).Children(func() { ui.Text(c, title+" ▾").FontSize(12) })
+	selectOption.Trigger.Label(label).Height(34).MinWidth(170).MaxWidth(290).AlignSelf(ui.Start).Justify(ui.Start).
+		Padding(0, 10).Gap(12).Radius(8).Border(1, c.Theme().Border).Background(c.Theme().Surface).Children(func() {
+		ui.Text(c, title).FontSize(12).SingleLine().MinWidth(0)
+		ui.Icon(c, chevronDownMark).Size(12, 12).Shrink(0).TextColor(c.Theme().TextMuted)
+	})
 	selectOption.Popup(func(menu ui.Element) {
 		menu.Background(c.Theme().Surface).Border(1, c.Theme().Border).Radius(8).Padding(4).MinWidth(160)
 		for _, option := range options {
