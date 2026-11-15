@@ -201,6 +201,17 @@ func (c *Client) Cancel(ctx context.Context, id string, queuedOnly bool) (tasks.
 	return out, err
 }
 
+func (c *Client) ChatCodeOutput(ctx context.Context, chat, id string) (tasks.ChatCodeRun, error) {
+	var run tasks.ChatCodeRun
+	task, attempt, _ := strings.Cut(id, "/")
+	path := "/v1/conversations/" + url.PathEscape(chat) + "/code-runs/" + url.PathEscape(task) + "/output"
+	if attempt != "" {
+		path += "?attempt=" + url.QueryEscape(attempt)
+	}
+	err := c.call(ctx, http.MethodGet, path, "", nil, &run)
+	return run, err
+}
+
 func (c *Client) Steer(ctx context.Context, id, text, key string) error {
 	var out tasks.SteeringMessage
 	return c.call(ctx, http.MethodPost, "/v1/tasks/"+url.PathEscape(id)+"/steer", key,

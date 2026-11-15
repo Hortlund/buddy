@@ -81,10 +81,10 @@ func TestReadProfilePictureAppliesJPEGOrientation(t *testing.T) {
 
 func TestPictureImportStaysInItsSettingsSession(t *testing.T) {
 	a := &desktop{}
-	a.showSettings()
+	a.showSettingsFor(a.focusedAgent())
 	cancelled := a.edit.Avatar
 	a.section = ""
-	a.showSettings()
+	a.showSettingsFor(a.focusedAgent())
 	a.picturePicking = true
 	a.finishPicture(cancelled, []byte("old picture"), nil)
 	if len(a.edit.Avatar.Image) != 0 || !a.picturePicking {
@@ -96,17 +96,21 @@ func TestPictureImportStaysInItsSettingsSession(t *testing.T) {
 	}
 }
 
-func TestWorkingAvatarRollsAndRespectsReduceMotion(t *testing.T) {
+func TestAvatarFollowsNearbyPointerAndRespectsReduceMotion(t *testing.T) {
 	view := ui.NewTester(func(c *ui.Context) {
-		avatar(c, 96, tasks.DefaultAvatar(), nil, true, orbMood(tasks.RunningTool))
-	}, 96, 96)
+		c.SetTheme(darkBuddyTheme)
+		ui.Row(c).Fill().Children(func() {
+			ui.Box(c).Width(130)
+			avatar(c, 96, tasks.DefaultAvatar(), nil, true, orbIdle)
+		})
+	}, 470, 96)
 	center := func() image.Point {
 		t.Helper()
 		frame := view.Image()
 		var xSum, ySum, count int
 		for y := 18; y < 78; y++ {
-			for x := 18; x < 78; x++ {
-				if (x-47)*(x-47)+(y-47)*(y-47) < 30*30 && frame.RGBAAt(x, y).R > 200 {
+			for x := 12; x < 86; x++ {
+				if frame.RGBAAt(x+130, y).R > 225 {
 					xSum, ySum, count = xSum+x, ySum+y, count+1
 				}
 			}
@@ -116,13 +120,30 @@ func TestWorkingAvatarRollsAndRespectsReduceMotion(t *testing.T) {
 		}
 		return image.Pt(xSum/count, ySum/count)
 	}
-	start := center()
-	view.Advance(1575 * time.Millisecond)
-	if turned := center(); turned.X >= start.X-10 || turned.Y <= start.Y+8 {
-		t.Fatalf("eyes did not roll with the orb: %v to %v", start, turned)
+	neutral := center()
+	// Stay ahead of the first idle blink so the eye centroid measures gaze.
+	const settle = 400 * time.Millisecond
+	view.Move(103, 48)
+	view.Advance(settle)
+	left := center()
+	view.Move(253, 48)
+	view.Advance(settle)
+	right := center()
+	if right.X < left.X+10 {
+		t.Fatalf("eyes did not follow a nearby pointer outside the avatar: %v to %v", left, right)
+	}
+	view.Move(415, 48)
+	view.Advance(settle)
+	farRight := center()
+	view.Move(12, 48)
+	view.Advance(settle)
+	farLeft := center()
+	if farRight.X < neutral.X-3 || farRight.X > neutral.X+3 || farRight.X-farLeft.X > 2 || farLeft.X-farRight.X > 2 {
+		t.Fatalf("eyes tracked the distant pointer: left %v, right %v, neutral %v", farLeft, farRight, neutral)
 	}
 	view.SetPreferences(ui.Preferences{ReduceMotion: true})
 	still := center()
+	view.Move(103, 48)
 	view.Advance(1575 * time.Millisecond)
 	if got := center(); got != still {
 		t.Fatalf("eyes moved with Reduce Motion enabled: %v to %v", still, got)

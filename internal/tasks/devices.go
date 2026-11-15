@@ -61,34 +61,43 @@ type DeviceCredential struct {
 
 type DeviceJob struct {
 	ExecutionPlan
-	Workspace       string           `json:"workspace,omitempty"`
-	ControlToken    string           `json:"control_token,omitempty"`
-	BuddyTeam       TeamContext      `json:"buddy_team"`
-	Skill           *SkillInvocation `json:"skill,omitempty"`
-	Language        string           `json:"language,omitempty"`
-	ID              string           `json:"id"`
-	Lease           string           `json:"lease"`
-	Seconds         int              `json:"timeout_seconds"`
-	Agent           Agent            `json:"agent"`
-	Title           string           `json:"title"`
-	Brief           string           `json:"brief"`
-	Personality     string           `json:"personality,omitempty"`
-	Attachments     []Attachment     `json:"attachments,omitempty"`
-	NeedsStart      bool             `json:"needs_start,omitempty"`
-	CanRequestInput bool             `json:"can_request_input,omitempty"`
+	Workspace         string            `json:"workspace,omitempty"`
+	ControlToken      string            `json:"control_token,omitempty"`
+	BuddyTeam         TeamContext       `json:"buddy_team"`
+	Skill             *SkillInvocation  `json:"skill,omitempty"`
+	Language          string            `json:"language,omitempty"`
+	ID                string            `json:"id"`
+	Lease             string            `json:"lease"`
+	Seconds           int               `json:"timeout_seconds"`
+	Agent             Agent             `json:"agent"`
+	Title             string            `json:"title"`
+	Brief             string            `json:"brief"`
+	Personality       string            `json:"personality,omitempty"`
+	Attachments       []Attachment      `json:"attachments,omitempty"`
+	NeedsStart        bool              `json:"needs_start,omitempty"`
+	CanRequestInput   bool              `json:"can_request_input,omitempty"`
+	CommandProgress   bool              `json:"command_progress,omitempty"`
+	CommandBatches    bool              `json:"command_batches,omitempty"`
+	AutomationAnswers []researchRequest `json:"automation_answers,omitempty"`
+	AutomationRequest []researchRequest `json:"automation_request,omitempty"`
 }
 
+const DeviceCommandBatchLimit = 4
+
 type DevicePulse struct {
-	Lease           string       `json:"lease"`
-	Kind            ActivityKind `json:"kind,omitempty"`
-	Update          string       `json:"update,omitempty"`
-	CompletedUpdate bool         `json:"completed_update,omitempty"`
+	Lease           string         `json:"lease"`
+	Kind            ActivityKind   `json:"kind,omitempty"`
+	Update          string         `json:"update,omitempty"`
+	CompletedUpdate bool           `json:"completed_update,omitempty"`
+	Command         *ChatCodeRun   `json:"command,omitempty"`
+	Commands        []*ChatCodeRun `json:"commands,omitempty"`
 }
 
 type DeviceResult struct {
-	Lease  string `json:"lease"`
-	Status Status `json:"status"`
-	Reply  string `json:"reply"`
+	Lease   string       `json:"lease"`
+	Status  Status       `json:"status"`
+	Reply   string       `json:"reply"`
+	Command *ChatCodeRun `json:"command,omitempty"`
 }
 
 func tokenHash(token string) string {
@@ -190,7 +199,7 @@ func touchDevice(ctx context.Context, tx *sql.Tx, id string, now time.Time) erro
 }
 
 func (s *Store) ClaimDeviceJob(ctx context.Context, id string) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, false, false, false, false, false)
+	return s.claimDeviceJob(ctx, id, false, false, false, false, false, false)
 }
 
 func (s *Store) ReserveDeviceJob(ctx context.Context, id string) (*DeviceJob, error) {
@@ -198,18 +207,22 @@ func (s *Store) ReserveDeviceJob(ctx context.Context, id string) (*DeviceJob, er
 }
 
 func (s *Store) ReserveDeviceWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, false, false)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, false, false, false)
 }
 
 func (s *Store) ReserveDeviceSkillWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, true, false)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, false, false)
 }
 
 func (s *Store) ReserveExecutionWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, true)
 }
 
-func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, pool, edits, supportsSkills, supportsExecution bool) (*DeviceJob, error) {
+func (s *Store) ReserveLegacyExecutionWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, false)
+}
+
+func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, pool, edits, supportsSkills, supportsExecution, scopesAutomation bool) (*DeviceJob, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -269,6 +282,15 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 		if !supportsExecution && (plan.ProjectID != "" || len(plan.Requirements) != 0 || plan.Environment != "") {
 			continue
 		}
+		if plan.usesAutomation() && !scopesAutomation {
+			if !item.unassigned {
+				const message = "Update buddyworker on this device to run browser or desktop automation."
+				if _, err := tx.ExecContext(ctx, "UPDATE tasks SET summary=? WHERE id=? AND summary<>?", message, item.id, message); err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
 		workspace, reason, err := executionWorkspace(ctx, tx, id, plan)
 		if err != nil {
 			return nil, err
@@ -323,7 +345,7 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 			continue
 		}
 		job := &DeviceJob{ExecutionPlan: plan, Workspace: workspace, ID: item.id, Lease: rand.Text(), NeedsStart: reserveDelivery && (len(files) != 0 || skill != nil),
-			Attachments: files, CanRequestInput: reserveDelivery, Skill: skill}
+			Attachments: files, CanRequestInput: reserveDelivery, CommandProgress: true, CommandBatches: true, Skill: skill}
 		var conversation string
 		if err := tx.QueryRowContext(ctx, `
 			SELECT t.timeout,td.agent_id,ct.agent_name,ct.instructions,ct.allow_edits,tm.model,td.agent_role,td.title,td.brief,(SELECT chat FROM language_preferences WHERE id=1),ct.conversation_id
@@ -353,6 +375,19 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 		job.Brief, err = backgroundBrief(ctx, tx, item.id, job.Brief)
 		if err != nil {
 			return nil, err
+		}
+		if plan.usesAutomation() {
+			job.AutomationAnswers, err = readWorkResearchAnswers(ctx, tx, item.id)
+			if err != nil {
+				return nil, err
+			}
+			if plan.AutomationInspectionScope == "" && plan.AutomationWriteScope == "" {
+				research, err := backgroundPublicResearch(ctx, tx, conversation, item.id)
+				if err != nil {
+					return nil, err
+				}
+				job.AutomationRequest = research.Requests
+			}
 		}
 		if item.unassigned {
 			if _, err := tx.ExecContext(ctx, "INSERT INTO device_runs(task_id,device_id) VALUES (?,?)", item.id, id); err != nil {
@@ -487,7 +522,44 @@ func (s *Store) PulseDeviceJob(ctx context.Context, id, task string, pulse Devic
 			}
 		}
 	}
+	// A worker may finish a command while handling cancellation.
+	if len(pulse.Commands) > DeviceCommandBatchLimit || pulse.Command != nil && len(pulse.Commands) != 0 {
+		return "", &InputError{"Invalid command progress batch."}
+	}
+	if status == Running || status == Cancelling {
+		if err := saveDeviceCommand(ctx, tx, task, pulse.Command); err != nil {
+			return "", err
+		}
+		for _, run := range pulse.Commands {
+			if run == nil || run.RunID == "" {
+				return "", &InputError{"A command batch requires run IDs."}
+			}
+			if err := saveDeviceCommand(ctx, tx, task, run); err != nil {
+				return "", err
+			}
+		}
+	}
 	return status, tx.Commit()
+}
+
+func saveDeviceCommand(ctx context.Context, tx *sql.Tx, task string, run *ChatCodeRun) error {
+	if run == nil {
+		return nil
+	}
+	switch run.Status {
+	case Running, Succeeded, Failed, Cancelled, Interrupted:
+	default:
+		return &InputError{"Invalid device command status."}
+	}
+	if !run.WorkCommand || run.Command == "" || len(run.Command) > 1024+len("…") || run.StartedAt.IsZero() ||
+		(run.Status == Running) != (run.FinishedAt == nil) || len(run.Stdout) > 3*maxChatCodeOutput ||
+		len(run.Stderr) > 3*maxChatCodeOutput || len(run.Error) > 1024 || run.Language != "" || run.OutputPreview ||
+		run.RunID != "" && (!strings.HasPrefix(run.RunID, "run_") || !mcpName.MatchString(run.RunID)) {
+		return &InputError{"Invalid device command progress."}
+	}
+	return publishCodeRun(func(stream, data string) error {
+		return addEvent(ctx, tx, task, stream, data)
+	}, *run)
 }
 
 func (s *Store) FinishDeviceJob(ctx context.Context, id, task string, report DeviceResult) error {
@@ -532,6 +604,9 @@ func (s *Store) FinishDeviceJob(ctx context.Context, id, task string, report Dev
 		summary = "Waiting for your reply."
 	} else if report.Status != Succeeded {
 		summary = "Couldn't finish on the device."
+	}
+	if err := saveDeviceCommand(ctx, tx, task, report.Command); err != nil {
+		return err
 	}
 	if err := s.finishTask(ctx, tx, task, report.Status, summary, clipReply(report.Reply), nil); err != nil {
 		return err

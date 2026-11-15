@@ -65,19 +65,6 @@ func (a *desktop) reactionMenu(message tasks.Message, menu *ui.Menu) {
 	}
 }
 
-func (a *desktop) reactionButton(c *ui.Context, message tasks.Message) {
-	button := ui.ButtonBase(c).Label("React to message").Tooltip("React to message").Size(24, 24).
-		Shrink(0).Center().Radius(6).Disabled(!a.canReact(message))
-	color := c.Theme().TextMuted
-	if button.Hovered() {
-		button.Background(c.Theme().SurfaceHover)
-	} else {
-		color = color.Alpha(.72)
-	}
-	button.PopoverMenuButton(func(menu *ui.Menu) { a.reactionMenu(message, menu) })
-	button.Children(func() { ui.Icon(c, reactionMark).Size(15, 15).TextColor(color) })
-}
-
 func (a *desktop) messageReactions(c *ui.Context, message tasks.Message, align ui.Align) {
 	if len(message.Reactions) == 0 {
 		return

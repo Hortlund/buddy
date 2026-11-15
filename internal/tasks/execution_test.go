@@ -771,6 +771,9 @@ func TestExplicitHostWaitsForEnabledCapability(t *testing.T) {
 	if err := s.SaveHostProfile(ctx, device.ID, profile); err != nil {
 		t.Fatal(err)
 	}
+	if job, err := s.ReserveLegacyExecutionWork(ctx, device.ID, false, false); err != nil || job != nil {
+		t.Fatalf("worker without automation scoping got a desktop job: %+v, %v", job, err)
+	}
 	if job, err := s.ReserveExecutionWork(ctx, device.ID, false, false); err != nil || job == nil {
 		t.Fatal("newly ready host did not resume its queue", err)
 	}

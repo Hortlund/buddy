@@ -23,7 +23,7 @@ Run shell commands from the repository root unless a section says otherwise.
 
 ## Run on macOS
 
-Install Go 1.27.3+, Git, and a Codex CLI with named permission profiles.
+Install Go 1.27.4+, Git, and a Codex CLI with named permission profiles.
 GPT-6.1 Terra requires Codex CLI 0.159.0 or later. [Codex models](https://learn.chatgpt.com/docs/models)
 
 Run `codex login` on the server to use the CLI's sign-in, or save an OpenAI
@@ -40,15 +40,39 @@ Run this command from the repository root.
 
 ## Using Buddy
 
+For Docker-based inline code execution, prepare the runtimes you want to use.
+Buddy uses installed images and can delegate work when an image is unavailable.
+
+```sh
+docker pull docker.io/library/golang@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea
+docker pull docker.io/library/python@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb558c0c17db5ffefbcf8094871c32b
+```
+
 1. Pick a Bud in the left sidebar and send a message. Normal conversation
-   gets a direct reply. A Bud can save a small new Markdown, text, CSV, or JSON
-   file in its editable workspace during that reply. Longer research and
-   development can be handed off to a separate Codex worker. Keep chatting while that worker runs, or quit Buddy
-   and open it later. The result lands in the originating chat.
-   Choose **Run in background** (the briefcase) on Mac or iPhone to plan and
-   queue an assignment. Name a project, worker device, or tool in the request
-   when the job needs it. If Buddy asks a question while planning, use **Reply**
-   under the question to continue the request. You can also ask a Bud to start a job in a call.
+   gets a direct reply. A Bud can inspect workspace files, look up GitHub
+   records, read connected Gmail and monitoring data, open text attachments,
+   and check current job progress in the same turn. Buds can discover relevant
+   installed skills and look up public information in a separate Codex session
+   scoped to the user's request. A Bud can save a small Markdown, text, CSV, or
+   JSON file in its editable workspace when the request authorizes the save.
+   For longer research and development, it can start a Codex background job.
+   Keep chatting while it runs, or quit Buddy and open it later. The result
+   lands in the originating chat.
+   Ask a Bud to run or verify a short, standalone Go or Python snippet.
+   Each execution has its own output and exit status in chat. The server
+   uses a network-disabled sandbox. On macOS, inline runs require running
+   Docker and a pinned runtime image. On Linux, the installer delegates the
+   cgroup v2 memory and process controllers for native runs with bubblewrap.
+   For an existing systemd service, add `Delegate=memory pids` under `[Service]`,
+   reload systemd, and restart Buddy with the updated server binary. A service
+   without native limits can use the same Docker setup as macOS. Execution has
+   a 256 MiB memory limit and a 32-process limit. Go compilation uses a separate
+   sandbox with a 768 MiB memory limit. For programs that write files, repository
+   builds, longer tests, or work on another machine, the Bud can start a
+   background job from the request. Name the project or device when the job
+   depends on it. On the home server, read-only jobs can use temporary build
+   space while their working folder stays read-only. The chat shows the latest
+   command and its output during the job.
    If a job needs input, choose **Reply to job** in chat or in Work. Your
    reply resumes the same job.
    Use the paperclip for files or paste an image into the composer. Each message
@@ -555,7 +579,11 @@ content in chat for approval. Fine-grained tokens need **Issues: Write** or
 
 In the same chat, ask Buddy to search Gmail or open a matching message, find
 Grafana dashboards or firing alerts, or check alerts and run instant PromQL
-queries against a Prometheus instance. Results appear as cards with source links.
+queries against a Prometheus instance. A Bud can follow up on a result before
+replying, such as opening a message found by a search. The latest successful
+lookup appears as a card with source links, including alongside a watch draft
+or routine change in the same reply. Background jobs and scheduled
+routines running on the home server can use these same read tools.
 
 Ask Buddy directly to create a watch. For example, “Tell me here when CI on
 `main` fails” or “Watch my Work inbox for email from `billing@example.com`.”
@@ -663,8 +691,8 @@ joining a group call are added to that group. **Back to chat** keeps the
 call going and opens its chat.
 
 Speak over an agent to interrupt, or use **Mute** and **Hang up**. The
-agents can check the chat’s work and routines, inspect their own workspace
-entries, and queue background work or schedule routines on request. Open
+agents can check the chat’s work and routines, read text files in their own
+workspace, and queue background work or schedule routines on request. Open
 **Work** in the call room to see job progress while you talk, or ask a Bud
 for an update. Answer a job’s question right after the call reads it, or say
 “For Release review, use the beta branch” to name the job you’re answering.
@@ -728,9 +756,11 @@ Importing it adds `/release-brief` on your Buddy server. Reimport the same name
 to update it, or remove it from **Skills**. Work already queued and routines
 scheduled from a skill keep the version selected at the time. Upgrade paired
 devices to this build of `buddyworker` to run jobs that use skills. Buddy imports
-the Markdown instructions from user-invocable skills. Companion files, scripts,
-tool grants, and automatic activation from other runtimes are outside this
-version. An imported skill runs with the selected Bud's normal permissions.
+the Markdown instructions from user-invocable skills. In a Codex chat, a Bud
+can discover those instructions by name and use them for a matching request.
+Explicit slash commands still select and save the workflow for that task and
+any work or routines it hands off. A skill uses the selected Bud's normal
+permissions. Imported instructions are Markdown.
 
 ## How it works
 
@@ -748,6 +778,8 @@ version. An imported skill runs with the selected Bud's normal permissions.
   Each run has a 45-minute limit.
 - Routines are interval-based. When the daemon was offline, it coalesces missed
   intervals into one overdue run. Occurrences of the same routine never overlap.
+  A routine with no recoverable original request shows a web search notice.
+  Recreate it with the public topic or sources in the request to restore search.
 
 For automated checks, run `go test -race ./...`. With Codex CLI signed in,
 `python3 script/smoke_desktop.py` exercises real chat and background work

@@ -71,17 +71,23 @@ func (w *Worker) Cancel(ctx context.Context, id string, queuedOnly bool) (Task, 
 	if err != nil {
 		return Task{}, err
 	}
-	return lane.cancelTask(ctx, id, queuedOnly)
+	return lane.cancelTask(ctx, id, queuedOnly, "", "")
 }
 
-func (w *Worker) cancelTask(ctx context.Context, id string, queuedOnly bool) (Task, error) {
+func (w *Worker) CancelChatCode(ctx context.Context, chat, id string) (Task, error) {
+	task, attempt, _ := strings.Cut(id, "/")
+	return w.cancelTask(ctx, task, false, chat, attempt)
+}
+
+func (w *Worker) cancelTask(ctx context.Context, id string, queuedOnly bool, chat, attempt string) (Task, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	run := w.runs[id]
-	if run != nil && run.completing {
+	completing := run != nil && run.completing
+	if completing && chat == "" {
 		return Task{}, ErrInactive
 	}
-	t, err := w.store.cancel(ctx, id, queuedOnly)
+	t, err := w.store.cancelTaskInScope(ctx, id, queuedOnly, chat, completing, attempt)
 	if err == nil {
 		for job, running := range w.runs {
 			if task, lookupErr := w.store.Get(ctx, job); lookupErr == nil && task.Status == Cancelling {
@@ -266,8 +272,9 @@ func (w *Worker) execute(ctx context.Context, t Task, run *workerRun, emit Emit,
 				run.steerReady = ready
 			}
 		},
-		next: func(ctx context.Context) (SteeringMessage, error) { return w.store.nextSteering(ctx, t.ID) },
-		mark: w.store.markSteering,
+		next:    func(ctx context.Context) (SteeringMessage, error) { return w.store.nextSteering(ctx, t.ID) },
+		mark:    w.store.markSteering,
+		applied: func(ctx context.Context) ([]string, error) { return w.store.appliedSteering(ctx, t.ID) },
 	}
 	reply, err := w.agent(ctx, turn, emit)
 	if err == nil && turn.OutputDirectory != "" {

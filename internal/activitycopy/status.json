@@ -1,0 +1,27 @@
+{
+  "thinking": [
+    "Thinking it through…", "Mulling it over…", "Making sense of it…", "Getting my bearings…",
+    "Turning it over…", "Taking a closer look…", "Finding a starting point…", "Looking at it from another angle…",
+    "Considering the details…", "Weighing it up…", "Working through the details…", "Following the thread…",
+    "Connecting the dots…", "Piecing it together…", "Taking a moment to think…", "Working out the next step…",
+    "Finding a way through…", "Untangling the details…", "Sorting through the possibilities…", "Thinking through the options…",
+    "Looking at the moving parts…", "Lining up the details…", "Turning the question around…", "Finding the right angle…",
+    "Feeling out the details…", "Getting a handle on it…", "Considering what fits…", "Narrowing it down…",
+    "Exploring a few angles…", "Finding a direction…", "Thinking through the request…", "Putting the pieces in order…"
+  ],
+  "replying": [
+    "Writing back…", "Putting it into words…", "Getting the reply ready…", "Pulling the reply together…",
+    "Drafting a response…", "Finding the right words…", "Organizing the answer…", "Shaping the reply…",
+    "Laying out the answer…", "Putting the details in order…", "Composing a reply…", "Making the answer clear…",
+    "Pulling the details together…", "Preparing the response…", "Setting out the answer…", "Writing the reply…",
+    "Bringing the answer together…", "Working on the wording…", "Arranging the points…", "Turning this into an answer…"
+  ],
+  "running": [
+    "Running a tool…", "Waiting on the tool…", "This step is running…", "The tool is still busy…",
+    "Waiting for the result…", "A tool is at work…", "This step is in progress…", "Waiting for this step to finish…",
+    "The tool hasn’t finished yet…", "Waiting on output…", "The current step is underway…", "The tool is still running…"
+  ],
+  "starting": [
+    "Getting started…", "Waking up…", "Getting ready…", "Getting set up…", "Starting the session…", "Opening the session…"
+  ]
+}

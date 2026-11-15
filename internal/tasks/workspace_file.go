@@ -79,7 +79,15 @@ func (r *CodexRuntime) openReferencedRoot(s *Store, workspace, relative string) 
 	if relative != "." && !validWorkspaceItemPath(relative) {
 		return nil, &InputError{"Choose a file inside the referenced workspace."}
 	}
-	protected := slices.Concat(r.protected, r.readOnly, []string{r.migrationDir, r.snapshotDir, s.profilesRoot})
+	parent, _, err := openQuickWorkspace(workspace, r.workspaceReadLimits(s))
+	if err != nil {
+		return nil, err
+	}
+	return openWorkspaceParent(parent, relative)
+}
+
+func (r *CodexRuntime) workspaceReadLimits(s *Store) []string {
+	protected := slices.Concat(r.protected, r.readOnly, []string{r.migrationDir, r.snapshotDir, r.launcherDir, s.profilesRoot})
 	codexHome := os.Getenv("CODEX_HOME")
 	if codexHome == "" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -89,21 +97,21 @@ func (r *CodexRuntime) openReferencedRoot(s *Store, workspace, relative string) 
 	if resolved, err := filepath.EvalSymlinks(codexHome); codexHome != "" && err == nil {
 		protected = append(protected, resolved)
 	}
-	parent, _, err := openQuickWorkspace(workspace, protected)
-	if err != nil {
-		return nil, err
-	}
+	return protected
+}
+
+func openWorkspaceParent(root *os.Root, relative string) (*os.Root, error) {
 	if dir := path.Dir(relative); dir != "." {
 		for name := range strings.SplitSeq(dir, "/") {
-			child, err := openWorkspaceFolder(parent, name)
-			parent.Close()
+			child, err := openWorkspaceFolder(root, name)
+			root.Close()
 			if err != nil {
 				return nil, err
 			}
-			parent = child
+			root = child
 		}
 	}
-	return parent, nil
+	return root, nil
 }
 
 func openWorkspaceFolder(root *os.Root, name string) (*os.Root, error) {

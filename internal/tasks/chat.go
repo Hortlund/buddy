@@ -67,6 +67,14 @@ CREATE TABLE IF NOT EXISTS chat_connection_cards (
 	task_id TEXT PRIMARY KEY REFERENCES chat_turns(task_id),
 	card TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS chat_file_saves (
+	task_id TEXT PRIMARY KEY REFERENCES chat_turns(task_id),
+	name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chat_watch_cards (
+	task_id TEXT PRIMARY KEY REFERENCES chat_turns(task_id),
+	card TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS chat_watch_drafts (
 	task_id TEXT PRIMARY KEY REFERENCES chat_turns(task_id),
 	drafts TEXT NOT NULL,
@@ -136,6 +144,12 @@ type Message struct {
 	BudProposal        *BudProposal      `json:"bud_proposal,omitempty"`
 	GitHub             *GitHubResult     `json:"github,omitempty"`
 	ConnectionCard     *ConnectionCard   `json:"connection_card,omitempty"`
+	WatchCard          *ConnectionCard   `json:"watch_card,omitempty"`
+	CodeRun            *ChatCodeRun      `json:"code_run,omitempty"`
+	CodeRuns           []ChatCodeRun     `json:"code_runs,omitempty"`
+	savedFile          string
+	savedFileWorkspace string
+	choiceAnswer       bool
 }
 
 type Conversation struct {
@@ -164,46 +178,68 @@ type Turn struct {
 	OutputDirectory string
 	Projects        []Project
 
-	Skill              *SkillInvocation
-	WatchSignal        *StandingSignal
-	Memories           []MemoryNote
-	Soul               string
-	soulRevision       string
-	LearnedMemory      string
-	CanLearn           bool
-	Language           string
-	WorkDetails        *WorkDetails
-	Agent              Agent
-	Messages           []Message
-	steering           *turnSteering
-	Origin             string
-	Title              string
-	Brief              string
-	TeamStep           string
-	Team               []AgentRef
-	Buds               []AgentRef
-	BuddyTeam          TeamContext
-	Work               []WorkItem
-	coordinate         bool
-	revisingBud        bool
-	routing            bool
-	workspaceRoot      string
-	action             *TurnAction
-	Routines           []routineSummary
-	Personality        string
-	Devices            []Device
-	DeviceExecution    bool
-	CanRequestInput    bool
-	Attachments        []Attachment
-	imageTool          func(context.Context, ImageRequest) ([]byte, error)
-	attachmentSource   string
-	earlierAttachments bool
-	github             GitHubChatReader
-	githubConnections  []GitHubChatConnection
-	gitCheckout        *gitCheckout
-	integrations       ChatIntegrations
-	connections        []ProviderConnection
-	watches            []Watch
+	Skill                   *SkillInvocation
+	Skills                  []SkillInfo
+	readSkill               func(context.Context, string) (string, error)
+	WatchSignal             *StandingSignal
+	Memories                []MemoryNote
+	Soul                    string
+	soulRevision            string
+	LearnedMemory           string
+	CanLearn                bool
+	Language                string
+	WorkDetails             *WorkDetails
+	Agent                   Agent
+	Messages                []Message
+	steering                *turnSteering
+	Origin                  string
+	Title                   string
+	Brief                   string
+	TeamStep                string
+	Team                    []AgentRef
+	Buds                    []AgentRef
+	BuddyTeam               TeamContext
+	Work                    []WorkItem
+	coordinate              bool
+	revisingBud             bool
+	routing                 bool
+	workspaceRoot           string
+	action                  *TurnAction
+	Routines                []routineSummary
+	routineResearchMissing  bool
+	Personality             string
+	Devices                 []Device
+	DeviceExecution         bool
+	CanRequestInput         bool
+	Attachments             []Attachment
+	codeSandbox             string
+	codeRuntimes            map[string]chatCodeRuntime
+	chatTools               *chatToolState
+	readWorkStatus          func(context.Context) ([]WorkItem, error)
+	readWorkDetails         func(context.Context, string) (WorkDetails, error)
+	codeResult              func(context.Context, string) (ChatCodeRun, error)
+	authorizeFileWrite      func(context.Context, QuickFile) bool
+	authorizeScheduled      func(context.Context, []Handoff, []RoutineDraft) schedulePermissions
+	publicRequest           string
+	publicResearch          publicResearchContext
+	publicSearchOnly        bool
+	isolatedPass            bool
+	isolatedSchema          string
+	searchPublic            func(context.Context) (string, error)
+	automationGuard         string
+	AutomationControlLookup func(context.Context) (AutomationControl, error)
+	AutomationAnswers       []researchRequest
+	AutomationRequest       []researchRequest
+	explainCodeResult       func(context.Context, ChatCodeRun) (string, error)
+	imageTool               func(context.Context, ImageRequest) ([]byte, error)
+	attachmentSource        string
+	earlierAttachments      bool
+	github                  GitHubChatReader
+	githubConnections       []GitHubChatConnection
+	gitCheckout             *gitCheckout
+	integrations            ChatIntegrations
+	connections             []ProviderConnection
+	watches                 []Watch
 }
 
 type AgentRunner func(context.Context, Turn, Emit) (string, error)
@@ -403,6 +439,13 @@ const visibleChatMessage = visibleTranscript + ` AND (m.role<>'user' OR NOT EXIS
 	(EXISTS(SELECT 1 FROM management_confirmations mc WHERE mc.task_id=q.task_id)
 	OR EXISTS(SELECT 1 FROM github_write_cards gw WHERE gw.task_id=q.task_id))))`
 
+const currentCodeAttempt = `(t.kind<>'background_work' OR (t.started IS NOT NULL AND e.at>=t.started))`
+const codeRunStreams = `(e.stream='chat_code_run' OR e.stream GLOB 'chat_code_run/run_*')`
+const latestCodeRun = `COALESCE((SELECT e.text FROM events e WHERE e.task_id=t.id AND ` + codeRunStreams + `
+	AND ` + currentCodeAttempt + ` ORDER BY
+	CASE WHEN json_extract(e.text,'$.work_command') AND json_extract(e.text,'$.status')='running'
+	THEN 0 ELSE 1 END,e.seq DESC LIMIT 1),'null')`
+
 const messageFields = `m.id,m.task_id,m.role,m.text,m.created,t.status,t.summary,
 	EXISTS(SELECT 1 FROM events e WHERE e.task_id=m.task_id AND e.stream='activity'),
 	CASE WHEN m.role='user' OR t.kind='background_work' THEN ` + steeringJSON + ` ELSE '[]' END,
@@ -437,7 +480,48 @@ const messageFields = `m.id,m.task_id,m.role,m.text,m.created,t.status,t.summary
 		AND c.id='conv_' || substr(p.bud_id,5) WHERE p.task_id=t.id),'null') ELSE 'null' END,
 	CASE WHEN m.role='assistant' THEN COALESCE((SELECT result FROM github_chat_results WHERE task_id=t.id),'null') ELSE 'null' END,
 	CASE WHEN m.role='assistant' THEN COALESCE((SELECT card FROM chat_connection_cards WHERE task_id=t.id),'null') ELSE 'null' END,
-	COALESCE((SELECT revision FROM reaction_versions WHERE message_id=m.id),0),` + reactionJSON
+	CASE WHEN m.role='assistant' THEN COALESCE((SELECT card FROM chat_watch_cards WHERE task_id=t.id),'null') ELSE 'null' END,
+	COALESCE((SELECT revision FROM reaction_versions WHERE message_id=m.id),0),` + reactionJSON + `,
+	CASE WHEN m.role='assistant' THEN ` + latestCodeRun + ` ELSE 'null' END,
+	CASE WHEN m.role='assistant' AND t.kind='agent_turn' THEN (SELECT json_group_array(json(r.text))
+		FROM (SELECT e.text FROM events e WHERE e.task_id=t.id AND ` + codeRunStreams + ` ORDER BY e.seq) r)
+	ELSE '[]' END,
+	CASE WHEN m.role='assistant' THEN COALESCE((SELECT name FROM chat_file_saves WHERE task_id=t.id),'') ELSE '' END,
+	t.repo, m.role='user' AND EXISTS(SELECT 1 FROM choice_card_answers WHERE answer_task_id=t.id)`
+
+func (s *Store) ChatCodeOutput(ctx context.Context, chat, id string) (ChatCodeRun, error) {
+	task, runID, _ := strings.Cut(id, "/")
+	var data string
+	var status Status
+	var end, previous sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT e.text,t.status,t.finished,CASE WHEN NOT `+currentCodeAttempt+` THEN e.at END
+		FROM events e JOIN chat_turns ct ON ct.task_id=e.task_id
+		JOIN tasks t ON t.id=ct.task_id LEFT JOIN turn_details td ON td.task_id=t.id
+		WHERE ct.conversation_id=? AND e.task_id=? AND `+codeRunStreams+`
+		AND ((?='' AND `+currentCodeAttempt+`) OR e.stream='chat_code_run/' || ?)
+		AND (t.status IN ('running','cancelling') OR t.kind='background_work' OR EXISTS(
+			SELECT 1 FROM messages m WHERE m.task_id=t.id AND m.role='assistant' AND `+visibleChatMessage+`))
+		ORDER BY e.seq DESC LIMIT 1`, chat, task, runID, runID).Scan(&data, &status, &end, &previous)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ChatCodeRun{}, ErrNotFound
+	}
+	var run ChatCodeRun
+	if err != nil {
+		return run, err
+	}
+	if err := json.Unmarshal([]byte(data), &run); err != nil {
+		return run, err
+	}
+	if previous.Valid {
+		if run.Status == Running {
+			run.finishFromTask(Interrupted, time.UnixMicro(previous.Int64).UTC())
+		}
+	} else if end.Valid {
+		run.finishFromTask(status, time.UnixMicro(end.Int64).UTC())
+	}
+	return run, nil
+}
 
 func (s *Store) Conversation(ctx context.Context, id string, before int64) (Conversation, error) {
 	return s.ConversationWithReactions(ctx, id, before, -1)
@@ -523,14 +607,21 @@ func (s *Store) ConversationWithReactions(ctx context.Context, id string, before
 			return Conversation{}, err
 		}
 		var active ActiveRun
+		var codeRun string
 		err := tx.QueryRowContext(ctx, `SELECT t.id,t.status,t.summary,
 			COALESCE((SELECT e.text FROM events e WHERE e.task_id=t.id AND e.stream='commentary' ORDER BY e.seq DESC LIMIT 1),''),
-			COALESCE(td.agent_id,?),ct.agent_name FROM tasks t
+			COALESCE(td.agent_id,?),ct.agent_name,`+latestCodeRun+` FROM tasks t
 			JOIN chat_turns ct ON ct.task_id=t.id LEFT JOIN turn_details td ON td.task_id=t.id
 			WHERE ct.conversation_id=? AND t.kind='agent_turn'
 			AND t.status IN ('running','cancelling') ORDER BY t.rowid LIMIT 1`, agent.ID, id).
-			Scan(&active.ID, &active.Status, &active.Activity, &active.Update, &active.AgentID, &active.AgentName)
+			Scan(&active.ID, &active.Status, &active.Activity, &active.Update, &active.AgentID, &active.AgentName, &codeRun)
 		if err == nil {
+			if err := json.Unmarshal([]byte(codeRun), &active.CodeRun); err != nil {
+				return Conversation{}, err
+			}
+			if active.CodeRun != nil {
+				active.CodeRun.keepPreview()
+			}
 			active.Kind = activityKind(active.Activity)
 			if active.Status == Cancelling {
 				active.Update = ""
@@ -574,10 +665,11 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 	for rows.Next() {
 		var m Message
 		var at int64
-		var steering, card, attachments, proposal, github, connection, reactions string
+		var steering, card, attachments, proposal, github, connection, watch, reactions, codeRun, codeRuns string
 		if err := rows.Scan(&m.ID, &m.TaskID, &m.Role, &m.Text, &at, &m.Status, &m.Activity, &m.DidWork, &steering,
 			&m.AgentID, &m.AgentName, &m.Origin, &m.Title, &m.GeneratedImage, &card, &m.BackgroundQuestion, &m.AnswerTo, &attachments, &m.JobID, &m.JobTitle,
-			&m.JobConversationID, &m.SkillName, &proposal, &github, &connection, &m.ReactionRevision, &reactions); err != nil {
+			&m.JobConversationID, &m.SkillName, &proposal, &github, &connection, &watch, &m.ReactionRevision, &reactions, &codeRun, &codeRuns,
+			&m.savedFile, &m.savedFileWorkspace, &m.choiceAnswer); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(steering), &m.Steering); err != nil {
@@ -598,10 +690,27 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 		if err := json.Unmarshal([]byte(connection), &m.ConnectionCard); err != nil {
 			return nil, err
 		}
+		if err := json.Unmarshal([]byte(watch), &m.WatchCard); err != nil {
+			return nil, err
+		}
 		if err := json.Unmarshal([]byte(reactions), &m.Reactions); err != nil {
 			return nil, err
 		}
 		m.At = time.UnixMicro(at).UTC()
+		if err := json.Unmarshal([]byte(codeRun), &m.CodeRun); err != nil {
+			return nil, err
+		}
+		if run := m.CodeRun; run != nil {
+			run.keepPreview()
+			run.finishFromTask(m.Status, m.At)
+		}
+		if err := json.Unmarshal([]byte(codeRuns), &m.CodeRuns); err != nil {
+			return nil, err
+		}
+		for i := range m.CodeRuns {
+			m.CodeRuns[i].keepPreview()
+			m.CodeRuns[i].finishFromTask(m.Status, m.At)
+		}
 		messages = append(messages, m)
 	}
 	return messages, rows.Err()
@@ -918,7 +1027,25 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 		return Turn{}, err
 	}
 	turn.BuddyTeam.CurrentTaskID = task.ID
+	turn.codeResult = func(ctx context.Context, id string) (ChatCodeRun, error) {
+		return s.ChatCodeOutput(ctx, conv, id)
+	}
+	if turn.coordinate && turn.Origin == "chat" && !turn.revisingBud || task.Kind == BackgroundWork {
+		if turn.Skills, err = s.Skills(ctx); err != nil {
+			return Turn{}, err
+		}
+		turn.readSkill = func(ctx context.Context, name string) (string, error) {
+			return skillInstructions(ctx, s.db, name)
+		}
+	}
 	if turn.coordinate {
+		agentID := turn.Agent.ID
+		turn.readWorkStatus = func(ctx context.Context) ([]WorkItem, error) {
+			return s.WorkContext(ctx, conv, agentID)
+		}
+		turn.readWorkDetails = func(ctx context.Context, job string) (WorkDetails, error) {
+			return s.WorkDetails(ctx, conv, job)
+		}
 		watches, err := s.Watches(ctx)
 		if err != nil {
 			return Turn{}, err
@@ -996,7 +1123,9 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 		return Turn{}, err
 	}
 	if !turn.coordinate {
-		recent = slices.DeleteFunc(recent, func(m Message) bool { return m.ConnectionCard != nil })
+		recent = slices.DeleteFunc(recent, func(m Message) bool {
+			return m.ConnectionCard != nil && (task.Kind != BackgroundWork || m.TaskID != parent || m.ConnectionCard.WatchDraft)
+		})
 	}
 	// Apply the context budget after prioritizing the request and any card context.
 	size := 0
@@ -1044,6 +1173,52 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 	turn.Messages = recent
 	if request != nil {
 		turn.Messages = append(turn.Messages, *request)
+		if request.choiceAnswer || request.AnswerTo != "" {
+			turn.publicResearch.Requests, err = readPublicRequestHistory(ctx, s.db, conv, request.TaskID, task.ID != request.TaskID)
+			if err != nil {
+				return Turn{}, err
+			}
+		} else {
+			turn.publicRequest = request.Text
+		}
+	}
+	if turn.Origin == "routine" {
+		var raw string
+		var subject researchSubject
+		err = s.db.QueryRowContext(ctx, `SELECT COALESCE(snapshot.request,p.request,''),COALESCE(r.name,''),COALESCE(r.minutes,0)
+			FROM turn_details t LEFT JOIN routines r ON r.id=t.routine_id
+			LEFT JOIN routine_public_requests p ON p.routine_id=t.routine_id
+			LEFT JOIN task_public_requests snapshot ON snapshot.task_id=t.task_id WHERE t.task_id=?`, task.ID).
+			Scan(&raw, &subject.Name, &subject.Minutes)
+		if err != nil {
+			return Turn{}, err
+		}
+		turn.publicResearch = decodeRoutineResearch(raw, subject)
+	} else if task.Kind == BackgroundWork && turn.publicRequest == "" && len(turn.publicResearch.Requests) == 0 {
+		turn.publicResearch, err = backgroundPublicResearch(ctx, s.db, conv, task.ID)
+		if err != nil {
+			return Turn{}, err
+		}
+		if (turn.publicResearch.Subject == researchSubject{}) {
+			turn.publicResearch.Subject.Name = turn.Title
+		}
+	}
+	if task.Kind == BackgroundWork {
+		answers, err := readWorkResearchAnswers(ctx, s.db, task.ID)
+		if err != nil {
+			return Turn{}, err
+		}
+		if turn.ExecutionPlan.usesAutomation() {
+			turn.AutomationAnswers = answers
+		}
+		if len(answers) != 0 {
+			if turn.publicRequest != "" {
+				turn.publicResearch.Requests = append(turn.publicResearch.Requests, researchRequest{User: turn.publicRequest})
+				turn.publicRequest = ""
+			}
+			turn.publicResearch.Requests = append(turn.publicResearch.Requests, answers...)
+		}
+		turn.routineResearchMissing = turn.Origin == "routine" && !turn.canSearchWeb()
 	}
 	switch {
 	case parent != "":

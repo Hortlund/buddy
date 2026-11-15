@@ -7,7 +7,7 @@ struct PhoneCallView: View {
     @State private var showWork = false
     @State private var workPath: [Destination] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private let accent = Color(red: 0.73, green: 0.68, blue: 1)
+    private let accent = Color(red: 1, green: 0.64, blue: 0.41)
 
     var body: some View {
         NavigationStack {
@@ -42,7 +42,7 @@ struct PhoneCallView: View {
                 controls.padding(20)
             }
             .background {
-                Color(red: 0.071, green: 0.071, blue: 0.082).ignoresSafeArea()
+                Color(white: 0.08).ignoresSafeArea()
                 RadialGradient(colors: [accent.opacity(0.14), .clear],
                                center: .top, startRadius: 12, endRadius: 420).ignoresSafeArea()
             }
@@ -65,6 +65,8 @@ struct PhoneCallView: View {
                             switch destination {
                             case let .work(chat, id): WorkDetail(api: api, chat: chat, id: id)
                             case let .chat(id, name): ChatView(api: api, id: id, name: name)
+                            case let .chatInfo(id, name): ChatDetails(api: api, id: id, name: name)
+                            case let .chatWork(id): WorkList(api: api, chat: id)
                             case let .inbox(id): InboxDetail(api: api, id: id)
                             case let .file(bud, path, task): WorkspacePreview(api: api, bud: bud, path: path, sourceTask: task)
  case let .artifact(job,file): ArtifactPreview(api:api,job:job,file:file)
@@ -144,19 +146,8 @@ struct PhoneCallView: View {
         let speaking = voice.speaker == member.id
         return Button { voice.focus(member.id) } label: {
             VStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(accent.opacity(speaking ? 0.22 : 0.07))
-                    BudFace(appearance: voice.appearance(member.id), size: 74)
-                        .scaleEffect(speaking ? 1.06 : 1)
-                        .rotationEffect(.degrees(speaking ? -4 : 0))
-                }
-                .frame(width: 98, height: 98)
-                .animation(reduceMotion ? nil : speaking ? .easeInOut(duration: 0.6).repeatForever(autoreverses: true) : .default, value: speaking)
-                HStack(spacing: 4) {
-                    Text(member.name).lineLimit(1)
-                    if member.id == voice.lead { Image(systemName: "star.fill").font(.caption2).foregroundStyle(accent) }
-                }
-                .font(.subheadline.bold())
+                BudFace(appearance: voice.appearance(member.id), size: 96, mood: speaking ? .speaking : .listening)
+                Text(member.name).lineLimit(1).font(.subheadline.weight(.medium))
                 Text(speaking ? "Speaking" : "Listening")
                     .font(.caption).foregroundStyle(speaking ? accent : .white.opacity(0.55))
             }
@@ -172,7 +163,6 @@ struct PhoneCallView: View {
     private var microphone: some View {
         VStack(spacing: 12) {
             ZStack {
-                Circle().fill(accent.opacity(0.12))
                 Image(systemName: voice.muted ? "mic.slash.fill" : "mic.fill")
                     .font(.system(size: 36)).foregroundStyle(accent)
             }.frame(width: 98, height: 98)

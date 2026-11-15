@@ -9,7 +9,9 @@ func controlPageLayout(c *ui.Context, title, subtitle string, content func()) {
 	ui.Column(c).Grow(1).MinHeight(0).MinWidth(0).FillWidth().Padding(18, 0, 0).Gap(14).Children(func() {
 		ui.Column(c).FillWidth().Padding(0, controlPageInset).Gap(4).Children(func() {
 			ui.Text(c, title).Role(ui.RoleHeading).FontSize(29).FontWeight(700).LetterSpacing(-.7)
-			ui.Text(c, subtitle).FontSize(13).TextColor(c.Theme().TextMuted)
+			if subtitle != "" {
+				ui.Text(c, subtitle).FontSize(13).TextColor(c.Theme().TextMuted)
+			}
 		})
 		content()
 	})

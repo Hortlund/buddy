@@ -58,6 +58,8 @@ type assignmentSource struct {
 	allowEdits, readOnly, allowOutside bool
 	fromPlanner                        bool
 	restoredWorkspace                  bool
+	delegated                          bool
+	publicResearch                     publicResearchContext
 }
 
 type AssignedWork struct {
@@ -131,12 +133,18 @@ func enqueueAssignments(ctx context.Context, tx *sql.Tx, source assignmentSource
 		for _, prerequisite := range assignment.After {
 			after = append(after, jobs[prerequisite-1].ID)
 		}
+		research := source.publicResearch
+		if len(research.Requests) != 0 {
+			research.Subject = researchSubject{Name: title, Position: i + 1}
+		}
 		var projectDraft string
 		if source.newBud != "" && assignment.ProjectID != "" {
 			projectDraft = source.parent
 		}
-		if source.attachment == "" && (!assignment.UseEarlierAttachments || source.earlier == "") {
-			existing, err := identicalAssignment(ctx, tx, source.chat, agent, assignment, after, projectDraft)
+		// Worker children inherit the state of their own parent at dispatch.
+		// Worker control receipts already handle retries of the same delegation.
+		if !source.delegated && source.attachment == "" && (!assignment.UseEarlierAttachments || source.earlier == "") {
+			existing, err := identicalAssignment(ctx, tx, source.chat, agent, assignment, after, projectDraft, research)
 			if err != nil {
 				return nil, err
 			}
@@ -155,7 +163,7 @@ func enqueueAssignments(ctx context.Context, tx *sql.Tx, source assignmentSource
 		queued++
 		job, destination, err := enqueueHandoff(ctx, tx, assignmentKey(source.key, i), source.chat, agent, workRequest{
 			origin: "handoff", title: title, brief: brief, parent: source.parent, device: assignment.DeviceID, plan: assignment.ExecutionPlan,
-			projectDraft: projectDraft,
+			projectDraft: projectDraft, publicResearch: research,
 		})
 		if err != nil {
 			return nil, err
@@ -257,8 +265,8 @@ type assignmentCandidate struct {
 }
 
 // Exact active repeats reuse the same worker. Different workspaces, briefs,
-// owners, devices, attachments, or prerequisites remain separate assignments.
-func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Agent, assignment Handoff, after []string, projectDraft string) (AssignedWork, error) {
+// owners, devices, attachments, prerequisites, or caller requests stay separate.
+func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Agent, assignment Handoff, after []string, projectDraft string, research publicResearchContext) (AssignedWork, error) {
 	routing := workRequest{device: strings.TrimSpace(assignment.DeviceID), plan: assignment.ExecutionPlan, projectDraft: projectDraft}
 	namedHost := routing.device != "" && routing.device != DevicePool
 	if err := routeExecution(ctx, tx, &agent, &routing); err != nil {
@@ -267,6 +275,14 @@ func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Age
 	assignment.DeviceID, assignment.ExecutionPlan = routing.device, routing.plan
 	if assignment.DeviceID == "" && agent.WorkspaceNeedsReview {
 		return AssignedWork{}, &InputError{WorkspaceReviewMessage}
+	}
+	var request string
+	if len(research.Requests) != 0 {
+		data, err := json.Marshal(research)
+		if err != nil {
+			return AssignedWork{}, err
+		}
+		request = string(data)
 	}
 	now := time.Now().UnixMicro()
 	rows, err := tx.QueryContext(ctx, `SELECT t.id,td.title,td.brief,
@@ -278,12 +294,15 @@ func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Age
 		LEFT JOIN device_runs d ON d.task_id=t.id LEFT JOIN pooled_work p ON p.task_id=t.id
 		LEFT JOIN bud_work_project_sources b ON b.task_id=t.id
 		LEFT JOIN device_project_checkouts checkout ON checkout.task_id=t.id
+		LEFT JOIN task_public_requests research ON research.task_id=t.id
 		WHERE t.kind='background_work' AND t.status IN ('queued','running','needs_input')
+		AND NOT EXISTS(SELECT 1 FROM tasks parent WHERE parent.id=td.parent_id AND parent.kind='background_work')
 		AND NOT EXISTS(SELECT 1 FROM handoff_attachments h WHERE h.task_id=t.id)
+		AND COALESCE(research.request,'')=?
 		AND ct.conversation_id=? AND td.agent_id=? AND ct.allow_edits=?
 		AND (p.task_id IS NOT NULL OR d.device_id IS NOT NULL OR t.repo=?)
 		AND CASE WHEN p.task_id IS NOT NULL THEN 'any' ELSE COALESCE(d.device_id,'') END=?
-		ORDER BY t.rowid DESC`, now, chat, agent.ID, agent.AllowEdits, agent.Workspace, assignment.DeviceID)
+		ORDER BY t.rowid DESC`, now, request, chat, agent.ID, agent.AllowEdits, agent.Workspace, assignment.DeviceID)
 	if err != nil {
 		return AssignedWork{}, err
 	}
@@ -321,7 +340,9 @@ func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Age
 		if plan.Role == "" {
 			plan.Role = "general"
 		}
-		if plan.ProjectID != want.ProjectID || plan.Role != want.Role || plan.Environment != want.Environment || !slices.Equal(plan.Requirements, want.Requirements) {
+		if plan.ProjectID != want.ProjectID || plan.Role != want.Role || plan.Environment != want.Environment ||
+			plan.AutomationWriteScope != want.AutomationWriteScope || plan.AutomationInspectionScope != want.AutomationInspectionScope ||
+			!slices.Equal(plan.Requirements, want.Requirements) {
 			continue
 		}
 		if routing.device != "" && want.ProjectID != "" && (projectDraft != "" || job.draft != "" || job.checkout != "") {

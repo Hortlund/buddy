@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS work_execution (
  task_id TEXT PRIMARY KEY REFERENCES tasks(id), project_id TEXT NOT NULL,
  role TEXT NOT NULL, requirements TEXT NOT NULL, environment TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS work_automation_permissions (
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id), scope TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS work_automation_inspections (
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id), scope TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS device_project_checkouts (
  task_id TEXT PRIMARY KEY REFERENCES tasks(id), path TEXT NOT NULL
 );
@@ -83,10 +89,12 @@ type Project struct {
 }
 
 type ExecutionPlan struct {
-	ProjectID    string   `json:"project_id,omitempty"`
-	Role         string   `json:"worker_role,omitempty"`
-	Requirements []string `json:"requirements,omitempty"`
-	Environment  string   `json:"environment,omitempty"`
+	ProjectID                 string   `json:"project_id,omitempty"`
+	Role                      string   `json:"worker_role,omitempty"`
+	Requirements              []string `json:"requirements,omitempty"`
+	Environment               string   `json:"environment,omitempty"`
+	AutomationWriteScope      string   `json:"automation_write_scope,omitempty"`
+	AutomationInspectionScope string   `json:"automation_inspection_scope,omitempty"`
 }
 
 type WorkerSession struct {
@@ -236,6 +244,10 @@ func validateExecution(plan *ExecutionPlan) error {
 	if !mcpName.MatchString(plan.Role) || (plan.ProjectID != "" && !mcpName.MatchString(plan.ProjectID)) || len(plan.Requirements) > 16 || len(plan.Environment) > 80 {
 		return &InputError{"Invalid worker requirements."}
 	}
+	if len(plan.AutomationWriteScope) > maxAutomationWriteScope || len(plan.AutomationInspectionScope) > maxAutomationWriteScope ||
+		(plan.AutomationWriteScope != "" || plan.AutomationInspectionScope != "") && !plan.usesAutomation() {
+		return &InputError{"Invalid automation scope."}
+	}
 	for i, id := range plan.Requirements {
 		if !mcpName.MatchString(id) || slices.Contains(plan.Requirements[:i], id) {
 			return &InputError{"Use distinct capability IDs for worker requirements."}
@@ -295,8 +307,10 @@ func validateSavedCheckout(ctx context.Context, tx *sql.Tx, draft, project, host
 func readExecutionPlan(ctx context.Context, db queryer, job string) (ExecutionPlan, error) {
 	var plan ExecutionPlan
 	var requirements string
-	err := db.QueryRowContext(ctx, "SELECT project_id,role,requirements,environment FROM work_execution WHERE task_id=?", job).
-		Scan(&plan.ProjectID, &plan.Role, &requirements, &plan.Environment)
+	err := db.QueryRowContext(ctx, `SELECT e.project_id,e.role,e.requirements,e.environment,COALESCE(a.scope,''),COALESCE(i.scope,'')
+		FROM work_execution e LEFT JOIN work_automation_permissions a ON a.task_id=e.task_id
+		LEFT JOIN work_automation_inspections i ON i.task_id=e.task_id WHERE e.task_id=?`, job).
+		Scan(&plan.ProjectID, &plan.Role, &requirements, &plan.Environment, &plan.AutomationWriteScope, &plan.AutomationInspectionScope)
 	if errors.Is(err, sql.ErrNoRows) {
 		return plan, nil
 	}
@@ -313,6 +327,12 @@ func saveExecutionPlan(ctx context.Context, tx *sql.Tx, job string, plan Executi
 	}
 	data, _ := json.Marshal(plan.Requirements)
 	_, err := tx.ExecContext(ctx, "INSERT INTO work_execution VALUES (?,?,?,?,?)", job, plan.ProjectID, plan.Role, string(data), plan.Environment)
+	if err == nil && plan.AutomationWriteScope != "" {
+		_, err = tx.ExecContext(ctx, "INSERT INTO work_automation_permissions VALUES (?,?)", job, plan.AutomationWriteScope)
+	}
+	if err == nil && plan.AutomationInspectionScope != "" {
+		_, err = tx.ExecContext(ctx, "INSERT INTO work_automation_inspections VALUES (?,?)", job, plan.AutomationInspectionScope)
+	}
 	return err
 }
 

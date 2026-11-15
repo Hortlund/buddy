@@ -136,15 +136,29 @@ func (turn Turn) completeGitHub(ctx context.Context, reply string, emit Emit, ru
 		action.ConnectionRead != nil || len(action.WatchCreate) != 0 {
 		return "I can look that up on GitHub first. What would you like me to check?", nil
 	}
-	if turn.github == nil || len(turn.githubConnections) == 0 {
-		return "Connect a GitHub account in Connections so I can look this up.", nil
+	result, err := turn.readGitHub(ctx, *action.GitHubRead, emit)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return integrationFailure(err, "I couldn’t reach GitHub. Try again or check the account in Connections."), nil
 	}
-	query := *action.GitHubRead
+	if action.hasHandoff() {
+		turn.action.Handoff, turn.action.Handoffs, turn.action.githubResult = action.Handoff, action.Handoffs, &result
+		return reply, nil
+	}
+	return turn.summarizeConnection(ctx, result, run)
+}
+
+func (turn Turn) readGitHub(ctx context.Context, query GitHubQuery, emit Emit) (GitHubResult, error) {
+	if turn.github == nil || len(turn.githubConnections) == 0 {
+		return GitHubResult{}, &InputError{"Connect a GitHub account in Connections so I can look this up."}
+	}
 	if query.Repo == "" && turn.gitCheckout != nil {
 		query.Repo = turn.gitCheckout.Repo
 	}
 	if !ValidGitHubRepo(query.Repo) {
-		return "Which GitHub repository should I check? Send its owner/repo or a GitHub link.", nil
+		return GitHubResult{}, &InputError{"Which GitHub repository should I check? Send its owner/repo or a GitHub link."}
 	}
 	if query.ConnectionID == "" && len(turn.githubConnections) == 1 {
 		query.ConnectionID = turn.githubConnections[0].ID
@@ -157,26 +171,9 @@ func (turn Turn) completeGitHub(ctx context.Context, reply string, emit Emit, ru
 		}
 	}
 	if !validConnection {
-		return "Which GitHub connection should I use? Give me its name from Connections.", nil
+		return GitHubResult{}, &InputError{"Which GitHub connection should I use? Give me its name from Connections."}
 	}
 	_ = emit("activity", activityLabel(Searching, "GitHub"))
 	_ = emit("commentary", "Checking GitHub for "+query.Repo+"…")
-	result, err := turn.github.ReadGitHub(ctx, query)
-	if ctx.Err() != nil {
-		return "", ctx.Err()
-	}
-	if err != nil {
-		var invalid *InputError
-		if errors.As(err, &invalid) {
-			return invalid.Message, nil
-		}
-		return "I couldn’t reach GitHub. Try again or check the account in Connections.", nil
-	}
-	if action.hasHandoff() {
-		// Only a handoff chosen before seeing remote text can be scheduled
-		// here. The worker receives the lookup separately as reference data.
-		turn.action.Handoff, turn.action.Handoffs, turn.action.githubResult = action.Handoff, action.Handoffs, &result
-		return reply, nil
-	}
-	return turn.summarizeConnection(ctx, result, run)
+	return turn.github.ReadGitHub(ctx, query)
 }

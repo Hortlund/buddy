@@ -484,6 +484,14 @@ func (a *desktop) workDetail(c *ui.Context, work *workBrowser, compact bool) {
 			sectionLabel(c, "Assignment")
 			a.referenceMarkdown(c.Key("job-brief"), detail.Brief, item.AgentID, fileReferenceContext{task: item.ID})
 		}
+		for i := range detail.CodeRuns {
+			run := &detail.CodeRuns[i]
+			a.codeRunCard(c.Key("work-command-"+run.RunID), item.ID, run, item.Status == tasks.Cancelling)
+		}
+		if len(detail.CodeRuns) == 0 && item.CodeRun != nil {
+			a.codeRunCard(c.Key("work-command"), item.ID, item.CodeRun, item.Status == tasks.Cancelling)
+		}
+		a.codeOutputDialog(c.Key("work-command-output"))
 		sectionLabel(c, "Activity")
 		if len(detail.Events) == 0 {
 			ui.Text(c, "No updates yet.").FontSize(12).TextColor(c.Theme().TextMuted)

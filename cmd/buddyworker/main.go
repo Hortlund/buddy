@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"sync"
 	"syscall"
 	"time"
 
@@ -231,6 +232,10 @@ func serveWorker(ctx context.Context, path, server, workspace, codex string, edi
 				defer stopMonitor()
 				automation := slices.Contains(turn.Requirements, "desktop") || slices.Contains(turn.Requirements, "browser")
 				if automation {
+					turn.AutomationAnswers, turn.AutomationRequest = job.AutomationAnswers, job.AutomationRequest
+					turn.AutomationControlLookup = func(ctx context.Context) (tasks.AutomationControl, error) {
+						return client.AutomationControlState(ctx, connection.DeviceID, job.ID, job.Lease)
+					}
 					go func() {
 						ticker := time.NewTicker(2 * time.Second)
 						defer ticker.Stop()
@@ -240,9 +245,9 @@ func serveWorker(ctx context.Context, path, server, workspace, codex string, edi
 							case <-monitorCtx.Done():
 								return
 							case <-ticker.C:
-								paused, err := client.AutomationControl(monitorCtx, connection.DeviceID, job.ID, job.Lease)
+								control, err := turn.AutomationControlLookup(monitorCtx)
 								if err == nil {
-									_ = runtime.PauseAutomation(job.ID, paused)
+									_ = runtime.ApplyAutomationControl(job.ID, control)
 								}
 								frame, err := runtime.ExecutionFrame(job.ID)
 								if err == nil && len(frame.Data) > 0 && frame.At.After(last) {
@@ -295,16 +300,56 @@ func acknowledgeJob(ctx context.Context, client *api.Client, device string, job 
 }
 
 type jobOutcome struct {
-	reply string
-	err   error
+	reply   string
+	err     error
+	command *tasks.ChatCodeRun
+}
+
+// Coalesce updates to the same command while retaining each result until the
+// server acknowledges it. The runner can publish during a heartbeat.
+type pendingCommands struct {
+	mu    sync.Mutex
+	order []string
+	runs  map[string]*tasks.ChatCodeRun
+}
+
+func (p *pendingCommands) record(run *tasks.ChatCodeRun) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.runs[run.RunID] == nil {
+		p.order = append(p.order, run.RunID)
+	}
+	p.runs[run.RunID] = run
+}
+
+func (p *pendingCommands) batch() []*tasks.ChatCodeRun {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var batch []*tasks.ChatCodeRun
+	for _, id := range p.order[:min(len(p.order), tasks.DeviceCommandBatchLimit)] {
+		batch = append(batch, p.runs[id])
+	}
+	return batch
+}
+
+func (p *pendingCommands) acknowledge(batch []*tasks.ChatCodeRun) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, run := range batch {
+		if p.runs[run.RunID] == run {
+			delete(p.runs, run.RunID)
+		}
+	}
+	p.order = slices.DeleteFunc(p.order, func(id string) bool { return p.runs[id] == nil })
 }
 
 func runJob(ctx context.Context, client *api.Client, run tasks.AgentRunner, device string, job tasks.DeviceJob,
 	claimed time.Time, workspace string, edits bool) {
-	jobCtx, cancel := context.WithDeadline(ctx, claimed.Add(time.Duration(job.Seconds)*time.Second))
+	jobDeadline := claimed.Add(time.Duration(job.Seconds) * time.Second)
+	jobCtx, cancel := context.WithDeadline(ctx, jobDeadline)
 	defer cancel()
 	leaseSafety := 18 * time.Second
-	leaseUntil := claimed.Add(leaseSafety)
+	leaseUntil := claimed.Add(min(leaseSafety, jobDeadline.Sub(claimed)))
 	guard := time.AfterFunc(time.Until(leaseUntil), cancel)
 	defer guard.Stop()
 	job.Agent.Workspace = workspace
@@ -313,6 +358,7 @@ func runJob(ctx context.Context, client *api.Client, run tasks.AgentRunner, devi
 		Attachments: job.Attachments, DeviceExecution: true, CanRequestInput: job.CanRequestInput, Skill: job.Skill, BuddyTeam: job.BuddyTeam}
 	progress := make(chan tasks.DevicePulse, 1)
 	done := make(chan jobOutcome, 1)
+	commands := pendingCommands{runs: make(map[string]*tasks.ChatCodeRun)}
 	go func() {
 		var pulse tasks.DevicePulse
 		reply, err := run(jobCtx, turn, func(stream, value string) error {
@@ -322,6 +368,15 @@ func runJob(ctx context.Context, client *api.Client, run tasks.AgentRunner, devi
 			case "commentary", "work_update":
 				pulse.Update = value
 				pulse.CompletedUpdate = job.CanRequestInput && stream == "work_update"
+			case "chat_code_run":
+				var command tasks.ChatCodeRun
+				if job.CommandProgress && json.Unmarshal([]byte(value), &command) == nil && command.WorkCommand {
+					if job.CommandBatches && command.RunID != "" {
+						commands.record(&command)
+					} else {
+						pulse.Command = &command
+					}
+				}
 			}
 			select {
 			case <-progress:
@@ -330,12 +385,24 @@ func runJob(ctx context.Context, client *api.Client, run tasks.AgentRunner, devi
 			progress <- pulse
 			return nil
 		})
-		done <- jobOutcome{reply, err}
+		done <- jobOutcome{reply, err, pulse.Command}
 	}()
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	var pulse tasks.DevicePulse
 	var outcome jobOutcome
+	sendPulse := func(ctx context.Context, pulse tasks.DevicePulse) (tasks.Status, error) {
+		pulse.Lease = job.Lease
+		pulse.Commands = commands.batch()
+		if len(pulse.Commands) != 0 {
+			pulse.Command = nil
+		}
+		status, err := client.PulseDeviceJob(ctx, device, job.ID, pulse)
+		if err == nil && (status == tasks.Running || status == tasks.Cancelling) {
+			commands.acknowledge(pulse.Commands)
+		}
+		return status, err
+	}
 loop:
 	for {
 		select {
@@ -343,11 +410,16 @@ loop:
 			break loop
 		case pulse = <-progress:
 		case <-ticker.C:
-			pulse.Lease = job.Lease
 			start := time.Now()
-			status, err := client.PulseDeviceJob(jobCtx, device, job.ID, pulse)
+			pulseUntil := leaseUntil.Add(-2 * time.Second)
+			if !start.Before(pulseUntil) {
+				continue
+			}
+			pulseCtx, stopPulse := context.WithDeadline(jobCtx, pulseUntil)
+			status, err := sendPulse(pulseCtx, pulse)
+			stopPulse()
 			if err == nil && status == tasks.Running {
-				leaseUntil = start.Add(leaseSafety)
+				leaseUntil = start.Add(min(leaseSafety, jobDeadline.Sub(start)))
 				guard.Reset(time.Until(leaseUntil))
 			} else if err == nil || unauthorized(err) || inactive(err) {
 				cancel()
@@ -357,7 +429,7 @@ loop:
 			break loop
 		}
 	}
-	report := tasks.DeviceResult{Lease: job.Lease, Status: tasks.Succeeded, Reply: outcome.reply}
+	report := tasks.DeviceResult{Lease: job.Lease, Status: tasks.Succeeded, Reply: outcome.reply, Command: outcome.command}
 	if errors.Is(outcome.err, tasks.ErrWorkNeedsInput) && job.CanRequestInput {
 		report.Status = tasks.NeedsInput
 	} else if outcome.err != nil {
@@ -368,6 +440,26 @@ loop:
 	}
 	reportCtx, stop := context.WithDeadline(context.WithoutCancel(ctx), leaseUntil)
 	defer stop()
+	// Give pending progress a short chance to arrive while reserving time for
+	// the reply or question, which must reach the server independently.
+	if len(commands.batch()) != 0 {
+		remaining := time.Until(leaseUntil)
+		progressCtx, stopProgress := context.WithTimeout(reportCtx, min(4*time.Second, remaining/2, remaining-time.Second))
+		for progressCtx.Err() == nil && len(commands.batch()) != 0 {
+			status, err := sendPulse(progressCtx, tasks.DevicePulse{})
+			if err == nil && (status == tasks.Running || status == tasks.Cancelling) {
+				continue
+			}
+			if err == nil || unauthorized(err) || inactive(err) || hasHTTPStatus(err, http.StatusBadRequest) {
+				break
+			}
+			select {
+			case <-progressCtx.Done():
+			case <-time.After(time.Second):
+			}
+		}
+		stopProgress()
+	}
 	for reportCtx.Err() == nil {
 		err := client.FinishDeviceJob(reportCtx, device, job.ID, report)
 		if err == nil || unauthorized(err) || inactive(err) {

@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS events (
 	text TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_task_seq ON events(task_id, seq);
+DELETE FROM events WHERE stream='chat_code_run' AND seq NOT IN (
+	SELECT max(seq) FROM events WHERE stream='chat_code_run' GROUP BY task_id
+);
+CREATE UNIQUE INDEX IF NOT EXISTS events_code_run ON events(task_id) WHERE stream='chat_code_run';
+CREATE UNIQUE INDEX IF NOT EXISTS events_inline_code_run ON events(task_id,stream) WHERE stream GLOB 'chat_code_run/run_*';
 `
 
 func OpenStore(ctx context.Context, path string) (*Store, error) {
@@ -110,6 +115,10 @@ func OpenStore(ctx context.Context, path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("upgrade saved Bud assignments: %w", err)
 	}
+	if err := recoverRoutineResearch(ctx, db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("recover routine research requests: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, fileReferenceSchema+mobileSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize file references and iPhone access: %w", err)
@@ -122,6 +131,16 @@ func OpenStore(ctx context.Context, path string) (*Store, error) {
 		backgroundRequest, archivedReplyMessage, "\n\n"+archivedReplyMessage, "\n\n"+archivedReplyMessage); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("reopen interrupted background requests: %w", err)
+	}
+	// Queued or resumable runs may already have inherited a legacy routine's
+	// write flag. Apply the same rule used for new occurrences.
+	if _, err := db.ExecContext(ctx, `UPDATE chat_turns SET allow_edits=0 WHERE allow_edits<>0 AND task_id IN (
+		SELECT td.task_id FROM turn_details td JOIN tasks t ON t.id=td.task_id
+		LEFT JOIN routine_workspace_permissions p ON p.routine_id=td.routine_id
+		WHERE td.origin='routine' AND COALESCE(p.allow_edits,0)=0
+		AND t.status IN ('queued','running','needs_input','cancelling'))`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("upgrade routine workspace permissions: %w", err)
 	}
 	return &Store{db: db, dbPath: path, startedAt: time.Now().UTC()}, nil
 }
@@ -344,11 +363,38 @@ func workspaceOccupied(repo string, occupied []string) bool {
 }
 
 func (s *Store) cancel(ctx context.Context, id string, queuedOnly bool) (Task, error) {
+	return s.cancelScoped(ctx, id, queuedOnly, "")
+}
+
+func (s *Store) cancelScoped(ctx context.Context, id string, queuedOnly bool, chat string) (Task, error) {
+	return s.cancelTaskInScope(ctx, id, queuedOnly, chat, false, "")
+}
+
+func (s *Store) cancelTaskInScope(ctx context.Context, id string, queuedOnly bool, chat string, completing bool, attempt string) (Task, error) {
 	tx, err := s.beginMobileWrite(ctx)
 	if err != nil {
 		return Task{}, err
 	}
 	defer tx.Rollback()
+	if chat != "" {
+		var status, codeStatus Status
+		var runID string
+		err := tx.QueryRowContext(ctx, `SELECT t.status,json_extract(`+latestCodeRun+`,'$.status'),COALESCE(json_extract(`+latestCodeRun+`,'$.run_id'),'')
+			FROM tasks t JOIN chat_turns ct ON ct.task_id=t.id
+			WHERE t.id=? AND ct.conversation_id=? AND t.kind='agent_turn'
+			AND json_extract(`+latestCodeRun+`,'$.status') IS NOT NULL`, id, chat).Scan(&status, &codeStatus, &runID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Task{}, ErrNotFound
+		}
+		if err != nil {
+			return Task{}, err
+		}
+		if completing || codeStatus != Running || (status != Running && status != Cancelling) ||
+			attempt != "" && runID != attempt {
+			// A retried Stop or a tap on a stale card is already satisfied.
+			return scanTask(tx.QueryRowContext(ctx, "SELECT "+fields+" FROM tasks WHERE id=?", id))
+		}
+	}
 	t, err := cancelTask(ctx, tx, id, queuedOnly)
 	if err != nil {
 		return t, err
@@ -551,7 +597,9 @@ func (s *Store) finishTask(ctx context.Context, tx *sql.Tx, id string, status St
 					return err
 				}
 			}
-			if action.BudProposal != nil || action.hasHandoff() || action.hasRoutines() || action.hasManagement() {
+			if action.hasManagement() && (action.githubResult != nil || action.connectionResult != nil) {
+				reply = joinActionNotes(reply, note)
+			} else if action.BudProposal != nil || action.hasHandoff() || action.hasRoutines() || action.hasManagement() {
 				// Only acknowledge changes that were actually saved.
 				reply = note
 			} else if note != "" {
@@ -560,6 +608,7 @@ func (s *Store) finishTask(ctx context.Context, tx *sql.Tx, id string, status St
 				}
 				reply += note
 			}
+			reply = joinActionNotes(reply, action.scheduleNotice)
 		}
 		if status == Succeeded && action != nil && action.reactionSaved && reply == "" {
 			return addEvent(ctx, tx, id, "system", "\nReacted.\n")
@@ -634,6 +683,19 @@ type execer interface {
 }
 
 func addEvent(ctx context.Context, db execer, id, stream, content string) error {
+	if stream == chatCodeStream {
+		var run ChatCodeRun
+		if json.Unmarshal([]byte(content), &run) == nil && run.RunID != "" {
+			_, err := db.ExecContext(ctx, `INSERT INTO events(task_id,at,stream,text) VALUES (?,?,?,?)
+				ON CONFLICT(task_id,stream) WHERE stream GLOB 'chat_code_run/run_*' DO UPDATE SET at=excluded.at,text=excluded.text`,
+				id, time.Now().UnixMicro(), chatCodeStream+"/"+run.RunID, content)
+			return err
+		}
+		_, err := db.ExecContext(ctx, `INSERT INTO events(task_id,at,stream,text) VALUES (?,?,?,?)
+			ON CONFLICT(task_id) WHERE stream='chat_code_run' DO UPDATE SET at=excluded.at,text=excluded.text`,
+			id, time.Now().UnixMicro(), stream, content)
+		return err
+	}
 	_, err := db.ExecContext(ctx, "INSERT INTO events(task_id,at,stream,text) VALUES (?,?,?,?)",
 		id, time.Now().UnixMicro(), stream, content)
 	return err

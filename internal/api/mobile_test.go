@@ -75,6 +75,22 @@ func TestPhonePairingAndWatchHandoff(t *testing.T) {
 		call(http.MethodGet, path, phone.Token, nil, http.StatusForbidden, nil)
 	}
 	call(http.MethodGet, "/v1/workspace", phone.Token, nil, http.StatusOK, nil)
+	var routine tasks.Routine
+	routines := "/v1/conversations/conv_buddy/routines"
+	call(http.MethodPost, routines, "owner-fixture", tasks.Routine{Name: "Weekly check", Prompt: "Review open tasks", Minutes: 10080}, http.StatusCreated, &routine)
+	call(http.MethodPatch, routines+"/"+routine.ID, phone.Token, map[string]bool{"enabled": false}, http.StatusOK, nil)
+	var conversation tasks.Conversation
+	call(http.MethodGet, "/v1/conversations/conv_buddy", phone.Token, nil, http.StatusOK, &conversation)
+	if len(conversation.Routines) != 1 || conversation.Routines[0].Enabled {
+		t.Fatalf("iPhone did not pause the routine: %+v", conversation.Routines)
+	}
+	call(http.MethodDelete, routines+"/"+routine.ID, phone.Token, nil, http.StatusForbidden, nil)
+	var bud tasks.Agent
+	call(http.MethodPost, "/v1/agents", phone.Token, map[string]string{"name": "Scout", "role": "Reviewer"}, http.StatusCreated, &bud)
+	if bud.Name != "Scout" || bud.ConversationID == "" {
+		t.Fatalf("iPhone created an invalid Bud: %+v", bud)
+	}
+	call(http.MethodPost, "/v1/agents", phone.Token, map[string]string{"name": "Invalid", "workspace": "/tmp"}, http.StatusBadRequest, nil)
 	call(http.MethodPost, "/v1/conversations/conv_buddy/messages", phone.Token, tasks.MessageRequest{Text: "Hello from iPhone"}, http.StatusAccepted, nil)
 
 	watch, err := store.CreateWatch(ctx, tasks.Watch{
@@ -148,6 +164,89 @@ func TestPhonePairingAndWatchHandoff(t *testing.T) {
 	call(http.MethodGet, "/v1/workspace", phone.Token, nil, http.StatusUnauthorized, nil)
 }
 
+func TestPhoneCanReadAndStopOnlyTheScopedCodeRun(t *testing.T) {
+	ctx := t.Context()
+	store, err := tasks.OpenStore(ctx, filepath.Join(t.TempDir(), "buddy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	worker := tasks.NewWorker(store, nil, func(ctx context.Context, turn tasks.Turn, emit tasks.Emit) (string, error) {
+		if turn.Messages[len(turn.Messages)-1].Text == "Run it" {
+			if err := emit("chat_code_run", `{"language":"python","status":"running","started_at":"2026-11-14T12:00:00Z","stdout":"hello"}`); err != nil {
+				return "", err
+			}
+		}
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); worker.Run(runCtx) }()
+	defer func() { stop(); <-done }()
+	bud, err := store.CreateAgent(ctx, tasks.Agent{Name: "Other Bud"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := store.CreateMobilePairing(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phone, err := store.PairMobileClient(ctx, pair.Code, "iPhone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler("owner", store, worker, nil)
+	assertStatus := func(method, path string, status int) {
+		t.Helper()
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer "+phone.Token)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != status {
+			t.Fatalf("%s %s: %d instead of %d: %s", method, path, res.Code, status, res.Body.String())
+		}
+	}
+	send := func(text string, hasRun bool) string {
+		t.Helper()
+		task, _, err := store.Send(ctx, tasks.DefaultConversationID, text, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		worker.Wake()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			chat, err := store.Conversation(ctx, tasks.DefaultConversationID, 0)
+			if err == nil && chat.Active != nil && chat.Active.ID == task.ID && (chat.Active.CodeRun != nil) == hasRun {
+				return task.ID
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatal("turn did not start")
+		return ""
+	}
+	path := func(chat, run string) string { return "/v1/conversations/" + chat + "/code-runs/" + run }
+	id := send("Run it", true)
+	assertStatus(http.MethodGet, path(bud.ConversationID, id)+"/output", http.StatusNotFound)
+	assertStatus(http.MethodPost, path(bud.ConversationID, id)+"/cancel", http.StatusNotFound)
+	assertStatus(http.MethodPost, "/v1/tasks/"+id+"/cancel", http.StatusForbidden)
+	assertStatus(http.MethodGet, path(tasks.DefaultConversationID, id)+"/output", http.StatusOK)
+	assertStatus(http.MethodPost, path(tasks.DefaultConversationID, id)+"/cancel", http.StatusOK)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		task, err := store.Get(ctx, id)
+		if err == nil && task.Status == tasks.Cancelled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run did not stop: %+v, %v", task, err)
+		}
+	}
+	assertStatus(http.MethodPost, path(tasks.DefaultConversationID, id)+"/cancel", http.StatusOK)
+	assertStatus(http.MethodPost, path(bud.ConversationID, id)+"/cancel", http.StatusNotFound)
+	id = send("Say hello", false)
+	assertStatus(http.MethodPost, path(tasks.DefaultConversationID, id)+"/cancel", http.StatusNotFound)
+}
+
 func TestPairedPhoneCanQueueWorkAndCreateABud(t *testing.T) {
 	ctx := t.Context()
 	store, err := tasks.OpenStore(ctx, filepath.Join(t.TempDir(), "buddy.db"))
@@ -184,6 +283,7 @@ func TestPairedPhoneCanQueueWorkAndCreateABud(t *testing.T) {
 	}
 	fixture := t.TempDir()
 	t.Setenv("CODEX_HOME", fixture)
+	t.Setenv("CODEX_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("BUDDY_OPENAI_API_KEY", "")
 	if err := os.Chmod(fixture, 0700); err != nil {
@@ -195,7 +295,17 @@ func TestPairedPhoneCanQueueWorkAndCreateABud(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '" + string(event) + "'\n"
+	script := `#!/bin/sh
+request=$(cat)
+case "$request" in
+  *"Determine the workspace modifications"*)
+    answer='{\"edit_scope\":\"Read the Release tools project in the browser on Build Mac.\",\"routine_scope\":\"\",\"routine_edit_scope\":\"\"}' ;;
+  *"Verify each proposed item"*)
+    answer='{\"jobs\":[1],\"routines\":[],\"routine_edits\":[],\"automation\":[{\"job\":1,\"inspection_scope\":\"Inspect the Release tools project in the browser on Build Mac for the private release summary.\",\"write_scope\":\"\"}]}' ;;
+  *) printf '%s\n' '` + string(event) + `'; exit 0 ;;
+esac
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n' "$answer"
+`
 	if err := os.WriteFile(cli, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

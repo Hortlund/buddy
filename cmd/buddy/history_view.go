@@ -3,6 +3,7 @@ package main
 import (
 	"buddy/internal/api"
 	"buddy/internal/tasks"
+	"buddy/internal/voiceaudio"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -51,6 +52,11 @@ func (a *desktop) conversationHistoryMenu(c *ui.Context) {
 	btn := ui.ButtonBase(c.Key("chat-history-menu")).Size(28, 28).Label("Chat history options").
 		Tooltip("Chat history options").Disabled(!a.online || a.history.busy || a.sending)
 	btn.PopoverMenuButton(func(menu *ui.Menu) {
+		if a.voice == nil && !a.chat.Archived && !a.chat.Agent.Removed && voiceaudio.Available() {
+			if menu.Item("Start voice call").Chosen() {
+				a.startVoice()
+			}
+		}
 		if menu.Item("Call history").Chosen() {
 			a.openHistory(a.currentConversation())
 		}

@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -22,6 +24,61 @@ import (
 type testVoicePeer struct {
 	conn     *websocket.Conn
 	received chan object
+}
+
+func TestVoiceReadsOnlySpeakingBudWorkspace(t *testing.T) {
+	ctx := t.Context()
+	state := t.TempDir()
+	store, err := tasks.OpenStore(ctx, filepath.Join(state, "buddy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	workspaces, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnableWorkspaces(ctx, workspaces); err != nil {
+		t.Fatal(err)
+	}
+	chat, err := store.Conversation(ctx, tasks.DefaultConversationID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chat.Agent.Workspace, "notes.md"), []byte("workspace fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	room := newVoiceRoom(ctx, nil, store, nil, chat, "", nil)
+	room.workspace = &tasks.CodexRuntime{}
+	room.tools = voiceCaller
+	member := &roomMember{agent: chat.Agent}
+	for _, tc := range []struct{ path, expected string }{
+		{"notes.md", "workspace fixture"},
+		{"../outside.md", "relative file or folder path"},
+	} {
+		arguments, err := json.Marshal(map[string]string{"path": tc.path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		output, deferred, err := room.performTool(member, realtimeItem{Name: "read_workspace", Arguments: string(arguments)})
+		if err != nil || deferred || !strings.Contains(output, tc.expected) {
+			t.Fatalf("%s: %q, %v, %v", tc.path, output, deferred, err)
+		}
+	}
+	replacement := t.TempDir()
+	if err := os.WriteFile(filepath.Join(replacement, "notes.md"), []byte("other workspace contents"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(chat.Agent.Workspace, chat.Agent.Workspace+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(replacement, chat.Agent.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	output, _, err := room.performTool(member, realtimeItem{Name: "read_workspace", Arguments: `{"path":"notes.md"}`})
+	if err != nil || strings.Contains(output, "other workspace contents") || !strings.Contains(output, "working folder has changed") {
+		t.Fatalf("redirected workspace: %q, %v", output, err)
+	}
 }
 
 func newTestVoiceProvider(t *testing.T) (realtimeDial, <-chan testVoicePeer) {
@@ -63,6 +120,190 @@ func newTestVoiceProvider(t *testing.T) (realtimeDial, <-chan testVoicePeer) {
 		conn, _, err := websocket.Dial(ctx, server.URL, nil)
 		return conn, err
 	}, peers
+}
+
+func TestVoiceInterruptsPendingRoutineAuthorization(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", dir)
+	t.Setenv("CODEX_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	marker := filepath.Join(dir, "authorization-started")
+	binary := filepath.Join(dir, "codex-fixture")
+	script := "#!/bin/sh\ncat >/dev/null\n: > \"$(dirname \"$0\")/authorization-started\"\nexec sleep 60\n"
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := tasks.NewCodexRuntime(binary, "", localconfig.CodexKey{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := tasks.OpenStore(ctx, filepath.Join(dir, "buddy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	chat, err := store.Conversation(ctx, tasks.DefaultConversationID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dial, peers := newTestVoiceProvider(t)
+	roomDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		defer close(roomDone)
+		conn, err := websocket.Accept(w, req, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.CloseNow()
+		room := newVoiceRoom(req.Context(), conn, store, nil, chat, "test-voice-secret", dial)
+		room.workspace = runtime
+		room.run(chat.Agent)
+	}))
+	defer server.Close()
+	client, _, err := websocket.Dial(ctx, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseNow()
+	var peer testVoicePeer
+	select {
+	case peer = <-peers:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	read := func(want string) {
+		t.Helper()
+		for {
+			var event VoiceEvent
+			if err := wsjson.Read(ctx, client, &event); err != nil {
+				t.Fatalf("waiting for %s: %v", want, err)
+			}
+			if event.Type == want {
+				return
+			}
+		}
+	}
+	receive := func(want string) object {
+		t.Helper()
+		for {
+			select {
+			case event := <-peer.received:
+				if event["type"] == want {
+					return event
+				}
+			case <-ctx.Done():
+				t.Fatalf("waiting for %s: %v", want, ctx.Err())
+			}
+		}
+	}
+	provide := func(event object) {
+		t.Helper()
+		if err := wsjson.Write(ctx, peer.conn, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read("ready")
+	provide(object{"type": "input_audio_buffer.speech_started", "item_id": "request"})
+	read("listening")
+	provide(object{"type": "input_audio_buffer.speech_stopped", "item_id": "request"})
+	provide(object{"type": "conversation.item.input_audio_transcription.completed", "item_id": "request",
+		"transcript": "Schedule a daily routine to review Go releases."})
+	receive("response.create")
+	provide(object{"type": "response.created", "response": object{"id": "schedule"}})
+	provide(object{"type": "response.done", "response": object{"id": "schedule", "status": "completed", "output": []object{{
+		"type": "function_call", "name": "schedule_routine", "call_id": "verify",
+		"arguments": `{"name":"Go digest","prompt":"Review Go releases.","minutes":1440}`,
+	}}}})
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatalf("authorization did not start: %v", ctx.Err())
+		}
+	}
+	if err := client.Write(ctx, websocket.MessageBinary, make([]byte, 480)); err != nil {
+		t.Fatal(err)
+	}
+	receive("input_audio_buffer.append")
+	provide(object{"type": "input_audio_buffer.speech_started", "item_id": "interrupt"})
+	output := receive("conversation.item.create")["item"].(map[string]any)
+	if output["call_id"] != "verify" || output["output"] != "The caller interrupted this action." {
+		t.Fatalf("pending routine result: %+v", output)
+	}
+	read("listening")
+	if err := wsjson.Write(ctx, client, VoiceEvent{Type: "hangup"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-roomDone:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	saved, err := store.Conversation(ctx, chat.ID, 0)
+	if err != nil || len(saved.Routines) != 0 {
+		t.Fatalf("interrupted routine was saved: %+v, %v", saved.Routines, err)
+	}
+}
+
+func TestVoiceTeamAuthorizationDoesNotFollowRosterChanges(t *testing.T) {
+	ctx := t.Context()
+	store, err := tasks.OpenStore(ctx, filepath.Join(t.TempDir(), "buddy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	original, err := store.CreateAgent(ctx, tasks.Agent{Name: "Original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := store.CreateAgent(ctx, tasks.Agent{Name: "Replacement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := store.CreateGroup(ctx, tasks.GroupRequest{Name: "Team", Members: []string{tasks.DefaultAgentID, original.ID, replacement.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat, err := store.Conversation(ctx, group.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := newVoiceRoom(ctx, nil, store, tasks.NewWorker(store, nil, nil), chat, "", nil)
+	lead := &roomMember{agent: chat.Agent}
+	room.tools, room.callerWords = voiceCaller, "Have Buddy and Original update the report after the call."
+	room.members = []*roomMember{lead, {agent: original}}
+	item := realtimeItem{Name: "continue_in_chat", Arguments: `{"title":"Update report","brief":"Update the report."}`}
+	if !room.startVoiceToolCheck(&voiceToolBatch{member: lead}, item) {
+		t.Fatal("no authorization for team work")
+	}
+	check := room.voiceCheck
+	defer check.cancel()
+	var frozen voiceToolArgs
+	if err := json.Unmarshal([]byte(check.item.Arguments), &frozen); err != nil ||
+		!slices.Equal(frozen.AgentIDs, []string{lead.agent.ID, original.ID}) {
+		t.Fatalf("verification did not retain its participants: %+v, %v", frozen, err)
+	}
+	room.members[1] = &roomMember{agent: replacement}
+	verdict := tasks.VoiceSchedule{Jobs: []tasks.Handoff{{AgentID: lead.agent.ID}, {AgentID: original.ID}}}
+	output, _, err := room.performTool(lead, check.item, verdict)
+	if err != nil || room.teamQueued || !strings.Contains(output, "in this call") {
+		t.Fatalf("changed team was queued: %q, %v", output, err)
+	}
+	jobs, err := store.WorkOverview(ctx, chat.ID)
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("unexpected jobs: %+v, %v", jobs, err)
+	}
 }
 
 func TestVoiceBudCreationTracksJobsForImmediateCancellation(t *testing.T) {
@@ -398,7 +639,7 @@ func TestVoiceRoomRoutesAudioAndHandsOffWork(t *testing.T) {
 	provide(second, "response.created", object{"response": object{"id": "r2"}})
 	provide(second, "response.done", object{"response": object{"id": "r2", "status": "completed", "output": []object{{
 		"type": "function_call", "name": "delegate_work", "call_id": "tool1", "arguments": `{"assignments":[
-			{"title":"Status report","brief":"Prepare the status report."},
+			{"title":"Status report","brief":"Prepare the status report.","read_only":true},
 			{"agent_id":"` + buddy.ID + `","title":"Review logs","brief":"Read the logs.","read_only":true}]}`,
 	}}}})
 	read("settled")

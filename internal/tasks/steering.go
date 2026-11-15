@@ -35,13 +35,15 @@ type ActiveRun struct {
 	Kind      ActivityKind `json:"activity_kind"`
 	Update    string       `json:"update,omitempty"`
 	CanSteer  bool         `json:"can_steer"`
+	CodeRun   *ChatCodeRun `json:"code_run,omitempty"`
 }
 
 type turnSteering struct {
-	wake  chan struct{}
-	ready func(bool)
-	next  func(context.Context) (SteeringMessage, error)
-	mark  func(int64, string) error
+	wake    chan struct{}
+	ready   func(bool)
+	next    func(context.Context) (SteeringMessage, error)
+	mark    func(int64, string) error
+	applied func(context.Context) ([]string, error)
 }
 
 func (w *Worker) CanSteer(id string) bool {
@@ -160,4 +162,12 @@ func (s *Store) markSteering(id int64, state string) error {
 	defer cancel()
 	_, err := s.db.ExecContext(ctx, "UPDATE steering_messages SET state=? WHERE id=? AND state=?", state, id, steerPending)
 	return err
+}
+
+func (s *Store) appliedSteering(ctx context.Context, id string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT text FROM steering_messages WHERE task_id=? AND state=? ORDER BY id`, id, steerApplied)
+	if err != nil {
+		return nil, err
+	}
+	return scanRequestLines(rows)
 }

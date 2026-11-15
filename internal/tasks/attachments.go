@@ -34,6 +34,54 @@ type Attachment struct {
 	Data []byte `json:"data,omitempty"`
 }
 
+const attachmentReadSchema = `{"type":"object","additionalProperties":false,
+	"properties":{"name":{"type":"string"},"position":{"type":"integer","minimum":1},"start_line":{"type":"integer","minimum":1},"offset":{"type":"integer","minimum":0}}}`
+
+type attachmentReadArgs struct {
+	Name      string `json:"name"`
+	Position  int    `json:"position"`
+	StartLine int    `json:"start_line"`
+	Offset    *int   `json:"offset"`
+}
+
+func (turn Turn) readTextAttachment(args attachmentReadArgs, emit Emit) (any, error) {
+	var file *Attachment
+	switch {
+	case args.Position < 0 || args.Position > len(turn.Attachments):
+		return nil, &InputError{"Choose an attachment position from the current request."}
+	case args.Position != 0:
+		file = &turn.Attachments[args.Position-1]
+		if args.Name != "" && args.Name != file.Name {
+			return nil, &InputError{"The attachment name and position do not match."}
+		}
+	default:
+		for i := range turn.Attachments {
+			if turn.Attachments[i].Name == args.Name {
+				if file != nil {
+					return nil, &InputError{"More than one attachment has that name. Use its position."}
+				}
+				file = &turn.Attachments[i]
+			}
+		}
+	}
+	if file == nil {
+		return nil, &InputError{"Choose a file attached to the current request."}
+	}
+	text := string(file.Data)
+	if !validWorkspaceText(text) {
+		return nil, &InputError{"This reader handles UTF-8 text attachments. Images are supplied as visual input."}
+	}
+	_ = emit("activity", activityLabel(Reading, file.Name))
+	page, err := textPage(text, args.StartLine, quickFileLimit, args.Offset)
+	if err != nil {
+		return nil, err
+	}
+	return struct {
+		Name string `json:"name"`
+		textPageResult
+	}{Name: file.Name, textPageResult: page}, nil
+}
+
 const attachmentSchema = `
 CREATE TABLE IF NOT EXISTS chat_attachments (
 	task_id TEXT NOT NULL REFERENCES chat_turns(task_id),

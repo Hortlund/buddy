@@ -95,6 +95,14 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         wait_for(key, lambda: node(key))
         press(key)
 
+    def open_details(tab):
+        wait_for("chat details toggle", lambda: node("toggle-details"))
+        if not node("close-details"):
+            press("toggle-details")
+        item = wait_for(tab + " inspector tab", lambda: node("inspector-" + tab))
+        if "selected" not in item.get("states", []):
+            press("inspector-" + tab)
+
     def set_value(key, value):
         ui("act", key=key, action="setValue", text=value)
 
@@ -143,7 +151,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
 
     def launch():
         subprocess.run([RUN, "--verify"], env=env, check=True)
-        wait_for("connected desktop", lambda: tree_has("Server connected"))
+        wait_for("connected desktop", lambda: (ui("windows")["windows"] and api("workspace")))
 
     def close():
         try:
@@ -250,7 +258,21 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         close()
         launch()
         wait_for("open on Primary Bud", lambda: tree_has("Message Forge"))
-        press("New group chat")
+        forge_chat = "chat-" + forge["conversation_id"]
+        wait_for("primary star and role in sidebar", lambda: (n := node(forge_chat))
+                 and n.get("description") == "Primary Bud · Coding specialist")
+        wait_for("role in chat title", lambda: (n := node("toggle-details"))
+                 and n.get("description") == "Coding specialist")
+        press("toggle-sidebar")
+        wait_for("primary metadata in compact sidebar", lambda: not node("buddy-wordmark") and (n := node(forge_chat))
+                 and n.get("description") == "Primary Bud · Coding specialist")
+        press("toggle-sidebar")
+        wait_for("expanded sidebar", lambda: node("buddy-wordmark"))
+        open_details("activity")
+        wait_for("primary and role in details", lambda: tree_has("Coding specialist") and any(
+            n.get("label") == "Primary Bud" for n in ui("tree")["nodes"]))
+        group_control = wait_for("new group control", lambda: node("New group chat") or node("compact-add-group"))
+        press(group_control["key"])
         wait_for("group member options", lambda: node("member-" + forge["id"]))
         set_value("group-name", "Workshop")
         for member in ("member-agt_buddy", "member-" + forge["id"]):
@@ -259,11 +281,12 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         wait_for("enabled group save", lambda: (n := node("form-save")) and "disabled" not in n.get("states", []))
         press("form-save")
         group = wait_for("created group", lambda: next(iter(api("workspace").get("groups") or []), None))
-        wait_for("default group lead and role", lambda: tree_has("Lead: Forge · Coding specialist"))
+        wait_for("default group lead", lambda: chat(group["id"])["agent"]["id"] == forge["id"])
+        wait_for("group lead picker", lambda: (n := node("group-lead")) and "disabled" not in n.get("states", []))
         press("group-lead")
+        wait_for("Forge and role in the lead menu", lambda: tree_has("Forge · Coding specialist"))
         choose_menu_item("Buddy · Personal companion")
         wait_for("changed group lead", lambda: chat(group["id"])["agent"]["id"] == "agt_buddy")
-        wait_for("updated group lead in the header", lambda: tree_has("Lead: Buddy · Personal companion"))
         print("Native Bud settings, avatar save, primary on launch, and group lead selection worked.", flush=True)
 
     def verify_workbench():
@@ -282,7 +305,9 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
                                                     "snapshot_dir": str(directory / "missing-snapshots")}))
         automation_settings.chmod(0o600)
         launch()
-        wait_for("version beside Buddy", lambda: (node("buddy-build") or {}).get("label") == "0.1.0-beta.1")
+        wait_for("Buddy title", lambda: node("buddy-wordmark"))
+        if node("buddy-build") or tree_has("Server connected"):
+            raise RuntimeError("The sidebar exposed build or server status")
         navigate("nav-preferences")
         wait_for("theme settings", lambda: node("theme-dark"))
         wait_for("full build information", lambda: tree_has("0.1.0-beta.1+smoke") and tree_has("Beta · Build 37"))
@@ -305,6 +330,28 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         note.write_bytes(b"# Original heading\r\n\nOriginal paragraph\n")
         (workspace / "notes" / "buddy.png").write_bytes((ROOT / "cmd/buddy/assets/Buddy.png").read_bytes())
         press("chat-conv_buddy")
+        routine = api("conversations/conv_buddy/routines", {
+            "name": "Switch fixture", "prompt": "List the workspace files.", "minutes": 60,
+        })
+        open_details("activity")
+        switch = "routine-switch-" + routine["id"]
+
+        def routine_enabled():
+            return next(r["enabled"] for r in chat().get("routines", []) if r["id"] == routine["id"])
+
+        wait_for("enabled routine switch", lambda: (n := node(switch)) and n.get("role") == "switch"
+                 and n.get("label") == "Pause Switch fixture" and "disabled" not in n.get("states", []))
+        capture(routine_screenshot)
+        press(switch)
+        wait_for("paused routine persisted", lambda: not routine_enabled())
+        wait_for("resume routine switch", lambda: (n := node(switch)) and n.get("label") == "Resume Switch fixture"
+                 and "disabled" not in n.get("states", []))
+        press(switch)
+        wait_for("resumed routine persisted", routine_enabled)
+        wait_for("pause routine switch", lambda: (n := node(switch)) and n.get("label") == "Pause Switch fixture"
+                 and "disabled" not in n.get("states", []))
+        print("Routine switches paused and resumed the schedule from Activity.", flush=True)
+        open_details("library")
         wait_for("workspace browser", lambda: (n := node("open-workspace")) and "disabled" not in n.get("states", []))
         if node("workspace-tabs"):
             raise RuntimeError("A chat without an open file should have no tab strip")
@@ -422,6 +469,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         print("Native watch setup, signed CI event, inbox, archive, memory, and degraded backup health worked.", flush=True)
 
         job, turn, active = "fixture-job", "fixture-turn", "fixture-active"
+        code_run = "fixture-code-run"
         waiting, question = "fixture-waiting", "fixture-question"
         patch = "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-old\n+new"
         now = time.time_ns() // 1000
@@ -429,6 +477,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             for task, kind, origin, title, brief in [
                 (job, "background_work", "handoff", "Inspect the build", "Read the build log."),
                 (turn, "agent_turn", "chat", "", ""),
+                (code_run, "agent_turn", "chat", "", ""),
                 (active, "background_work", "handoff", "Check dependencies", "Review versions."),
                 (waiting, "background_work", "handoff", "Review the repo", "Review the requested repository."),
                 (question, "work_input", "work_input", "Review the repo", ""),
@@ -440,6 +489,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
                 db.execute("INSERT INTO turn_details VALUES (?,'agt_buddy','Personal companion',?,?,?,NULL,NULL)",
                            (task, origin, title, brief))
             db.execute("UPDATE tasks SET status='running',finished=NULL WHERE id=?", (active,))
+            db.execute("UPDATE tasks SET status='running',finished=NULL WHERE id=?", (code_run,))
             db.execute("UPDATE tasks SET status='needs_input',finished=NULL WHERE id IN (?,?)", (waiting, question))
             db.execute("INSERT INTO work_inputs(task_id,job_id) VALUES (?,?)", (question, waiting))
             db.execute("INSERT INTO work_questions VALUES (?,?)", (question, waiting))
@@ -462,6 +512,33 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             db.execute("INSERT INTO work_artifacts VALUES (?,?,?,?,?,?)",
                        ("fixture-deliverable", job, "deliverable.png", "image/png",
                         (ROOT / "cmd/buddy/assets/Buddy.png").read_bytes(), now))
+            run_snapshot = dict(language="python", status="running", started_at="2026-11-14T12:00:00Z",
+                                command="python3 main.py", stdout="First output line")
+            db.execute("INSERT INTO events(task_id,at,stream,text) VALUES (?,?,'chat_code_run',?)",
+                       (code_run, now, json.dumps(run_snapshot)))
+
+        press("chat-conv_buddy")
+        wait_for("live code card", lambda: node("view-run-output") and tree_has("First output line"))
+        press("view-run-output")
+        wait_for("code output dialog", lambda: tree_has("Run output") and tree_has("First output line"))
+        with sqlite3.connect(state / "buddy.db") as db:
+            run_snapshot["stdout"] = "First output line\nUpdated output line"
+            db.execute("UPDATE events SET at=?, text=? WHERE task_id=? AND stream='chat_code_run'",
+                       (time.time_ns() // 1000, json.dumps(run_snapshot), code_run))
+        wait_for("live output in dialog", lambda: tree_has("Run output") and tree_has("Updated output line"))
+        with sqlite3.connect(state / "buddy.db") as db:
+            finished = time.time_ns() // 1000
+            run_snapshot.update(status="failed", exit_code=3, stdout="Final output line", error="Fixture run failed.")
+            db.execute("UPDATE events SET at=?, text=? WHERE task_id=? AND stream='chat_code_run'",
+                       (finished, json.dumps(run_snapshot), code_run))
+            db.execute("UPDATE tasks SET status='failed',finished=? WHERE id=?", (finished, code_run))
+            db.execute("INSERT INTO messages(task_id,role,text,created) VALUES (?,'assistant','Inline run finished.',?)",
+                       (code_run, finished))
+        wait_for("final output and failure stay visible in dialog", lambda: all(
+            tree_has(label) for label in ("Run output", "Final output line", "Failed · Exit 3", "Fixture run failed.")))
+        press("done")
+        wait_for("finished code card", lambda: tree_has("Inline run finished.") and not tree_has("Run output"))
+        print("Native code output refreshed during execution and stayed open through completion.", flush=True)
 
         navigate("nav-work")
         wait_for("finished work row", lambda: node("job-" + job))
@@ -475,12 +552,14 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         wait_for("linked job in draft", lambda: tree_has("About Inspect the build") and tree_has("What’s the latest on this job?"))
         wait_for("formatted diff and choice card", lambda: all(tree_has(label) for label in
                  ("Git diff", "main.go", "How should I proceed?", "Run the Go suite.")))
-        wait_for("active job in workspace", lambda: node("open-work-" + active) and tree_has("In progress"))
+        open_details("activity")
+        wait_for("active job in conversation details", lambda: node("open-work-" + active))
+        capture(card_screenshot)
         if tree_has("Reading the dependency manifest."):
             raise RuntimeError("The workspace sidebar exposed a background update")
-        wait_for("bounded work preview", lambda: node("more-chat-jobs"))
-        if len([n for n in ui("tree")["nodes"] if str(n.get("key", "")).startswith("open-work-")]) != 3:
-            raise RuntimeError("The workspace sidebar did not cap its work preview")
+        wait_for("work runs overview", lambda: node("work-overview"))
+        if node("open-work-" + job):
+            raise RuntimeError("A completed job appeared in the active preview")
         capture(card_screenshot)
         press("send")
         wait_for("job reference persisted with message", lambda: any(
@@ -577,7 +656,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             previous_pid = app_pid()
             press("apply-host")
             wait_for("restarted desktop process", lambda: (pid := app_pid()) and pid != previous_pid)
-            wait_for("reopened desktop", lambda: tree_has("Server connected"))
+            wait_for("reopened desktop", lambda: node("nav-menu") and api("workspace"))
             navigate("nav-connections")
             wait_for("restored connection after reopen", lambda: tree_has("Connected server") and tree_has(destination))
             print("Buddy verified the new address, reopened, and authenticated at the new origin.", flush=True)
@@ -645,14 +724,15 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             raise RuntimeError(f"Model didn't read both attachments: {attachment_reply}")
         print("The model read the attached image and text file. The upload appeared in native chat.", flush=True)
 
-        send("Run /bin/sh ./show-result.sh in the working folder and tell me the exact value it prints. "
-             "The script waits briefly for a file created by my test, so let it finish.", "send-background")
+        send("Start a background job to run /bin/sh ./show-result.sh in the working folder and tell me the exact value it prints. "
+             "The script waits briefly for a file created by my test, so let it finish.")
         work = wait_for("independent work", lambda: next(
             (w for w in chat().get("work", []) if w["status"] == "running" and w.get("can_steer")
              and w.get("activity_kind") == "running"), None
         ), 90)
         active_id = work["id"]
-        wait_for("background work in the inspector", lambda: node("stop-work-" + active_id))
+        open_details("activity")
+        wait_for("background work in the inspector", lambda: node("open-work-" + active_id))
         capture(activity_screenshot)
         api("tasks/" + active_id + "/steer", {
             "text": "In the result, also include the literal word BUDDY_STEERED alongside the exact output.",
@@ -708,8 +788,8 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             "time.sleep(30)\n"
             "with open('tool-finished', 'w') as marker: marker.write('finished')\n"
         )
-        send("Run exactly /usr/bin/python3 ./check-isolation.py in the working folder. "
-             "This is a Buddy test and I will interrupt the command while it sleeps.", "send-background")
+        send("Start a background job to run exactly /usr/bin/python3 ./check-isolation.py in the working folder. "
+             "This is a Buddy test and I will interrupt the command while it sleeps.")
         probe = wait_for("sandbox command to start",
                          lambda: json.loads((repo / "probe.json").read_text()), 90)
         if len(probe["results"]) != 3 or set(probe["results"].values()) != {"denied"}:
@@ -717,9 +797,12 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         active = [w for w in chat()["work"] if w["status"] == "running"]
         if len(active) != 1:
             raise RuntimeError("Expected one running command")
-        stop_key = "stop-work-" + active[0]["id"]
-        wait_for("Stop in the inspector", lambda: node(stop_key))
-        press(stop_key)
+        open_details("activity")
+        active_key = "open-work-" + active[0]["id"]
+        wait_for("running job in Activity", lambda: node(active_key))
+        press(active_key)
+        wait_for("Stop job in Work", lambda: (n := node("stop-work")) and "disabled" not in n.get("states", []))
+        press("stop-work")
         reply = wait_for("cancelled reply", lambda: reply_matching(lambda m: m["task_id"] == active[0]["id"]))
         if reply["status"] != "cancelled":
             raise RuntimeError(f"Expected cancellation: {reply}")
@@ -729,6 +812,8 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             raise RuntimeError("The Codex tool continued running after cancellation")
         print("Workspace edits worked, protected files stayed inaccessible, and Stop ended the tool.", flush=True)
 
+        press("chat-conv_buddy")
+        wait_for("returned to the chat", lambda: node("chat-input"))
         press("New Bud")
         reveal_setting("agent-role")
         set_value("agent-name", "Forge")
@@ -754,8 +839,14 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             (g for g in (api("workspace").get("groups") or []) if g["name"] == "Workshop"), None
         ))
         wait_for("group composer", lambda: node("group-lead") and node("chat-input"))
-        send("Please hand this off to Forge, our coding specialist. In Forge's own workspace, "
-             "create workshop.txt containing exactly BUDDY_TEAMWORK. Have Forge report the result here.", "send-background")
+        send("Start a background job assigned to Forge, our coding specialist. In Forge's own workspace, "
+             "create workshop.txt containing exactly BUDDY_TEAMWORK. Have Forge report the result here.")
+        try:
+            wait_for("teammate work queued", lambda: any(
+                w.get("agent_id") == forge["id"] for w in chat(group["id"]).get("work", [])
+            ), 60)
+        except RuntimeError as err:
+            raise RuntimeError(f"{err}. Last turns: {chat(group['id'])['messages'][-3:]}") from err
         done = wait_for("teammate work result", lambda: reply_matching(
             lambda m: m.get("origin") == "handoff", group["id"]
         ), 100)
@@ -808,10 +899,10 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         wait_for("external workspace confirmed", lambda: not chat()["agent"].get("workspace_needs_review"))
         press("chat-" + group["id"])
         wait_for("group chat reopened", lambda: node("group-lead") and node("chat-input"))
-        send("Run exactly /bin/sh ./verify-worker-env.sh in the selected device's working folder. "
+        send("Start a background job to run exactly /bin/sh ./verify-worker-env.sh in the selected device's working folder. "
              "The script itself writes device-proof.txt. Do not create the file any other way. "
              "Before doing the work, ask me which device to use with a clickable choice card. "
-             "Use the exact option labels Buddy server and Workshop Mac. Do not start until I pick.", "send-background")
+             "Use the exact option labels Buddy server and Workshop Mac. Do not start until I pick.")
         card = wait_for("model choice card", lambda: reply_matching(lambda m: m.get("card"), group["id"]), 90)
         options = card["card"]["options"]
         index = options.index("Workshop Mac")
@@ -831,6 +922,7 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             raise RuntimeError("The worker did not write its workspace proof or inherited the environment canary")
         print("Pinned HTTPS, native card, and device execution with an isolated environment worked.", flush=True)
 
+        open_details("activity")
         press("new-routine")
         wait_for("routine form", lambda: node("routine-name"))
         set_value("routine-name", "Workspace check")

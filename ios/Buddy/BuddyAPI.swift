@@ -152,6 +152,16 @@ final class BuddyAPI: Sendable {
         try await load("/v1/workspace")
     }
 
+    func createBud(name: String, role: String, instructions: String) async throws -> Bud {
+        do {
+            return try await load("/v1/agents", method: "POST", body: [
+                "name": name, "role": role, "instructions": instructions
+            ])
+        } catch let error as BuddyError where error.status == 403 {
+            throw BuddyError("Update the Buddy server to create a Bud from iPhone.")
+        }
+    }
+
     func workspaceItem(bud: String, path: String, task: String? = nil) async throws -> WorkspacePreviewItem {
         var query = [URLQueryItem(name: "path", value: path)]
         if let task { query.append(URLQueryItem(name: "task", value: task)) }
@@ -205,23 +215,18 @@ final class BuddyAPI: Sendable {
     }
 
     func send(chat: String, text: String, agent: String? = nil, job: String? = nil,
-              background: Bool = false, backgroundAnswer: String? = nil,
+              backgroundAnswer: String? = nil,
               attachments: [ChatUpload] = [], key: String) async throws {
         struct Message: Encodable {
             let text: String
             let agent_id: String?
             let job_id: String?
-            let background: Bool?
             let background_answer: String?
             let attachments: [ChatUpload]?
         }
-        let body = Message(text: text, agent_id: agent, job_id: job, background: background ? true : nil,
+        let body = Message(text: text, agent_id: agent, job_id: job,
                            background_answer: backgroundAnswer, attachments: attachments.isEmpty ? nil : attachments)
-        do {
-            _ = try await data("/v1/conversations/\(chat)/messages", method: "POST", body: body, key: key)
-        } catch let error as BuddyError where background && error.status == 400 && error.message == "Invalid request." {
-            throw BuddyError("Update the Buddy server to run work directly from the composer.")
-        }
+        _ = try await data("/v1/conversations/\(chat)/messages", method: "POST", body: body, key: key)
     }
 
     enum BudApproval: String, Encodable {
@@ -249,6 +254,17 @@ final class BuddyAPI: Sendable {
         }
     }
 
+    func stopCodeRun(chat: String, run: String, attempt: String?) async throws {
+        let query = attempt.map { [URLQueryItem(name: "attempt", value: $0)] } ?? []
+        _ = try await data("/v1/conversations/\(chat)/code-runs/\(run)/cancel", method: "POST", query: query)
+    }
+
+    func codeRunOutput(chat: String, run: String) async throws -> ChatCodeRun {
+        let reference = run.split(separator: "/", maxSplits: 1)
+        let query = reference.count == 2 ? [URLQueryItem(name: "attempt", value: String(reference[1]))] : []
+        return try await load("/v1/conversations/\(chat)/code-runs/\(reference[0])/output", query: query)
+    }
+
     func markRead(chat: String, through: Int64) async throws {
         _ = try await data("/v1/conversations/\(chat)/read", method: "POST", body: ["through": through])
     }
@@ -273,12 +289,19 @@ final class BuddyAPI: Sendable {
         _ = try await data("/v1/inbox/\(id)", method: "PATCH", body: ["decision": decision])
     }
 
-    func work() async throws -> [WorkItem] {
-        try await load("/v1/work") as [WorkItem]? ?? []
+    func work(chat: String? = nil) async throws -> [WorkItem] {
+        let query = chat.map { [URLQueryItem(name: "chat", value: $0)] } ?? []
+        return try await load("/v1/work", query: query) as [WorkItem]? ?? []
     }
 
-    func workHistory(before: String?) async throws -> WorkHistory {
-        try await load("/v1/work/history", query: before.map { [URLQueryItem(name: "before", value: $0)] } ?? [])
+    func workHistory(chat: String? = nil, before: String?) async throws -> WorkHistory {
+        var query = chat.map { [URLQueryItem(name: "chat", value: $0)] } ?? []
+        if let before { query.append(URLQueryItem(name: "before", value: before)) }
+        return try await load("/v1/work/history", query: query)
+    }
+
+    func setRoutine(chat: String, routine: String, enabled: Bool) async throws {
+        _ = try await data("/v1/conversations/\(chat)/routines/\(routine)", method: "PATCH", body: ["enabled": enabled])
     }
 
     func workDetails(chat: String, id: String) async throws -> WorkDetails {

@@ -15,6 +15,8 @@ verify() {
 provider_check=0
 source_dir='' binary='' codex_binary='' ref=main use_tailscale=1
 requested_port=7331 auto_port=1
+go_version=1.27.4
+codex_version=0.169.0
 
 # Bind rather than just inspect listeners: this also catches denied or reserved ports.
 choose_port() {
@@ -83,7 +85,7 @@ case "$host_os" in
     command_file=/usr/local/bin/buddy-server
     admin systemctl show-environment >/dev/null 2>&1 || fail 'systemd is installed but not running. Enable systemd in WSL2 and restart the distro, or use a Linux host booted with systemd.'
     missing=0
-    for dependency in curl git tar gzip sha256sum python3 useradd runuser getent install mktemp df awk; do
+    for dependency in curl git tar gzip sha256sum python3 useradd runuser getent install mktemp df awk bwrap; do
       command -v "$dependency" >/dev/null 2>&1 || missing=1
     done
     if [ ! -s /etc/ssl/certs/ca-certificates.crt ] && [ ! -s /etc/pki/tls/certs/ca-bundle.crt ]; then missing=1; fi
@@ -91,12 +93,12 @@ case "$host_os" in
       info 'Installing missing prerequisites'
       if command -v apt-get >/dev/null; then
         admin apt-get update
-        admin apt-get install -y curl ca-certificates git tar gzip coreutils python3 util-linux passwd gawk
+        admin apt-get install -y curl ca-certificates git tar gzip coreutils python3 util-linux passwd gawk bubblewrap
       elif command -v dnf >/dev/null; then
-        admin dnf install -y curl ca-certificates git tar gzip coreutils python3 util-linux shadow-utils glibc-common gawk
-      else fail 'Install curl, CA certificates, git, tar, gzip, coreutils, Python 3, and user-management tools, then rerun.'; fi
+        admin dnf install -y curl ca-certificates git tar gzip coreutils python3 util-linux shadow-utils glibc-common gawk bubblewrap
+      else fail 'Install curl, CA certificates, git, tar, gzip, coreutils, Python 3, bubblewrap, and user-management tools, then rerun.'; fi
     fi
-    for dependency in curl git tar gzip sha256sum python3 useradd runuser getent install mktemp df awk; do
+    for dependency in curl git tar gzip sha256sum python3 useradd runuser getent install mktemp df awk bwrap; do
       command -v "$dependency" >/dev/null 2>&1 || fail "Required dependency still missing: $dependency."
     done
     python3 -c 'import socket' || fail 'Python 3 cannot load its standard library.'
@@ -166,10 +168,10 @@ else
   check_disk "$HOME" "$space_needed"
 fi
 if [ -z "$source_dir" ]; then check_network 'Buddy source on GitHub' "https://codeload.github.com/Hortlund/buddy/tar.gz/$ref"; fi
-if [ -z "$binary" ]; then check_network 'Go downloads' "https://go.dev/dl/go1.27.3.$host_os-$arch.tar.gz"; fi
+if [ -z "$binary" ]; then check_network 'Go downloads' "https://go.dev/dl/go$go_version.$host_os-$arch.tar.gz"; fi
 asset="codex-$codex_arch-$codex_target"
 if [ -z "$codex_binary" ]; then
-  check_network 'Codex downloads' "https://github.com/openai/codex/releases/download/rust-v0.167.0/$asset.tar.gz"
+  check_network 'Codex downloads' "https://github.com/openai/codex/releases/download/rust-v$codex_version/$asset.tar.gz"
 fi
 if [ -z "$binary" ] || [ -z "$codex_binary" ]; then provider_check=1; fi
 
@@ -186,14 +188,14 @@ fi
 
 # A pinned toolchain makes installs independent of distro Go package versions.
 if [ -z "$binary" ]; then
-  info 'Installing Go 1.27.3 and building Buddy'
+  info "Installing Go $go_version and building Buddy"
   case "$host_os/$arch" in
-    linux/amd64) go_sha=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40 ;;
-    linux/arm64) go_sha=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49 ;;
-    darwin/amd64) go_sha=b6f8e931e4ab497fcde6da8ae4499a58f9d258e55c8a80824a516eae5950a750 ;;
-    darwin/arm64) go_sha=dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2 ;;
+    linux/amd64) go_sha=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840 ;;
+    linux/arm64) go_sha=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92 ;;
+    darwin/amd64) go_sha=2b799377704ef12db39bd254995d5c348c9cc8d86562ca817724390e56c38f43 ;;
+    darwin/arm64) go_sha=91a44a2b8a716600ad94a4f143e156116620db8828086a6e3602291be9bd0bb4 ;;
   esac
-  fetch "https://go.dev/dl/go1.27.3.$host_os-$arch.tar.gz" "$scratch/go.tar.gz"
+  fetch "https://go.dev/dl/go$go_version.$host_os-$arch.tar.gz" "$scratch/go.tar.gz"
   verify "$scratch/go.tar.gz" "$go_sha"
   # This archive was checksum-verified. Retain its readable/executable modes
   # when handing the toolchain to the dedicated service account on Linux.
@@ -204,15 +206,15 @@ fi
 [ -x "$binary" ] || fail 'Buddy binary is not executable.'
 "$binary" -h >/dev/null 2>&1 || fail 'The Buddy binary cannot run on this host. Check the OS and CPU architecture.'
 if [ -z "$codex_binary" ]; then
-  info 'Installing Codex 0.167.0'
+  info "Installing Codex $codex_version"
   case "$host_os/$arch" in
-    linux/amd64) codex_target=unknown-linux-musl; codex_sha=9d64836106d5b374e90ee4454c7ebcde7ca7106558bd7e41a34b9f26ebda251a ;;
-    linux/arm64) codex_target=unknown-linux-musl; codex_sha=843489acb4d4b1079745c36b03c5963b887b83155af208fd53584e33ee8eb281 ;;
-    darwin/amd64) codex_target=apple-darwin; codex_sha=d8eb4a865a0b17319cde10347523e5bab0978d01725b39f4a639f40905e01221 ;;
-    darwin/arm64) codex_target=apple-darwin; codex_sha=4b22a2a971be2791c3e31f912f3e77a88ebd64a65812a7289ccba65dd6425fe9 ;;
+    linux/amd64) codex_target=unknown-linux-musl; codex_sha=9af4d751fce183faedea629437d5252dbf458eeb04130cf4f97be844621ea985 ;;
+    linux/arm64) codex_target=unknown-linux-musl; codex_sha=97b97d87eea075c5cb7709c7f6156a451622a7667953ecda40e0276637196f3f ;;
+    darwin/amd64) codex_target=apple-darwin; codex_sha=6a2be05a75ecb88f92baf3e6988ce6efbe1d68341b68dac3ae505c4b8bbce475 ;;
+    darwin/arm64) codex_target=apple-darwin; codex_sha=7f4c49c80bae1d0b4e347acfcdf11faa3475d87ae5e65a5eb1261d3c358145ee ;;
   esac
   asset="codex-$codex_arch-$codex_target"
-  fetch "https://github.com/openai/codex/releases/download/rust-v0.167.0/$asset.tar.gz" "$scratch/codex.tar.gz"
+  fetch "https://github.com/openai/codex/releases/download/rust-v$codex_version/$asset.tar.gz" "$scratch/codex.tar.gz"
   verify "$scratch/codex.tar.gz" "$codex_sha"
   tar -xzf "$scratch/codex.tar.gz" -C "$scratch"
   codex_binary="$scratch/$asset"
@@ -266,6 +268,7 @@ WorkingDirectory=$service_home
 Environment=HOME=$service_home
 Environment=PATH=$runtime_path
 UMask=0077
+Delegate=memory pids
 ExecStart=$install_dir/buddyd -addr 127.0.0.1:$server_port -data-dir $service_home/state -workspaces-dir $service_home/workspaces -codex $install_dir/codex
 Restart=on-failure
 RestartSec=5s

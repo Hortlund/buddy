@@ -1,14 +1,15 @@
 import SwiftUI
 
 enum BuddyStyle {
-    static let background = adaptive(0xFAF9FC, 0x121214)
-    static let surface = adaptive(0xFFFFFF, 0x19191D)
-    static let raised = adaptive(0xF3F1F7, 0x2A2931)
-    static let border = adaptive(0xE5E1EB, 0x303036)
-    static let text = adaptive(0x201D27, 0xF3F1F5)
-    static let muted = adaptive(0x696471, 0xA4A0AC)
-    static let accent = adaptive(0x603DAE, 0xC0AAFF)
-    static let accentText = adaptive(0xFFFFFF, 0x201637)
+    static let background = adaptive(0xFAF9F7, 0x141414)
+    static let surface = adaptive(0xFFFFFF, 0x1E1E1E)
+    static let raised = adaptive(0xF3F1EE, 0x2C2C2C)
+    static let border = adaptive(0xE5E0DB, 0x333333)
+    static let text = adaptive(0x242120, 0xF3F1EF)
+    static let muted = adaptive(0x6B625C, 0xA5A3A0)
+    static let accent = adaptive(0xA84513, 0xFFA269)
+    static let accentText = adaptive(0xFFFFFF, 0x281509)
+    static let routine = adaptive(0xB84E22, 0xCC5C29)
     static let success = adaptive(0x276448, 0x83D8AE)
 
     private static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {

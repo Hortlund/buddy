@@ -18,8 +18,6 @@ type budPicture struct {
 	image    []byte
 }
 
-var primaryMark = svg(`<path d="m12 3 2.5 5.6 6 .6-4.5 4 1.3 6-5.3-3.1-5.3 3.1 1.3-6-4.5-4 6-.6L12 3Z" fill="currentColor" stroke="none"/>`)
-
 func budRole(role string) string {
 	if strings.TrimSpace(role) == "" {
 		return "Personal companion"
@@ -232,10 +230,6 @@ func (a *desktop) draftGroupLead() string {
 	return a.group.Members[0]
 }
 
-func primaryBadge(c *ui.Context) {
-	ui.Text(c, "Primary").FontSize(11).SingleLine().Shrink(0).TextColor(c.Theme().TextMuted)
-}
-
 func (a *desktop) budSettings(c *ui.Context) {
 	controlPage(c.Key("buds-settings"), "Bud settings", "Manage your Buds and choose which one Buddy opens first.", nil, func() {
 		if a.budSettingsErr != "" {
@@ -292,7 +286,7 @@ func (a *desktop) budSettingsRow(c *ui.Context, bud tasks.AgentRef) {
 			})
 		})
 		if primary {
-			primaryBadge(c)
+			ui.Text(c, "Primary").FontSize(11).SingleLine().Shrink(0).TextColor(c.Theme().TextMuted)
 		} else {
 			label := "Make primary"
 			if a.primarySaving == bud.ID {

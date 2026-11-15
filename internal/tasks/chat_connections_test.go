@@ -16,6 +16,89 @@ type testChatIntegrations struct {
 	testGitHubReader
 }
 
+func TestLookupSurvivesWatchApprovalAndRoutineChange(t *testing.T) {
+	ctx := t.Context()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "buddy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	routine, err := store.AddRoutine(ctx, DefaultConversationID, Routine{Name: "Daily", Prompt: "Review work.", Minutes: 1440})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const request = "Show alerts and pause the Daily routine."
+	{
+		action := TurnAction{Manage: []ManagementAction{{Operation: "pause_routine", Target: routine.ID, Evidence: request}}}
+		task, _, err := store.Send(ctx, DefaultConversationID, request, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.claim(ctx); err != nil {
+			t.Fatal(err)
+		}
+		action.connectionResult = &ConnectionCard{Source: PrometheusAlerts, Heading: "Current alerts"}
+		if err := store.finishTurn(ctx, task.ID, Succeeded, "Replied.", "An alert is firing.", &action); err != nil {
+			t.Fatal(err)
+		}
+		chat, err := store.Conversation(ctx, DefaultConversationID, 0)
+		if err != nil || len(chat.Messages) != 2 || chat.Messages[1].ConnectionCard == nil || chat.Routines[0].Enabled ||
+			!strings.Contains(chat.Messages[1].Text, "An alert is firing.") {
+			t.Fatalf("lookup or management result was lost: %+v, %v", chat, err)
+		}
+	}
+	connection, err := store.SaveProviderConnection(ctx, ProviderCredentials{ProviderConnection: ProviderConnection{Source: GmailLabel, Name: "Mail"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, _, err := store.Send(ctx, DefaultConversationID, "Show alerts and watch invoices.", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.claim(ctx); err != nil {
+		t.Fatal(err)
+	}
+	action := TurnAction{connectionResult: &ConnectionCard{Source: PrometheusAlerts, Heading: "Current alerts"},
+		watches: []chatWatch{{Watch: Watch{Source: GmailLabel, ConnectionID: connection.ID, Scope: "Label_1", Name: "Invoices", Mode: WatchNotify, Budget: 15}}}}
+	if err := store.finishTurn(ctx, task.ID, Succeeded, "Replied.", "An alert is firing.", &action); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ActivateChatWatchDraft(ctx, DefaultConversationID, task.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	chat, err := store.Conversation(ctx, DefaultConversationID, 0)
+	if err != nil || len(chat.Messages) != 4 {
+		t.Fatalf("missing reply: %+v, %v", chat, err)
+	}
+	reply := chat.Messages[3]
+	if reply.ConnectionCard == nil || reply.ConnectionCard.Heading != "Current alerts" || reply.WatchCard == nil || reply.WatchCard.WatchDraft || reply.WatchCard.WatchID == "" {
+		t.Fatalf("lookup or activated watch was lost: %+v", reply)
+	}
+}
+
+func TestConnectionFollowupIncludesPriorReplyWithoutCardBodies(t *testing.T) {
+	runtime := codexExecFixture(t, `#!/bin/sh
+set -eu
+request=$(cat)
+case "$request" in
+  *"Private provider body"*) exit 1 ;;
+  *"One critical alert. Daily is paused."*"Current alerts"*"What did you pause?"*) ;;
+  *) exit 1 ;;
+esac
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"reply\":\"Daily.\"}"}}'
+`)
+	var action TurnAction
+	reply, err := runtime.Run(t.Context(), Turn{coordinate: true, Origin: "chat", action: &action,
+		Messages: []Message{
+			{Role: "assistant", TaskID: "previous", Text: "One critical alert. Daily is paused.",
+				ConnectionCard: &ConnectionCard{Heading: "Current alerts", Body: "Private provider body"}},
+			{Role: "user", Text: "What did you pause?"},
+		}}, func(string, string) error { return nil })
+	if err != nil || reply != "Daily." {
+		t.Fatalf("connection follow-up = %q, %v", reply, err)
+	}
+}
+
 func (testChatIntegrations) ChatConnections(context.Context) ([]ProviderConnection, error) {
 	return nil, nil
 }

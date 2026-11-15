@@ -60,18 +60,7 @@ func (a *desktop) setupView(c *ui.Context) {
 				ui.Column(c.Key(step)).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 					ui.Text(c, title).Role(ui.RoleHeading).FontSize(40).FontWeight(730).LetterSpacing(-1.8)
 				})
-				ui.Row(c).AlignSelf(ui.Center).Gap(12).Children(func() {
-					for i, label := range []string{"Buddy home", "Codex"} {
-						color := t.TextMuted
-						if i+1 == step {
-							color = t.Accent
-						}
-						if i != 0 {
-							ui.Icon(c, arrowMark).Size(11, 11).TextColor(t.TextMuted)
-						}
-						ui.Text(c.Key(i), label).FontSize(12).FontWeight(620).TextColor(color)
-					}
-				})
+
 				panel := ui.Column(c.Key("setup-step-" + title)).FillWidth().Gap(12)
 				revealPanel(c, panel)
 				panel.Children(func() {
@@ -122,10 +111,8 @@ func setupChoice(c *ui.Context, label string, icon *ui.SVG, disabled bool, actio
 }
 
 func setupMascot(c *ui.Context) {
-	t := c.Theme()
-	ui.Box(c).Size(116, 116).AlignSelf(ui.Center).Center().Radius(58).
-		Gradient(t.Accent.Alpha(.20), t.Accent.Alpha(.04), 155).Children(func() {
-		avatar(c, 87, tasks.Avatar{Color: "plum", Shape: "cloud", Finish: "satin", Animate: true}, nil, true, orbHappy)
+	ui.Box(c).AlignSelf(ui.Center).Children(func() {
+		avatar(c, 118, tasks.Avatar{Color: "coral", Shape: "orb", Animate: true}, nil, true, orbIdle)
 	})
 }
 
@@ -226,7 +213,7 @@ func (a *desktop) applyHostButton(c *ui.Context) {
 		return
 	}
 	ui.PrimaryButton(c.Key("apply-host"), "Reopen Buddy").Height(30).
-		OnClick(func() { a.afterWorkspaceDiscard(mygo.App.Relaunch) })
+		OnClick(func() { a.afterWorkspaceDiscard(func() { mygo.App.Relaunch() }) })
 }
 
 const hostInstallCommand = "curl -fsSL https://raw.githubusercontent.com/Hortlund/buddy/main/script/install-server.sh | bash\n"

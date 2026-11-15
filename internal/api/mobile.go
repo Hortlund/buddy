@@ -39,10 +39,13 @@ func mobileRoutes(owner *http.ServeMux, store *tasks.Store, pushTopic string) *h
 		"GET /v1/workspace",
 		"GET /v1/agents/{id}/workspace/item",
 		"GET /v1/conversations/{id}",
+		"GET /v1/conversations/{id}/code-runs/{run}/output",
+		"POST /v1/conversations/{id}/code-runs/{run}/cancel",
 		"GET /v1/tasks/{task}/generated-image",
 		"POST /v1/conversations/{id}/messages",
 		"PUT /v1/conversations/{id}/messages/{message}/reaction",
 		"POST /v1/conversations/{id}/read",
+		"PATCH /v1/conversations/{id}/routines/{routine}",
 		"POST /v1/conversations/{id}/cards/{card}/answer",
 		"POST /v1/conversations/{id}/bud-proposals/{turn}",
 		budApprovalRoute,
@@ -64,6 +67,19 @@ func mobileRoutes(owner *http.ServeMux, store *tasks.Store, pushTopic string) *h
 	} {
 		mobile.Handle(pattern, owner)
 	}
+	mobile.HandleFunc("POST /v1/agents", func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Name         string `json:"name"`
+			Role         string `json:"role"`
+			Instructions string `json:"instructions"`
+		}
+		if err := decode(w, r, &input, 12<<10); err != nil {
+			result(w, 0, nil, err)
+			return
+		}
+		bud, err := store.CreateAgent(r.Context(), tasks.Agent{Name: input.Name, Role: input.Role, Instructions: input.Instructions})
+		result(w, http.StatusCreated, bud, err)
+	})
 	mobile.HandleFunc("GET /v1/mobile/notifications", func(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusOK, struct {
 			Available bool   `json:"available"`

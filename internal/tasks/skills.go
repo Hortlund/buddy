@@ -11,7 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 const MaxSkillBytes = 32 << 10
@@ -197,14 +197,14 @@ func SkillCommand(text string) (name, arguments string) {
 	return name, arguments
 }
 
-func skillInstructions(ctx context.Context, tx *sql.Tx, name string) (string, error) {
+func skillInstructions(ctx context.Context, db queryer, name string) (string, error) {
 	for _, skill := range builtInSkills() {
 		if skill.Name == name {
 			return skill.Instructions, nil
 		}
 	}
 	var instructions string
-	err := tx.QueryRowContext(ctx, "SELECT instructions FROM installed_skills WHERE name=?", name).Scan(&instructions)
+	err := db.QueryRowContext(ctx, "SELECT instructions FROM installed_skills WHERE name=?", name).Scan(&instructions)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil
 	}

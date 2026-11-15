@@ -156,6 +156,23 @@ Provider approval is tied to the installed launch files. After upgrading a
 provider, test and enable it again. Missing or changed providers are skipped at
 startup and logged; they do not take the Buddy home offline.
 
+Each assignment has its own inspection and, when requested, write scope. The
+browser verifies the selected tab and its frames before returning what it sees.
+Live steering invalidates earlier navigation and resource approvals. Tab lists
+hide the details of pages outside the current scope. Inspection supports observed
+details controls, scrolling, and verified read-only requests such as GraphQL
+queries. The managed browser proxy checks HTTP submissions and WebSocket messages
+from pages and workers. Delayed requests can use the inspection grant. Write
+authority requires an active action, and cancelling that action cancels its
+submissions through dispatch. Navigations, including plain HTTP redirects, are
+checked before they reach the destination. The proxy rechecks scope before
+releasing response data. Batches flush on a short timer or when they reach the
+size limit. Worker console diagnostics check the owning document's URL at
+emission and the scripts in its worker chain. Element clicks stay bound to the
+verified element through activation, including after a page replaces its
+document. Browser screenshots use CSS pixels. Upgrade paired
+workers for automation jobs.
+
 ## Enable desktop computer use
 
 [Cua Driver](https://cua.ai/docs/cua-driver/quickstart) is Buddy's desktop MCP
@@ -181,9 +198,16 @@ configuration. On workers, use the command above and restart. To disable from CL
 repeat setup with `-disable`. Provider tools are attached only to assignments
 requesting `desktop` or `browser` capabilities.
 
+Inspection jobs can open and inspect destinations authorized by the request.
+Controls that change app or website state also require authorization for the
+individual action. The guard checks the caller’s latest corrections and uses
+screenshots for actions based on coordinates. Paired hosts need an updated
+`buddyworker` to claim browser and desktop jobs.
+
 Assignment detail shows the most recent screenshot returned by a provider.
 **Take control** pauses further automation tool calls. Finish any already-running
 action, use the host's desktop or your existing VM viewer, then **Resume automation**.
+After resuming, Buddy observes the current screen before choosing its next action.
 Remote pause propagates on the worker's two-second control poll. This is a pause
 and screenshot view, not an embedded remote-desktop input client. **Stop** cancels
 the assignment instead. Screenshots may show host content; only enable a desktop

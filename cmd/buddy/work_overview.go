@@ -2,7 +2,6 @@ package main
 
 import (
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -65,31 +64,8 @@ func workFilters(c *ui.Context, work *workBrowser) {
 
 func (a *desktop) workOverview(c *ui.Context, work *workBrowser) {
 	ui.Text(c, "Your team at work").Role(ui.RoleHeading).FontSize(21).FontWeight(680)
-	ui.Text(c, "Open an assignment to follow its workers, review deliverables, or ask the owning Bud a question.").FontSize(13).TextColor(c.Theme().TextMuted).Margin(8, 0, 18)
 	items := work.visibleItems()
-	counts := map[string]int{}
-	for _, item := range items {
-		if !workMatches(work, item) {
-			continue
-		}
-		switch {
-		case item.Status == tasks.NeedsInput:
-			counts["Needs you"]++
-		case item.Status.Active():
-			counts["Active"]++
-		default:
-			counts["Recent"]++
-		}
-	}
-	ui.Row(c).Wrap().Gap(10).Children(func() {
-		for _, label := range []string{"Needs you", "Active", "Recent"} {
-			ui.Column(c).Width(150).Padding(14).Radius(10).Border(1, c.Theme().Border).Gap(5).Children(func() {
-				ui.Text(c, label).FontSize(12).TextColor(c.Theme().TextMuted)
-				ui.Text(c, strconv.Itoa(counts[label])).FontSize(25).FontWeight(650)
-			})
-		}
-	})
-	sectionLabel(c, "Working Buds")
+	shown := false
 	for _, bud := range a.directory.Agents {
 		var owned []tasks.WorkItem
 		for _, item := range items {
@@ -100,7 +76,9 @@ func (a *desktop) workOverview(c *ui.Context, work *workBrowser) {
 		if len(owned) == 0 {
 			continue
 		}
-		ui.Column(c.Key(bud.ID)).FillWidth().Padding(12).Gap(8).Margin(8, 0, 0).Radius(10).Border(1, c.Theme().Border).Children(func() {
+		shown = true
+		ui.Column(c.Key(bud.ID)).FillWidth().Padding(10).Gap(4).Margin(12, 0, 0).
+			Radius(12).Background(c.Theme().SurfaceHover).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				a.drawProfile(c, a.directoryProfile(bud), 28, false, orbIdle)
 				ui.Text(c, bud.Name).FontWeight(650)
@@ -109,6 +87,9 @@ func (a *desktop) workOverview(c *ui.Context, work *workBrowser) {
 				workRow(c.Key(item.ID), item, false, true, func() { work.selectItem(item) })
 			}
 		})
+	}
+	if !shown {
+		ui.Text(c, "No active runs").Margin(10, 0, 0).TextColor(c.Theme().TextMuted)
 	}
 }
 

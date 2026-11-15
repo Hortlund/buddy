@@ -85,7 +85,7 @@ func validateProtectedRoots(roots []string, executionFiles bool, scratch ...stri
 	return nil
 }
 
-func sandboxArgs(workspace string, allowEdits, device bool, readOnly, protected []string, attachments ...string) []string {
+func sandboxArgs(workspace string, allowEdits, device bool, readOnly, protected []string, scratch string, attachments ...string) []string {
 	profile := ":read-only"
 	if allowEdits {
 		profile = ":workspace"
@@ -114,6 +114,9 @@ func sandboxArgs(workspace string, allowEdits, device bool, readOnly, protected 
 		if path != "" && !slices.Contains(protected, path) {
 			rules = append(rules, tomlString(path)+`="read"`)
 		}
+	}
+	if scratch != "" {
+		rules = append(rules, tomlString(scratch)+`="write"`)
 	}
 	filesystem := "{" + strings.Join(rules, ",") + "}"
 	return []string{

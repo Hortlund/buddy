@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -309,50 +310,66 @@ func (r *voiceRoom) toolOutput(member *roomMember, callID, output string) error 
 	}})
 }
 
+type voiceToolBatch struct {
+	member       *roomMember
+	items        []realtimeItem
+	used         map[string]bool
+	hadBudResult bool
+}
+
+type voiceToolCheck struct {
+	item   realtimeItem
+	batch  *voiceToolBatch
+	cancel context.CancelFunc
+	done   chan voiceToolVerdict
+}
+
+type voiceToolVerdict struct {
+	schedule tasks.VoiceSchedule
+	err      error
+}
+
 func (r *voiceRoom) runTools(member *roomMember, event realtimeEvent) error {
 	if r.tools == voiceSpeakOnly || event.Response.Status != "completed" {
 		return nil
 	}
-	used := make(map[string]bool)
-	hadBudResult := r.didCreateBud
-	for _, item := range event.Response.Output {
+	return r.resumeVoiceTools(&voiceToolBatch{member: member, items: event.Response.Output,
+		used: make(map[string]bool), hadBudResult: r.didCreateBud})
+}
+
+func (r *voiceRoom) resumeVoiceTools(batch *voiceToolBatch) error {
+	member := batch.member
+	for len(batch.items) != 0 {
+		item := batch.items[0]
+		batch.items = batch.items[1:]
 		if item.Type != "function_call" || item.CallID == "" {
 			continue
 		}
-		if r.toolSteps <= 0 || used[item.Name] {
+		if r.toolSteps <= 0 || (batch.used[item.Name] && !voiceReadTool(item.Name)) {
 			if err := r.toolOutput(member, item.CallID, "This tool has already been used in this response or the turn reached its tool limit."); err != nil {
 				return err
 			}
 			continue
 		}
-		used[item.Name] = true
+		batch.used[item.Name] = true
 		r.toolSteps--
+		if r.startVoiceToolCheck(batch, item) {
+			return nil
+		}
 		output, deferred, err := r.performTool(member, item)
 		if err != nil {
 			return err
 		}
-		if deferred {
-			continue
-		}
-		if err := r.toolOutput(member, item.CallID, output); err != nil {
-			r.logf("tool output relay failed bud=%s error_type=%T", member.agent.ID, err)
-			return r.loseMember(member)
-		}
-		if r.reply == nil {
-			if item.Name == "ask_agent" && r.floorHandoff != nil {
-				continue
+		if !deferred {
+			if err := r.finishVoiceTool(member, item, output); err != nil {
+				return err
 			}
-			r.reply = &roomReply{member: member}
-			lookup := item.Name == "buddy_context" || item.Name == "buddy_work"
-			retryStop := item.Name == "stop_work" && r.tools == voiceStopWork && r.stopRequested
-			if (lookup || retryStop) && r.toolSteps > 0 {
-				r.reply.tools = r.tools
-			}
-		} else if item.Name != "buddy_context" && item.Name != "buddy_work" && item.Name != "stop_work" && r.reply.member == member {
-			r.reply.tools = voiceSpeakOnly
+		}
+		if r.member(member.agent.ID) != member {
+			return nil
 		}
 	}
-	if r.tools == voiceCaller && r.toolSteps > 0 && !hadBudResult && r.didCreateBud &&
+	if r.tools == voiceCaller && r.toolSteps > 0 && !batch.hadBudResult && r.didCreateBud &&
 		(!r.didDelegateWork || r.createdBudID != "" && !r.assignedNewBud) && tasks.BudCreationFollowup(r.callerWords) {
 		followup := &roomReply{member: member, tools: voiceNewBudWork,
 			instructions: "Use delegate_work for any remaining background assignments explicitly requested by the caller. Skip assignments already accepted in the tool results. Include dependencies in the same batch and set after to the one-based position of each prerequisite. If no assignments remain, confirm the result."}
@@ -374,7 +391,188 @@ func (r *voiceRoom) runTools(member *roomMember, event realtimeEvent) error {
 	return nil
 }
 
-func (r *voiceRoom) performTool(member *roomMember, item realtimeItem) (output string, deferred bool, err error) {
+func (r *voiceRoom) finishVoiceTool(member *roomMember, item realtimeItem, output string) error {
+	if err := r.toolOutput(member, item.CallID, output); err != nil {
+		r.logf("tool output relay failed bud=%s error_type=%T", member.agent.ID, err)
+		return r.loseMember(member)
+	}
+	if r.reply == nil {
+		if item.Name == "ask_agent" && r.floorHandoff != nil {
+			return nil
+		}
+		r.reply = &roomReply{member: member}
+		retryStop := item.Name == "stop_work" && r.tools == voiceStopWork && r.stopRequested
+		if (voiceReadTool(item.Name) || retryStop) && r.toolSteps > 0 {
+			r.reply.tools = r.tools
+		}
+	} else if !voiceReadTool(item.Name) && item.Name != "stop_work" && r.reply.member == member {
+		r.reply.tools = voiceSpeakOnly
+	}
+	return nil
+}
+
+func (r *voiceRoom) startVoiceToolCheck(batch *voiceToolBatch, item realtimeItem) bool {
+	if strings.TrimSpace(r.callerWords) == "" || (r.tools != voiceCaller && !(r.tools == voiceNewBudWork && item.Name == "delegate_work")) {
+		return false
+	}
+	args, err := decodeVoiceToolArgs(item)
+	if err != nil {
+		return false
+	}
+	var jobs []tasks.Handoff
+	var routines []tasks.RoutineDraft
+	switch item.Name {
+	case "schedule_routine":
+		if r.didSchedule {
+			return false
+		}
+		routines = args.routineDrafts()
+	case "delegate_work":
+		if r.worker == nil {
+			return false
+		}
+		jobs = args.handoffs()
+	case "create_bud":
+		jobs = args.Assignments
+	case "continue_in_chat":
+		if r.teamQueued || r.worker == nil {
+			return false
+		}
+		args.AgentIDs = r.voiceTeamIDs(args.AgentIDs)
+		if len(args.AgentIDs) < 2 {
+			return false
+		}
+		// Carry the proposed participants through verification even if the
+		// call roster changes before the result comes back.
+		arguments, err := json.Marshal(args)
+		if err != nil {
+			return false
+		}
+		item.Arguments = string(arguments)
+		for _, id := range args.AgentIDs {
+			jobs = append(jobs, tasks.Handoff{AgentID: id, Title: args.Title, Brief: args.Brief})
+		}
+	default:
+		return false
+	}
+	if item.Name != "delegate_work" && len(routines) == 0 &&
+		!slices.ContainsFunc(jobs, tasks.HandoffNeedsAuthorization) {
+		return false
+	}
+	ctx, cancel := context.WithCancel(r.ctx)
+	check := &voiceToolCheck{item: item, batch: batch, cancel: cancel, done: make(chan voiceToolVerdict, 1)}
+	r.voiceCheck = check
+	store, runtime, chat, call, agent, request := r.store, r.workspace, r.chat.ID, r.id, batch.member.agent, r.callerWords
+	go func() {
+		schedule, err := store.AuthorizeVoiceSchedule(ctx, runtime, chat, call, agent, jobs, routines, request)
+		check.done <- voiceToolVerdict{schedule: schedule, err: err}
+	}()
+	return true
+}
+
+func (r *voiceRoom) cancelVoiceToolCheck() error {
+	check := r.voiceCheck
+	if check == nil {
+		return nil
+	}
+	r.voiceCheck = nil
+	check.cancel()
+	if r.member(check.batch.member.agent.ID) != check.batch.member {
+		return nil
+	}
+	// Complete pending provider call IDs before requesting a new voice turn.
+	for _, item := range append([]realtimeItem{check.item}, check.batch.items...) {
+		if item.Type == "function_call" && item.CallID != "" {
+			if err := r.toolOutput(check.batch.member, item.CallID, "The caller interrupted this action."); err != nil {
+				return r.loseMember(check.batch.member)
+			}
+		}
+	}
+	return nil
+}
+
+func (r *voiceRoom) completeVoiceToolCheck(verdict voiceToolVerdict) error {
+	check := r.voiceCheck
+	r.voiceCheck = nil
+	check.cancel()
+	member := check.batch.member
+	if r.member(member.agent.ID) != member {
+		return r.advance()
+	}
+	output := voiceActionError(verdict.err, "Couldn’t verify the caller’s request.")
+	if verdict.err == nil {
+		var err error
+		output, _, err = r.performTool(member, check.item, verdict.schedule)
+		if err != nil {
+			return err
+		}
+	}
+	if err := r.finishVoiceTool(member, check.item, output); err != nil {
+		return err
+	}
+	if r.member(member.agent.ID) == member {
+		if err := r.resumeVoiceTools(check.batch); err != nil {
+			return err
+		}
+	}
+	return r.advance()
+}
+
+func voiceReadTool(name string) bool {
+	return name == "buddy_context" || name == "buddy_work" || name == "read_workspace"
+}
+
+type voiceToolArgs struct {
+	Changes      []tasks.ManagementAction   `json:"changes"`
+	Choices      [][]tasks.ManagementAction `json:"choices"`
+	Assignments  []tasks.Handoff            `json:"assignments"`
+	Routines     []tasks.RoutineDraft       `json:"routines"`
+	JobID        string                     `json:"job_id"`
+	InputID      string                     `json:"input_id"`
+	DeviceID     string                     `json:"device_id"`
+	ReadOnly     bool                       `json:"read_only"`
+	AgentID      string                     `json:"agent_id"`
+	AgentIDs     []string                   `json:"agent_ids"`
+	Question     string                     `json:"question"`
+	Answer       string                     `json:"answer"`
+	Title        string                     `json:"title"`
+	Brief        string                     `json:"brief"`
+	Name         string                     `json:"name"`
+	Role         string                     `json:"role"`
+	Instructions string                     `json:"instructions"`
+	CreateNow    bool                       `json:"create_now"`
+	Evidence     string                     `json:"evidence"`
+	Prompt       string                     `json:"prompt"`
+	Minutes      int                        `json:"minutes"`
+	Path         string                     `json:"path"`
+	StartLine    int                        `json:"start_line"`
+	Offset       *int                       `json:"offset"`
+}
+
+func decodeVoiceToolArgs(item realtimeItem) (voiceToolArgs, error) {
+	var args voiceToolArgs
+	err := json.Unmarshal([]byte(item.Arguments), &args)
+	args.AgentID = strings.TrimSpace(args.AgentID)
+	return args, err
+}
+
+func (args voiceToolArgs) handoffs() []tasks.Handoff {
+	if args.Assignments != nil {
+		return args.Assignments
+	}
+	return []tasks.Handoff{{AgentID: args.AgentID, DeviceID: args.DeviceID,
+		Title: args.Title, Brief: args.Brief, ReadOnly: args.ReadOnly}}
+}
+
+func (args voiceToolArgs) routineDrafts() []tasks.RoutineDraft {
+	if args.Routines != nil {
+		return args.Routines
+	}
+	return []tasks.RoutineDraft{{AgentID: args.AgentID, DeviceID: args.DeviceID,
+		Name: args.Name, Prompt: args.Prompt, Minutes: args.Minutes}}
+}
+
+func (r *voiceRoom) performTool(member *roomMember, item realtimeItem, verified ...tasks.VoiceSchedule) (output string, deferred bool, err error) {
 	if r.tools == voiceStopWork && item.Name != "stop_work" && item.Name != "buddy_work" {
 		return "This turn can only look up or stop a job.", false, nil
 	}
@@ -384,34 +582,25 @@ func (r *voiceRoom) performTool(member *roomMember, item realtimeItem) (output s
 	if item.Name == "buddy_context" {
 		return r.buddyContext(member), false, nil
 	}
-	var args struct {
-		Changes      []tasks.ManagementAction   `json:"changes"`
-		Choices      [][]tasks.ManagementAction `json:"choices"`
-		Assignments  []tasks.Handoff            `json:"assignments"`
-		Routines     []tasks.RoutineDraft       `json:"routines"`
-		JobID        string                     `json:"job_id"`
-		InputID      string                     `json:"input_id"`
-		DeviceID     string                     `json:"device_id"`
-		ReadOnly     bool                       `json:"read_only"`
-		AgentID      string                     `json:"agent_id"`
-		AgentIDs     []string                   `json:"agent_ids"`
-		Question     string                     `json:"question"`
-		Answer       string                     `json:"answer"`
-		Title        string                     `json:"title"`
-		Brief        string                     `json:"brief"`
-		Name         string                     `json:"name"`
-		Role         string                     `json:"role"`
-		Instructions string                     `json:"instructions"`
-		CreateNow    bool                       `json:"create_now"`
-		Evidence     string                     `json:"evidence"`
-		Prompt       string                     `json:"prompt"`
-		Minutes      int                        `json:"minutes"`
-	}
-	if json.Unmarshal([]byte(item.Arguments), &args) != nil {
+	args, err := decodeVoiceToolArgs(item)
+	if err != nil {
 		return "Invalid tool arguments.", false, nil
 	}
-	args.AgentID = strings.TrimSpace(args.AgentID)
+	schedule := tasks.VoiceRequest(r.callerWords)
+	if len(verified) != 0 {
+		schedule = verified[0]
+	}
 	switch item.Name {
+	case "read_workspace":
+		if r.workspace == nil || (r.tools != voiceCaller && r.tools != voiceTeammate) {
+			return "Workspace reads are unavailable for this speaking turn.", false, nil
+		}
+		file, err := r.workspace.ReadVoiceWorkspace(r.ctx, r.store, member.agent.ID, args.Path, args.StartLine, args.Offset)
+		if err != nil {
+			return voiceActionError(err, "Couldn’t read that workspace item."), false, nil
+		}
+		data, err := json.Marshal(file)
+		return string(data), false, err
 	case "create_bud":
 		if r.tools != voiceCaller || r.didCreateBud || strings.TrimSpace(r.callerWords) == "" {
 			return "Bud creation requires a new request from the caller.", false, nil
@@ -421,7 +610,14 @@ func (r *voiceRoom) performTool(member *roomMember, item realtimeItem) (output s
 		}
 		draft := tasks.BudDraft{Name: args.Name, Role: args.Role, Instructions: args.Instructions,
 			CreateNow: args.CreateNow, Evidence: args.Evidence}
-		bud, jobs, notice, err := r.store.SaveVoiceBud(r.ctx, r.chat.ID, r.id, member.agent.ID, r.callerWords, draft, args.Assignments...)
+		assignments := args.Assignments
+		if len(verified) != 0 {
+			assignments = schedule.Jobs
+		} else if slices.ContainsFunc(assignments, tasks.HandoffNeedsAuthorization) {
+			return "Assignments that edit files or use automation need authorization from the caller’s request.", false, nil
+		}
+		bud, jobs, notice, err := r.store.SaveVoiceBud(r.ctx, r.chat.ID, r.id, member.agent.ID, r.callerWords, draft, assignments...)
+		notice = strings.TrimSpace(notice + " " + schedule.Notice)
 		if err != nil {
 			return voiceActionError(err, "Couldn’t save the Bud."), false, nil
 		}
@@ -503,10 +699,17 @@ func (r *voiceRoom) performTool(member *roomMember, item realtimeItem) (output s
 		})
 		return message, message == "" && err == nil, err
 	case "continue_in_chat":
-		if r.tools != voiceCaller {
+		if r.tools != voiceCaller || strings.TrimSpace(r.callerWords) == "" {
 			return "Only the caller can request post-call work.", false, nil
 		}
-		message, err := r.queueTeam(args.Title, args.Brief, args.AgentIDs, true)
+		ids := r.voiceTeamIDs(args.AgentIDs)
+		allowEdits := len(ids) != 0 && slices.EqualFunc(schedule.Jobs, ids, func(job tasks.Handoff, id string) bool {
+			return !job.ReadOnly && job.AgentID == id
+		})
+		message, err := r.queueTeam(args.Title, args.Brief, ids, allowEdits)
+		if !allowEdits && schedule.Notice != "" && r.teamQueued {
+			message += " The team can review and report its findings."
+		}
 		return message, false, err
 	case "delegate_work":
 		if (r.tools != voiceCaller && r.tools != voiceNewBudWork) || strings.TrimSpace(r.callerWords) == "" {
@@ -515,18 +718,21 @@ func (r *voiceRoom) performTool(member *roomMember, item realtimeItem) (output s
 		if r.worker == nil {
 			return "Buddy's background worker is unavailable.", false, nil
 		}
-		assignments := args.Assignments
-		if assignments == nil {
-			// Older voice sessions may still send the single-assignment shape.
-			assignments = []tasks.Handoff{{AgentID: args.AgentID, DeviceID: args.DeviceID,
-				Title: args.Title, Brief: args.Brief, ReadOnly: args.ReadOnly}}
+		if len(verified) == 0 {
+			schedule.Jobs = args.handoffs()
+			if slices.ContainsFunc(schedule.Jobs, tasks.HandoffNeedsAuthorization) {
+				return "Assignments that edit files or use automation need authorization from the caller’s request.", false, nil
+			}
 		}
-		if r.tools == voiceNewBudWork && r.assignedNewBud && slices.ContainsFunc(assignments, func(assignment tasks.Handoff) bool {
+		if len(schedule.Jobs) == 0 {
+			return "I couldn’t verify any authorized assignment in the caller’s request.", false, nil
+		}
+		if r.tools == voiceNewBudWork && r.assignedNewBud && slices.ContainsFunc(schedule.Jobs, func(assignment tasks.Handoff) bool {
 			return strings.TrimSpace(assignment.AgentID) == r.createdBudID
 		}) {
 			return "The new Bud’s work was already accepted. Only delegate remaining independent assignments.", false, nil
 		}
-		jobs, err := r.store.QueueVoiceAssignments(r.ctx, r.chat.ID, member.agent.ID, r.id, member.agent.ID+":"+item.CallID, assignments)
+		jobs, err := r.store.QueueAuthorizedVoiceAssignments(r.ctx, r.chat.ID, member.agent.ID, r.id, member.agent.ID+":"+item.CallID, schedule)
 		if err != nil {
 			return voiceActionError(err, "Couldn't queue the background assignments."), false, nil
 		}
@@ -536,7 +742,7 @@ func (r *voiceRoom) performTool(member *roomMember, item realtimeItem) (output s
 			assigned = append(assigned, object{"id": job.ID, "bud": job.AgentName, "title": job.Title, "status": job.Status})
 		}
 		data, _ := json.Marshal(assigned)
-		return "The handoff was accepted. Briefly say who will do what. Results and questions will appear in chat, and the caller can keep talking. Assignments: " + string(data),
+		return "The handoff was accepted. Briefly say who will do what. Results and questions will appear in chat, and the caller can keep talking. Assignments: " + string(data) + " " + schedule.Notice,
 			false, r.recordVoiceHandoffs(jobs)
 	case "schedule_routine":
 		if r.tools != voiceCaller || strings.TrimSpace(r.callerWords) == "" {
@@ -545,21 +751,7 @@ func (r *voiceRoom) performTool(member *roomMember, item realtimeItem) (output s
 		if r.didSchedule {
 			return "Routines have already been scheduled for this spoken request.", false, nil
 		}
-		drafts := args.Routines
-		if drafts == nil {
-			drafts = []tasks.RoutineDraft{{AgentID: args.AgentID, DeviceID: args.DeviceID,
-				Name: args.Name, Prompt: args.Prompt, Minutes: args.Minutes}}
-		}
-		routines := make([]tasks.Routine, 0, len(drafts))
-		for _, draft := range drafts {
-			id := strings.TrimSpace(draft.AgentID)
-			if id == "" {
-				id = member.agent.ID
-			}
-			routines = append(routines, tasks.Routine{AgentID: id, DeviceID: strings.TrimSpace(draft.DeviceID),
-				Name: draft.Name, Prompt: draft.Prompt, Minutes: draft.Minutes})
-		}
-		saved, err := r.store.AddVoiceRoutines(r.ctx, r.chat.ID, r.id, routines)
+		saved, err := r.store.SaveVoiceRoutines(r.ctx, r.chat.ID, r.id, member.agent.ID, schedule)
 		if err != nil {
 			return voiceActionError(err, "Couldn’t schedule the routines."), false, nil
 		}
@@ -568,7 +760,7 @@ func (r *voiceRoom) performTool(member *roomMember, item realtimeItem) (output s
 		for _, routine := range saved {
 			receipts = append(receipts, fmt.Sprintf("%s (%s)", routine.Name, tasks.RoutineCadence(routine.Minutes)))
 		}
-		return "Scheduled " + strings.Join(receipts, ", ") + ".", false, r.send(VoiceEvent{Type: "work_changed"})
+		return strings.TrimSpace("Scheduled " + strings.Join(receipts, ", ") + ". " + schedule.Notice), false, r.send(VoiceEvent{Type: "work_changed"})
 	default:
 		return "This tool isn't available in a call.", false, nil
 	}

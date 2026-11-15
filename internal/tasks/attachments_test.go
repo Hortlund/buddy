@@ -123,7 +123,7 @@ func TestAttachmentHandoffStagesOnlyTheAssignedFiles(t *testing.T) {
 	if len(images) != 1 || len(staged) != 2 || staged[1].Preview != "read me" {
 		t.Fatalf("incorrect runner inputs: %+v, %v", staged, images)
 	}
-	flags := sandboxArgs(t.TempDir(), true, true, nil, nil, root)
+	flags := sandboxArgs(t.TempDir(), true, true, nil, nil, "", root)
 	if !strings.Contains(strings.Join(flags, " "), tomlString(root)+`="read"`) {
 		t.Fatal("device attachment directory was not granted read access")
 	}

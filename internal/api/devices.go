@@ -13,6 +13,8 @@ import (
 	"buddy/internal/tasks"
 )
 
+const automationScopeVersion = "11"
+
 func deviceRoutes(owner *http.ServeMux, store *tasks.Store) http.Handler {
 	owner.HandleFunc("GET /v1/devices", func(w http.ResponseWriter, r *http.Request) {
 		devices, err := store.Devices(r.Context())
@@ -59,7 +61,10 @@ func deviceRoutes(owner *http.ServeMux, store *tasks.Store) http.Handler {
 				claim = store.ReserveDeviceSkillWork
 			}
 			if r.URL.Query().Get("execution") == "1" {
-				claim = store.ReserveExecutionWork
+				claim = store.ReserveLegacyExecutionWork
+				if r.URL.Query().Get("automation_scope") == automationScopeVersion {
+					claim = store.ReserveExecutionWork
+				}
 			}
 			job, err := claim(r.Context(), id, pool, edits)
 			result(w, http.StatusOK, job, err)
@@ -80,7 +85,7 @@ func deviceRoutes(owner *http.ServeMux, store *tasks.Store) http.Handler {
 	}))
 	worker.HandleFunc("POST /v1/worker/{device}/jobs/{job}/pulse", requireDevice(func(w http.ResponseWriter, r *http.Request, id string) {
 		var pulse tasks.DevicePulse
-		if err := decode(w, r, &pulse, 8<<10); err != nil || len(pulse.Update) > 900+len("…") {
+		if err := decode(w, r, &pulse, 1<<20); err != nil || len(pulse.Update) > 900+len("…") {
 			result(w, 0, nil, &tasks.InputError{Message: "Invalid device progress."})
 			return
 		}
@@ -151,11 +156,11 @@ func deviceRoutes(owner *http.ServeMux, store *tasks.Store) http.Handler {
 		if err == nil && status != tasks.Running {
 			err = tasks.ErrInactive
 		}
-		var paused bool
+		var control tasks.AutomationControl
 		if err == nil {
-			paused, err = store.AutomationPaused(r.Context(), r.PathValue("job"))
+			control, err = store.ReadAutomationControl(r.Context(), r.PathValue("job"))
 		}
-		result(w, http.StatusOK, map[string]bool{"paused": paused}, err)
+		result(w, http.StatusOK, control, err)
 	}))
 
 	return worker
@@ -219,7 +224,7 @@ func (c *Client) ClaimDeviceJob(ctx context.Context, id string) (*tasks.DeviceJo
 
 func (c *Client) ClaimDeviceWork(ctx context.Context, id string, pool, edits bool) (*tasks.DeviceJob, error) {
 	var job *tasks.DeviceJob
-	path := "/v1/worker/" + url.PathEscape(id) + "/claim?attachments=1&delivery=1&skills=1&execution=1"
+	path := "/v1/worker/" + url.PathEscape(id) + "/claim?attachments=1&delivery=1&skills=1&execution=1&automation_scope=" + automationScopeVersion
 	if pool {
 		path += "&pool=1"
 		if edits {
@@ -261,11 +266,14 @@ func (c *Client) UploadExecutionFrame(ctx context.Context, device, job, lease st
 	return c.call(ctx, http.MethodPost, "/v1/worker/"+url.PathEscape(device)+"/jobs/"+url.PathEscape(job)+"/frame", "", map[string]any{"lease": lease, "frame": frame}, nil)
 }
 func (c *Client) AutomationControl(ctx context.Context, device, job, lease string) (bool, error) {
-	var out struct {
-		Paused bool `json:"paused"`
-	}
+	control, err := c.AutomationControlState(ctx, device, job, lease)
+	return control.Paused, err
+}
+
+func (c *Client) AutomationControlState(ctx context.Context, device, job, lease string) (tasks.AutomationControl, error) {
+	var out tasks.AutomationControl
 	err := c.call(ctx, http.MethodGet, "/v1/worker/"+url.PathEscape(device)+"/jobs/"+url.PathEscape(job)+"/control?lease="+url.QueryEscape(lease), "", nil, &out)
-	return out.Paused, err
+	return out, err
 }
 
 func (c *Client) ForwardWorkControl(ctx context.Context, job, token string, request json.RawMessage) (json.RawMessage, error) {

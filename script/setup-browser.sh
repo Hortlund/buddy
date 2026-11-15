@@ -19,7 +19,7 @@ node -e 'if (Number(process.versions.node.split(".")[0]) < 18) process.exit(1)' 
 }
 umask 077
 mkdir -p "$prefix"
-npm install --prefix "$prefix" --no-audit --no-fund @playwright/mcp@0.0.84
+npm install --prefix "$prefix" --no-audit --no-fund @playwright/mcp@0.0.85
 node "$prefix/node_modules/playwright/cli.js" install chromium
 echo
 echo 'Browser installed. Use this tools directory in your server or worker PATH:'

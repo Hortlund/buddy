@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"buddy/internal/api"
+	"buddy/internal/activitycopy"
 	"buddy/internal/tasks"
 	"buddy/internal/voiceaudio"
 
@@ -99,19 +99,23 @@ func (a *desktop) view(c *ui.Context) {
 }
 
 func (a *desktop) sidebar(c *ui.Context, header, inset float32) {
-	ui.Column(c).Width(186).Shrink(0).Background(c.Theme().Background.Mix(c.Theme().SurfaceHover, .5)).BorderWidth(0, 1, 0, 0).BorderColor(c.Theme().Border).Children(func() {
-		ui.Row(c).Height(header).Shrink(0).FillWidth().Padding(0, 16).
+	width := max(174, inset+84)
+	if a.compactSidebar {
+		width = max(62, inset+10)
+	}
+	ui.Column(c).Width(width).Shrink(0).Background(c.Theme().Background.Mix(c.Theme().Surface, .24)).
+		BorderWidth(0, 1, 0, 0).BorderColor(c.Theme().Border).Children(func() {
+		ui.Row(c).Height(header).Shrink(0).FillWidth().Padding(0, 10, 0, max(14, inset+8)).
 			DragWindow().Children(func() {
-			if inset == 0 {
-				buildWordmark(c)
+			if !a.compactSidebar {
+				buildWordmark(c.Key("buddy-wordmark"))
 			}
 		})
-		ui.Scroll(c.Key("chat-sidebar")).Grow(1).MinHeight(0).FillWidth().Padding(8, 11, 0).Gap(8).Children(func() {
-			if inset != 0 {
-				ui.Box(c).Padding(3, 8, 0).Children(func() { buildWordmark(c) })
-			}
-			ui.Column(c).Gap(2).Children(func() {
-				sidebarHeading(c, "Buds", "New Bud", a.online && !a.saving, a.startAgent)
+		ui.Scroll(c.Key("chat-sidebar")).Grow(1).MinHeight(0).FillWidth().Padding(6, 9, 0).Gap(12).Children(func() {
+			ui.Column(c).Gap(3).Children(func() {
+				if !a.compactSidebar {
+					sidebarHeading(c, "Buds", "New Bud", a.online && !a.saving, a.startAgent)
+				}
 				if len(a.directory.Agents) == 0 {
 					a.budNav(c, tasks.AgentRef{ID: tasks.DefaultAgentID, ConversationID: tasks.DefaultConversationID, Name: "Buddy"})
 				}
@@ -119,68 +123,75 @@ func (a *desktop) sidebar(c *ui.Context, header, inset float32) {
 					a.budNav(c, bud)
 				}
 			})
-			ui.Column(c).Gap(2).Children(func() {
-				sidebarHeading(c, "Group chats", "New group chat", a.online && len(a.directory.Agents) >= 2, a.startGroup)
+			ui.Column(c).Gap(3).Children(func() {
+				if !a.compactSidebar && (len(a.directory.Groups) != 0 || len(a.directory.Agents) >= 2) {
+					sidebarHeading(c, "Groups", "New group chat", a.online && len(a.directory.Agents) >= 2, a.startGroup)
+				}
 				for _, chat := range a.directory.Groups {
 					a.chatNav(c, chat.ID, chat.Name, groupMark, a.chatHasUnread(chat.ID, chat.HasNewResult, chat.UnreadThrough))
 				}
 			})
 		})
-		ui.Column(c).Padding(8, 11, 0).Gap(2).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).Children(func() {
+		ui.Column(c).Padding(10, 9).Gap(4).Children(func() {
+			if a.compactSidebar {
+				ui.Row(c).AlignSelf(ui.Center).Children(func() {
+					smallIcon(c.Key("compact-add-bud"), "New Bud", plusMark, a.online && !a.saving, a.startAgent)
+					smallIcon(c.Key("compact-add-group"), "New group chat", groupMark, a.online && len(a.directory.Agents) >= 2, a.startGroup)
+				})
+			}
 			a.menuButton(c)
-		})
-		text, dot := "Connecting…", ui.Hex("#72867C")
-		switch {
-		case a.online:
-			text, dot = "Server connected", ui.Hex("#2A815B")
-		case a.loaded:
-			text, dot = "Server offline", c.Theme().Danger
-		}
-		ui.Row(c).Padding(13, 19).Gap(8).Tooltip(a.endpoint).Children(func() {
-			ui.Box(c).Size(6, 6).Radius(99).Background(dot)
-			ui.Text(c, text).FontSize(11).TextColor(c.Theme().TextMuted)
 		})
 	})
 }
 
 func (a *desktop) conversation(c *ui.Context, header, inset float32) {
-	ui.Row(c).Height(header).Shrink(0).FillWidth().Padding(0, max(16, inset+8), 0, 20).
-		Gap(8).BorderWidth(0, 0, 1, 0).BorderColor(c.Theme().Border).DragWindow().Children(func() {
-		title, subtitle := a.agentName(), budRole(a.chat.Agent.Role)
+	padding := max(14, inset+8)
+	ui.Row(c).Height(header).Shrink(0).FillWidth().Padding(0, padding, 0, 14).
+		Gap(8).DragWindow().Children(func() {
+		label := "Compact sidebar"
+		if a.compactSidebar {
+			label = "Expand sidebar"
+		}
+		smallIcon(c.Key("toggle-sidebar"), label, sidebarMark, true, func() { a.compactSidebar = !a.compactSidebar })
+		ui.Box(c).Grow(1)
+		title := a.agentName()
+		subtitle := strings.TrimSpace(a.chat.Agent.Role)
 		if a.chat.Name != "" {
 			title = a.chat.Name
-			subtitle = "Lead: " + a.chat.Agent.Name + " · " + subtitle
-			ui.Box(c).Size(28, 28).Radius(14).Background(c.Theme().SurfacePressed).Center().Children(func() {
-				ui.Icon(c, groupMark).Size(17, 17).TextColor(c.Theme().Text)
-			})
-		} else {
-			ui.ButtonBase(c.Key("profile-picture")).Size(28, 28).Label("Customize profile picture").
-				Disabled(!a.online || a.chat.Agent.Removed).OnClick(a.showSettings).Children(func() {
-				a.drawProfile(c, a.chat.Agent, 28, false, orbIdle)
-			})
+			subtitle = "Lead: " + a.agentName()
+			if role := strings.TrimSpace(a.chat.Agent.Role); role != "" {
+				subtitle += " · " + role
+			}
 		}
-		if a.chat.Archived || a.chat.Agent.Removed {
-			subtitle = "Chat history"
+		btn := ui.ButtonBase(c.Key("toggle-details")).Label(title+", conversation details").
+			Description(subtitle).Selected(!a.inspectorClosed).MinWidth(0).MaxWidth(260).Height(34).Radius(17).Padding(0, 11).
+			Gap(7).Background(c.Theme().Surface).OnClick(a.toggleInspector)
+		if subtitle != "" {
+			btn.Height(38).Radius(19)
 		}
-		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, title).FontSize(14).FontWeight(680).SingleLine().MinWidth(0).Role(ui.RoleHeading)
+		if btn.Hovered() {
+			btn.Background(c.Theme().SurfacePressed)
+		}
+		btn.Children(func() {
+			switch {
+			case a.chat.Name != "":
+				ui.Icon(c, groupMark).Size(17, 17).Shrink(0).TextColor(c.Theme().TextMuted)
+			default:
+				a.drawProfile(c, a.focusedAgent(), 24, false, orbIdle)
+			}
+			ui.Column(c).MinWidth(0).Gap(0).Children(func() {
+				ui.Text(c, title).FontSize(14).FontWeight(600).MinWidth(0).SingleLine().TextColor(c.Theme().Text).Role(ui.RoleHeading)
+				if subtitle != "" {
+					ui.Text(c, subtitle).FontSize(10).MinWidth(0).SingleLine().TextColor(c.Theme().TextMuted)
+				}
 			})
-			ui.Text(c, subtitle).FontSize(11).SingleLine().TextColor(c.Theme().TextMuted).Tooltip(subtitle)
 		})
+		ui.Box(c).Grow(1)
 		if !a.chat.Archived && a.chat.Name != "" && len(a.chat.Members) > 1 {
 			a.groupLeadPicker(c.Key("group-lead"), "Lead Bud", a.chat.Agent.ID, a.chat.Members,
 				a.canSetLeadership() && !a.groupLeadSaving, a.setGroupLead)
 		}
 		a.conversationHistoryMenu(c)
-		if a.voice == nil && !a.chat.Archived && !a.chat.Agent.Removed {
-			smallIcon(c.Key("start-voice"), "Start voice call", callMark, a.online && a.chat.ID != "" && voiceaudio.Available(), a.startVoice)
-		}
-		label := "Hide workspace"
-		if a.inspectorClosed {
-			label = "Show workspace"
-		}
-		smallIcon(c.Key("toggle-details"), label, detailsMark, true, a.toggleInspector)
 	})
 	a.workspaceTabs(c)
 	if a.showingWorkspaceFiles() {
@@ -192,8 +203,9 @@ func (a *desktop) conversation(c *ui.Context, header, inset float32) {
 		a.voicePanel(c)
 		return
 	}
-	ui.Column(c).MaxWidth(780).FillWidth().Grow(1).MinHeight(0).AlignSelf(ui.Center).Children(func() {
+	ui.Column(c).MaxWidth(860).FillWidth().Grow(1).MinHeight(0).AlignSelf(ui.Center).Children(func() {
 		a.transcript(c)
+		a.codeOutputDialog(c.Key("code-output-dialog"))
 		a.voicePanel(c)
 		if a.chat.Archived || a.chat.Agent.Removed {
 			label := "This Bud was removed."
@@ -201,7 +213,7 @@ func (a *desktop) conversation(c *ui.Context, header, inset float32) {
 				label = "This group has no active Buds."
 			}
 			if a.chat.Archived {
-				label = "This group is archived. Restore it from the chat menu to continue."
+				label = "This group is archived."
 			}
 			ui.Text(c, label).Padding(0, 24, 13).FontSize(12).TextColor(c.Theme().TextMuted)
 		} else {
@@ -211,34 +223,47 @@ func (a *desktop) conversation(c *ui.Context, header, inset float32) {
 }
 
 func (a *desktop) transcript(c *ui.Context) {
-	if len(a.chat.Messages) == 0 {
+	var work []tasks.WorkItem
+	for _, item := range a.chat.Work {
+		if (item.Status.Active() || item.Status == tasks.NeedsInput) && (item.CodeRun != nil || item.ProjectID != "") {
+			work = append(work, item)
+		}
+	}
+	if len(a.chat.Messages) == 0 && a.chat.Active == nil && len(work) == 0 {
 		if a.chat.Agent.Removed {
 			ui.Box(c).Grow(1)
 		} else {
 			a.emptyConversation(c)
 		}
 	} else {
-		if a.chat.Before != 0 {
-			ui.Row(c).Padding(7, 30, 0).Gap(10).Children(func() {
-				label := "Load earlier messages"
+		first, last := a.list.Visible()
+		if first >= 0 && first <= 3 && last >= first && !a.list.AtEnd() && a.historyErr == "" {
+			a.loadEarlier()
+		}
+		if a.loadingHistory || a.historyErr != "" {
+			ui.Row(c.Key("history-status")).Padding(6, 30, 0).Gap(8).AlignItems(ui.Center).Children(func() {
 				if a.loadingHistory {
-					label = "Loading earlier messages…"
-				}
-				ui.Button(c.Key("load-earlier"), label).Disabled(a.loadingHistory || !a.online).OnClick(a.loadEarlier)
-				if a.historyErr != "" {
-					ui.Text(c, a.historyErr).TextColor(c.Theme().Danger)
+					ui.Spinner(c).Size(12, 12)
+					ui.Text(c, "Loading earlier messages…").Role(ui.RoleStatus).FontSize(11).TextColor(c.Theme().TextMuted)
+				} else {
+					ui.Text(c, a.historyErr).FontSize(11).TextColor(c.Theme().TextMuted)
+					ui.Button(c.Key("retry-history"), "Retry").Height(24).Disabled(!a.online).OnClick(a.loadEarlier)
 				}
 			})
 		}
 		count, active := len(a.chat.Messages), a.chat.Active
-		rows := count
+		rows := count + len(work)
+		activeRow := rows
 		if active != nil {
 			rows++
 		}
 		a.list.FollowEnd = true
 		a.list.Key = func(i int) any {
-			if i == count && active != nil {
+			if i == activeRow && active != nil {
 				return "reply-" + active.ID
+			}
+			if i >= count {
+				return "work-progress-" + work[i-count].ID
 			}
 			message := a.chat.Messages[i]
 			if message.Role == "assistant" {
@@ -247,13 +272,35 @@ func (a *desktop) transcript(c *ui.Context) {
 			return message.ID
 		}
 		ui.List(c.Key("transcript"), &a.list, rows, func(i int) {
-			if i == count {
+			if i == activeRow && active != nil {
 				a.reply(c, tasks.Message{}, active)
+			} else if i >= count {
+				a.chatWorkProgress(c, work[i-count])
 			} else {
 				a.message(c, a.chat.Messages[i])
 			}
 		}).Grow(1).FillWidth().Padding(16, 24).Gap(14)
 	}
+}
+
+func (a *desktop) chatWorkProgress(c *ui.Context, item tasks.WorkItem) {
+	ui.Column(c.Key(item.ID)).Gap(5).FillWidth().Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(7).Children(func() {
+			jobIndicator(c, item.Status)
+			ui.Text(c, item.Title).FontSize(13).FontWeight(650).SingleLine()
+		})
+		detail := workStatus(item.Status) + " · " + workerLocation(item)
+		if item.ProjectName != "" {
+			detail += " · " + item.ProjectName
+		}
+		ui.Text(c, detail).FontSize(11).TextColor(c.Theme().TextMuted)
+		if item.Update != "" {
+			ui.Text(c, item.Update).FontSize(12).TextColor(c.Theme().TextMuted).MaxLines(2).Selectable()
+		}
+		if item.CodeRun != nil {
+			a.codeRunCard(c.Key("job-command"), item.ID, item.CodeRun, item.Status == tasks.Cancelling)
+		}
+	})
 }
 
 func (a *desktop) reply(c *ui.Context, message tasks.Message, active *tasks.ActiveRun) {
@@ -266,110 +313,97 @@ func (a *desktop) reply(c *ui.Context, message tasks.Message, active *tasks.Acti
 		if name == "" {
 			name = profile.Name
 		}
-		mood, animated := orbIdle, active != nil
 		if active != nil {
-			mood = orbMood(active.Kind)
-		} else if age := c.Now().Sub(message.At); age >= 0 && age < 3*time.Second {
-			animated = true
-			c.After(3*time.Second - age)
-			switch {
-			case message.Status == tasks.Failed || message.Status == tasks.Interrupted:
-				mood = orbUnsure
-			case message.Status == tasks.Succeeded && message.DidWork:
-				mood = orbProud
-			case message.Status == tasks.Succeeded:
-				mood = orbHappy
-			}
+			ui.Column(c.Key("active-reply")).Gap(5).FillWidth().Children(func() {
+				a.workingReply(c, active, profile)
+				if run := active.CodeRun; run != nil {
+					a.codeRunCard(c.Key("active-code-run"), active.ID, run, active.Status == tasks.Cancelling)
+				}
+			})
+			return
 		}
-		a.drawProfile(c, profile, 30, animated, mood)
 		bubble := ui.Column(c.Key("reply-bubble")).MinWidth(0).MaxWidth(610).MinHeight(36).
 			Justify(ui.Center).Padding(8, 12).Background(replySurface(c)).Radius(15)
-		if active == nil && !message.At.IsZero() {
+		if !message.At.IsZero() {
 			bubble.Tooltip(name + " · " + message.At.Local().Format("15:04"))
 		}
-		if active == nil && a.canReact(message) {
+		if a.canReact(message) {
 			bubble.ContextMenu(func(menu *ui.Menu) { a.reactionMenu(message, menu) })
 		}
-		opacity := float32(1)
-		if active != nil {
-			opacity = .83
-		}
-		if !c.Preferences().ReduceMotion {
-			opacity = bubble.Animate("reply-opacity", opacity, 160*time.Millisecond)
-		}
-		bubble.Opacity(opacity).Gap(4).Children(func() {
-			if active == nil && message.Origin == "routine" {
+		bubble.Gap(5).Children(func() {
+			if message.Origin == "routine" {
 				author := ""
 				if a.chat.Name != "" {
 					author = name
 				}
 				ui.Text(c, notificationLabel(message, author)).FontSize(11).TextColor(c.Theme().TextMuted)
 				ui.Text(c, message.Title).FontSize(13).FontWeight(650)
-			} else if message.Origin == "voice" || a.chat.Name != "" {
+			} else if message.Origin == "voice" || a.chat.Name != "" || (id != "" && id != a.chat.Agent.ID) {
 				ui.Text(c, name).FontSize(11).FontWeight(650).TextColor(c.Theme().TextMuted)
 			}
-			if active == nil {
-				if message.Text != "" {
-					a.referenceMarkdown(c.Key("reply-text"), message.Text, message.AgentID, fileReferenceContext{task: message.TaskID})
-				}
-				if message.GeneratedImage {
-					a.generatedImageView(c.Key(message.TaskID), message.TaskID)
-				}
-				if message.Card != nil {
-					a.choiceCard(c, message)
-				}
-				if message.BudProposal != nil {
-					a.budProposalCard(c, message)
-				}
-				backgroundQuestion := message.BackgroundQuestion
-				if a.chat.OpenBackgroundQuestions != nil {
-					backgroundQuestion = slices.Contains(a.chat.OpenBackgroundQuestions, message.TaskID)
-				}
-				if backgroundQuestion {
-					ui.Button(c.Key("reply-background"), "Reply").Height(27).AlignSelf(ui.Start).
-						Disabled(!a.online || a.sending || a.saving || a.chat.Archived).OnClick(func() {
-						id := a.currentConversation()
-						if a.backgroundAnswers == nil {
-							a.backgroundAnswers = make(map[string]string)
-						}
-						a.backgroundAnswers[id] = message.TaskID
-						delete(a.jobDrafts, id)
-						delete(a.selectedSkills, id)
-						a.chatErr, a.focusComposer = "", true
-					})
-				}
-				if message.GitHub != nil {
-					githubCard(c.Key("github-result"), message.GitHub)
-				}
-				if message.ConnectionCard != nil {
-					a.connectionCard(c.Key("connection-result"), message.ConnectionCard, message.TaskID)
-				}
-				a.messageReactions(c.Key("reply-reactions"), message, ui.Start)
-				if message.Origin == "work_input" && message.Status == tasks.NeedsInput {
-					ui.Button(c.Key("reply-to-job"), "Reply to job").Height(27).AlignSelf(ui.Start).
-						Disabled(!a.online || a.sending || a.saving).OnClick(func() {
-						a.askAboutWork(tasks.WorkItem{ID: message.JobID, Title: message.JobTitle,
-							ConversationID: message.JobConversationID, InputID: message.TaskID})
-					})
-				} else if (message.Origin == "handoff" || message.Origin == tasks.WatchOrigin) && message.Title != "" {
-					ui.ButtonBase(c.Key("view-job")).Label("View job").Tooltip(message.Title).
-						Height(24).Padding(0, 5).Radius(5).AlignSelf(ui.Start).Gap(5).
-						TextColor(c.Theme().TextMuted).OnClick(func() {
-						a.openWork(tasks.WorkItem{ID: message.TaskID, Title: message.Title, ConversationID: a.currentConversation()})
-					}).Children(func() {
-						ui.Icon(c, workMark).Size(12, 12)
-						ui.Text(c, "View job").FontSize(11)
-					})
-				}
-			} else if text := activityText(active); text != "" {
-				ui.Text(c.Key("activity-text"), text).MinWidth(0).FontSize(14).LineHeight(1.45).Selectable()
-			} else {
-				activityPulse(c)
+			for i := range message.CodeRuns {
+				run := &message.CodeRuns[i]
+				a.codeRunCard(c.Key("finished-"+run.RunID), message.TaskID, run, false)
+			}
+			if run := message.CodeRun; run != nil && len(message.CodeRuns) == 0 {
+				a.codeRunCard(c.Key("finished-code-run"), message.TaskID, run, false)
+			}
+			if message.Text != "" {
+				a.referenceMarkdown(c.Key("reply-text"), message.Text, message.AgentID, fileReferenceContext{task: message.TaskID})
+			}
+			if message.GeneratedImage {
+				a.generatedImageView(c.Key(message.TaskID), message.TaskID)
+			}
+			if message.Card != nil {
+				a.choiceCard(c, message)
+			}
+			if message.BudProposal != nil {
+				a.budProposalCard(c, message)
+			}
+			backgroundQuestion := message.BackgroundQuestion
+			if a.chat.OpenBackgroundQuestions != nil {
+				backgroundQuestion = slices.Contains(a.chat.OpenBackgroundQuestions, message.TaskID)
+			}
+			if backgroundQuestion {
+				ui.Button(c.Key("reply-background"), "Reply").Height(27).AlignSelf(ui.Start).
+					Disabled(!a.online || a.sending || a.saving || a.chat.Archived).OnClick(func() {
+					id := a.currentConversation()
+					if a.backgroundAnswers == nil {
+						a.backgroundAnswers = make(map[string]string)
+					}
+					a.backgroundAnswers[id] = message.TaskID
+					delete(a.jobDrafts, id)
+					delete(a.selectedSkills, id)
+					a.chatErr, a.focusComposer = "", true
+				})
+			}
+			if message.GitHub != nil {
+				githubCard(c.Key("github-result"), message.GitHub)
+			}
+			if message.ConnectionCard != nil {
+				a.connectionCard(c.Key("connection-result"), message.ConnectionCard, message.TaskID)
+			}
+			if message.WatchCard != nil {
+				a.connectionCard(c.Key("watch-result"), message.WatchCard, message.TaskID)
+			}
+			a.messageReactions(c.Key("reply-reactions"), message, ui.Start)
+			if message.Origin == "work_input" && message.Status == tasks.NeedsInput {
+				ui.Button(c.Key("reply-to-job"), "Reply to job").Height(27).AlignSelf(ui.Start).
+					Disabled(!a.online || a.sending || a.saving).OnClick(func() {
+					a.askAboutWork(tasks.WorkItem{ID: message.JobID, Title: message.JobTitle,
+						ConversationID: message.JobConversationID, InputID: message.TaskID})
+				})
+			} else if (message.Origin == "handoff" || message.Origin == tasks.WatchOrigin) && message.Title != "" {
+				ui.ButtonBase(c.Key("view-job")).Label("View job").Tooltip(message.Title).
+					Height(24).Padding(0, 5).Radius(5).AlignSelf(ui.Start).Gap(5).
+					TextColor(c.Theme().TextMuted).OnClick(func() {
+					a.openWork(tasks.WorkItem{ID: message.TaskID, Title: message.Title, ConversationID: a.currentConversation()})
+				}).Children(func() {
+					ui.Icon(c, workMark).Size(12, 12)
+					ui.Text(c, "View job").FontSize(11)
+				})
 			}
 		})
-		if active == nil && message.ID != 0 && len(a.chat.ReactionOptions) != 0 && !a.chat.Archived && !a.chat.Agent.Removed {
-			a.reactionButton(c.Key("react"), message)
-		}
 	})
 }
 
@@ -391,36 +425,87 @@ func activityText(active *tasks.ActiveRun) string {
 	return ""
 }
 
+func replyStatus(active *tasks.ActiveRun, elapsed time.Duration) string {
+	switch active.Status {
+	case tasks.Cancelling:
+		return "Stopping…"
+	case tasks.Queued:
+		return "Queued"
+	}
+
+	if active.Kind == tasks.Stopping {
+		return "Stopping…"
+	}
+	return activitycopy.Label(active.ID, string(active.Kind), int(elapsed/(activitycopy.IntervalSeconds*time.Second)))
+}
+
+func (a *desktop) workingReply(c *ui.Context, active *tasks.ActiveRun, profile tasks.Agent) {
+	row := ui.Row(c).FillWidth().MinHeight(36).AlignItems(ui.Center).Gap(8).Padding(1, 4)
+	type activityClock struct {
+		id      string
+		kind    tasks.ActivityKind
+		status  tasks.Status
+		started time.Time
+	}
+	now := c.Now()
+	stage := activityClock{active.ID, active.Kind, active.Status, now}
+	clock := ui.Local(row, "activity-clock", func() activityClock { return stage })
+	if clock.id != stage.id || clock.kind != stage.kind || clock.status != stage.status {
+		*clock = stage
+	}
+	row.Children(func() {
+		label := activityText(active)
+		if active.Status == tasks.Running {
+			mood := orbMood(active.Kind)
+			if mood == orbIdle || mood == orbMood(tasks.Listening) {
+				mood = orbMood(tasks.Reasoning)
+			}
+			a.drawProfile(c, profile, 37, true, mood)
+		} else {
+			activityPulse(c)
+		}
+		if active.CodeRun != nil && active.CodeRun.Status == tasks.Running {
+			return
+		}
+		if label == "" {
+			elapsed := now.Sub(clock.started)
+			label = replyStatus(active, elapsed)
+			if active.Status == tasks.Running && active.Kind != tasks.Stopping {
+				interval := activitycopy.IntervalSeconds * time.Second
+				c.After(interval - elapsed%interval)
+			}
+		}
+		ui.Text(c, label).Role(ui.RoleStatus).MinWidth(0).FontSize(13).TextColor(c.Theme().TextMuted).Selectable()
+	})
+}
+
 func activityPulse(c *ui.Context) {
-	color := c.Theme().Text
+	color := c.Theme().Accent
 	phase := float64(c.Now().UnixMilli()%1350) / 1350 * 2 * math.Pi
 	reduced := c.Preferences().ReduceMotion
 	if !reduced {
-		c.After(60 * time.Millisecond)
+		c.After(50 * time.Millisecond)
 	}
-	ui.Box(c).Size(17, 5).Shrink(0).Role(ui.RoleStatus).Label("Buddy is working").Draw(func(p *ui.Painter, r ui.Rect) {
+	ui.Box(c).Size(25, 10).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
 		for i := range 3 {
-			alpha := float32(.55)
+			strength := float32(.6)
 			if !reduced {
-				alpha = .24 + .63*float32((1+math.Sin(phase-float64(i)*.85))/2)
+				strength = float32((1 + math.Sin(phase-float64(i)*1.3)) / 2)
 			}
-			p.Fill(ui.Rect{X: r.X + float32(i)*6, Y: r.Y + 1, W: 3, H: 3}, color.Alpha(alpha), 1.5)
+			d := 3.5 + 2.5*strength
+			p.Fill(ui.Rect{X: r.X + 4 + float32(i)*8 - d/2, Y: r.Y + (r.H-d)/2, W: d, H: d}, color.Alpha(.34+.66*strength), d/2)
 		}
 	})
 }
 
 func (a *desktop) emptyConversation(c *ui.Context) {
-	ui.Column(c).Grow(1).FillWidth().Center().Padding(24).Gap(13).Children(func() {
-		a.drawProfile(c, a.focusedAgent(), 108, true, orbIdle)
-		ui.Text(c, "What can I take off your plate?").FontSize(32).Bold().LetterSpacing(-.9).TextAlign(ui.Center)
-		ui.Row(c).Gap(8).Wrap().Justify(ui.Center).Margin(5, 0, 0).Children(func() {
-			ui.Button(c.Key("starter-plan"), "Plan my workday").OnClick(func() {
-				a.draft = "Help me plan my workday."
-			})
-			ui.Button(c.Key("starter-repo"), "Look into a project").OnClick(func() {
-				a.draft = "Take a look at my working folder and give me a useful overview."
-			})
-		})
+	ui.Column(c).Grow(1).FillWidth().Center().Padding(24).Gap(12).Children(func() {
+		a.drawProfile(c, a.focusedAgent(), 116, true, orbIdle)
+		title := a.agentName()
+		if a.chat.Name != "" {
+			title = a.chat.Name
+		}
+		ui.Text(c, title).FontSize(26).FontWeight(650).LetterSpacing(-.6).TextAlign(ui.Center)
 	})
 }
 
@@ -516,7 +601,7 @@ func (a *desktop) composer(c *ui.Context) {
 	}
 	ui.Column(c).FillWidth().Padding(0, 24, 13).Gap(5).Children(func() {
 		if a.serverErr != nil {
-			ui.Text(c, "Can't reach the Buddy server. Reconnecting…").TextColor(c.Theme().Danger).FontSize(12).Tooltip(a.serverErr.Error())
+			ui.Text(c, "Reconnecting…").Role(ui.RoleStatus).TextColor(c.Theme().Danger).FontSize(12).Tooltip(a.serverErr.Error())
 		}
 		if a.chatErr != "" {
 			ui.Text(c, a.chatErr).TextColor(c.Theme().Danger).FontSize(12)
@@ -546,16 +631,14 @@ func (a *desktop) composer(c *ui.Context) {
 			})
 		}
 		a.attachmentDrafts(c)
-		if job.InputID == "" && question == "" {
-			a.skillSuggestions(c)
-		}
+		a.skillSuggestions(c)
 		ui.Row(c.Key("composer-shell")).FillWidth().AlignItems(ui.End).Background(c.Theme().Surface).
-			Radius(16).Border(1, c.Theme().Border).Padding(5).Gap(6).Children(func() {
+			Radius(22).Border(1, c.Theme().Border).Padding(5).Gap(6).Children(func() {
 			attachLabel := "Attach files"
 			if !a.canSendAttachments() {
 				attachLabel = "Update the Buddy server to attach files"
 			}
-			quietIcon(c.Key("attach"), attachLabel, attachMark, a.sending || a.pickingFiles || !a.canSendAttachments(), a.chooseAttachments)
+			quietIcon(c.Key("attach"), attachLabel, plusMark, a.sending || a.pickingFiles || !a.canSendAttachments(), a.chooseAttachments)
 			placeholder := "Message " + a.agentName() + "…"
 			if a.chat.Name != "" {
 				placeholder = "Message the group…"
@@ -570,12 +653,8 @@ func (a *desktop) composer(c *ui.Context) {
 				Placeholder(placeholder).Lines(1, 5).Padding(7, 7).Grow(1).MinWidth(0).MinHeight(34).FontSize(14).
 				OnPaste(func(string) bool { return a.pasteAttachment() }).
 				OnTextKey(func(k ui.TextKey) bool {
-					if k.Key == ui.KeyTab && k.Mods == 0 && a.online && a.serverProtocol >= api.SkillSelectionProtocol && job.InputID == "" && question == "" && !a.sending {
-						if matches := skillMatches(k.Text(), a.directory.Skills); len(matches) > 0 {
-							a.fillSkill(matches[0].Name)
-							k.SetText(a.draft)
-							return true
-						}
+					if a.skillPickerKey(k) {
+						return true
 					}
 					if k.Key != ui.KeyEnter {
 						return false
@@ -587,7 +666,7 @@ func (a *desktop) composer(c *ui.Context) {
 					case ui.Alt | ui.Cmd:
 						if active != nil && len(a.attachments) == 0 && job.ID == "" && question == "" {
 							a.draft = k.Text()
-							a.submit(active.ID, false)
+							a.submit(active.ID)
 						}
 					default:
 						return false
@@ -613,11 +692,11 @@ func (a *desktop) composer(c *ui.Context) {
 			hasDraft := strings.TrimSpace(a.draft) != "" || len(a.attachments) != 0
 			canSubmit := a.online && !a.sending && !a.pickingFiles && hasDraft &&
 				(len(a.attachments) == 0 || a.canSendAttachments())
-			if a.serverProtocol >= api.BackgroundComposerProtocol && job.ID == "" && question == "" && !strings.HasPrefix(strings.TrimSpace(a.draft), "/") && a.skillForDraft(a.draft) == "" {
-				quietIcon(c.Key("send-background"), "Run in background", workMark,
-					!canSubmit || strings.TrimSpace(a.draft) == "", a.sendBackground)
-			}
 			if active == nil || job.InputID != "" || question != "" {
+				if !hasDraft && !a.sending && job.ID == "" && question == "" && a.chat.ID != "" && a.voice == nil && voiceaudio.Available() {
+					composerButton(c.Key("start-voice"), "Start voice call", "Start voice call", waveformMark, a.online, a.startVoice)
+					return
+				}
 				label := "Send"
 				if a.sending {
 					label = "Sending…"
@@ -631,7 +710,7 @@ func (a *desktop) composer(c *ui.Context) {
 				if len(a.attachments) == 0 && job.ID == "" && a.skillForDraft(a.draft) == "" {
 					ui.Button(c.Key("steer-"+active.ID), "Steer now").Height(31).AlignSelf(ui.Center).
 						Disabled(!canSubmit || !active.CanSteer || active.Status != tasks.Running).
-						Tooltip("Send to the current run · ⌥ ⌘ Enter").OnClick(func() { a.submit(active.ID, false) })
+						Tooltip("Send to the current run · ⌥ ⌘ Enter").OnClick(func() { a.submit(active.ID) })
 				}
 			}
 			label := "Stop"
@@ -658,13 +737,6 @@ func composerButton(c *ui.Context, label, help string, mark *ui.SVG, enabled boo
 	}
 	button.Background(bg).Children(func() {
 		ui.Icon(c, mark).Size(19, 19).TextColor(fg)
-	})
-}
-
-func pageHeading(c *ui.Context, title, subtitle string) {
-	ui.Column(c).Gap(7).Children(func() {
-		ui.Text(c, title).FontSize(34).FontWeight(700).LetterSpacing(-1).Role(ui.RoleHeading)
-		ui.Text(c, subtitle).FontSize(14).TextColor(c.Theme().TextMuted)
 	})
 }
 

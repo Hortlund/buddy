@@ -75,6 +75,18 @@ CREATE TABLE IF NOT EXISTS routines (
 	next_at INTEGER NOT NULL,
 	enabled INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS routine_public_requests (
+	routine_id TEXT PRIMARY KEY REFERENCES routines(id) ON DELETE CASCADE,
+	request TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_public_requests (
+	task_id TEXT PRIMARY KEY REFERENCES chat_turns(task_id) ON DELETE CASCADE,
+	request TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS routine_workspace_permissions (
+	routine_id TEXT PRIMARY KEY REFERENCES routines(id) ON DELETE CASCADE,
+	allow_edits INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS routines_due ON routines(enabled,next_at);
 CREATE TABLE IF NOT EXISTS restored_workspace_agents (
 	agent_id TEXT PRIMARY KEY REFERENCES agents(id),

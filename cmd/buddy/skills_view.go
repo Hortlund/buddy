@@ -18,6 +18,11 @@ import (
 
 var skillMark = svg(`<path d="M4 6h16M4 12h10M4 18h7m3 1 6-6"/>`)
 
+type skillPicker struct {
+	draft    string
+	selected int
+}
+
 func skillMatches(draft string, catalog []tasks.SkillInfo) []tasks.SkillInfo {
 	prefix, ok := strings.CutPrefix(strings.TrimLeftFunc(draft, unicode.IsSpace), "/")
 	if !ok || strings.ContainsRune(prefix, '/') || strings.IndexFunc(prefix, unicode.IsSpace) >= 0 {
@@ -50,21 +55,63 @@ func (a *desktop) skillForDraft(text string) string {
 	return ""
 }
 
-func (a *desktop) skillSuggestions(c *ui.Context) {
-	if !a.online || a.serverProtocol < api.SkillSelectionProtocol || a.sending {
-		return
+func (a *desktop) composerSkills(draft string) []tasks.SkillInfo {
+	id := a.currentConversation()
+	var matches []tasks.SkillInfo
+	if a.online && a.serverProtocol >= api.SkillSelectionProtocol && !a.sending &&
+		a.jobDrafts[id].InputID == "" && a.backgroundAnswers[id] == "" {
+		matches = skillMatches(draft, a.directory.Skills)
 	}
-	matches := skillMatches(a.draft, a.directory.Skills)
+	if a.skillPicker.draft != draft || a.skillPicker.selected >= len(matches) {
+		a.skillPicker = skillPicker{draft: draft}
+	}
+	return matches
+}
+
+func (a *desktop) skillPickerKey(k ui.TextKey) bool {
+	if k.Mods != 0 {
+		return false
+	}
+	switch k.Key {
+	case ui.KeyDown, ui.KeyUp, ui.KeyTab, ui.KeyEnter:
+	default:
+		return false
+	}
+	matches := a.composerSkills(k.Text())
+	if len(matches) == 0 {
+		return false
+	}
+	selected := a.skillPicker.selected
+	switch k.Key {
+	case ui.KeyDown:
+		a.skillPicker.selected = (selected + 1) % len(matches)
+	case ui.KeyUp:
+		a.skillPicker.selected = (selected + len(matches) - 1) % len(matches)
+	default:
+		a.fillSkill(matches[selected].Name)
+		k.SetText(a.draft)
+	}
+	return true
+}
+
+func (a *desktop) skillSuggestions(c *ui.Context) {
+	matches := a.composerSkills(a.draft)
 	if len(matches) == 0 {
 		return
 	}
+	const visible = 6
+	selected := a.skillPicker.selected
+	first := min(max(0, selected-2), max(0, len(matches)-visible))
 	ui.Column(c.Key("skill-suggestions")).MaxWidth(510).FillWidth().Gap(2).Padding(6).
 		Radius(12).Border(1, c.Theme().Border).Background(c.Theme().Surface).Children(func() {
-		ui.Text(c, "Skills · Tab to complete").FontSize(11).TextColor(c.Theme().TextMuted).Padding(3, 6)
-		for _, skill := range matches[:min(6, len(matches))] {
+		ui.Text(c, "Skills · ↑ ↓ to browse · Enter or Tab to select").FontSize(11).TextColor(c.Theme().TextMuted).Padding(3, 6)
+		for i, skill := range matches[first:min(first+visible, len(matches))] {
+			highlighted := first+i == selected
 			button := ui.ButtonBase(c.Key("use-skill-"+skill.Name)).Label("/"+skill.Name).Description(skill.Description).
-				FillWidth().MinHeight(29).Justify(ui.Start).Padding(3, 6).Radius(6).Gap(8)
-			if button.Hovered() {
+				FillWidth().MinHeight(29).Justify(ui.Start).Padding(3, 6).Radius(6).Gap(8).Selected(highlighted)
+			if highlighted {
+				button.Background(c.Theme().SurfacePressed)
+			} else if button.Hovered() {
 				button.Background(c.Theme().SurfaceHover)
 			}
 			button.OnClick(func() { a.fillSkill(skill.Name) }).Children(func() {

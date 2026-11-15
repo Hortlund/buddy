@@ -205,6 +205,59 @@ func (turn Turn) complete(ctx context.Context, dir, prompt string, protected []s
 		return reply, err
 	}
 	action := turn.action
+	if turn.chatTools != nil && turn.chatTools.github != nil {
+		action.GitHubRead = nil
+		defer func() {
+			if action.githubResult == nil {
+				action.githubResult = turn.chatTools.github
+			}
+		}()
+	}
+	if turn.chatTools != nil && turn.chatTools.connection != nil {
+		action.ConnectionRead = nil
+		defer func() {
+			if action.connectionResult == nil {
+				action.connectionResult = turn.chatTools.connection
+			}
+		}()
+	}
+	if turn.authorizeScheduled != nil {
+		action.authorizeSchedule(ctx, turn.authorizeScheduled)
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+	}
+	// Some reply paths reset the original action after reading a connection or
+	// running a tool. Retain the notice alongside the result of those actions.
+	if notice := action.scheduleNotice; notice != "" {
+		defer func() { action.scheduleNotice = notice }()
+	}
+	if action.ReadCodeResult != nil && turn.chatTools != nil && turn.chatTools.snippetRan {
+		task, _, _ := strings.Cut(*action.ReadCodeResult, "/")
+		if task == turn.BuddyTeam.CurrentTaskID {
+			action.ReadCodeResult = nil
+		}
+	}
+	if action.ReadCodeResult != nil {
+		id := *action.ReadCodeResult
+		*action = TurnAction{}
+		return turn.completeCodeResult(ctx, id)
+	}
+	if action.RunCode != nil && turn.chatTools != nil && turn.chatTools.snippetRan {
+		action.RunCode = nil
+	}
+	if turn.chatTools != nil && turn.chatTools.snippetRan && reply == "" && action.Reaction != "" {
+		action.Reaction = ""
+	}
+	if action.RunCode != nil {
+		if action.ReadFile != nil || action.SaveFile != nil || action.Card != nil || action.hasHandoff() || action.hasRoutines() ||
+			action.BudProposal != nil || action.hasManagement() || action.Peer != nil || action.Image != nil ||
+			action.GitHubRead != nil || action.GitHubWrite != nil || action.ConnectionRead != nil || len(action.WatchCreate) != 0 {
+			*action = TurnAction{}
+			return "I can run a standalone snippet here or start a separate task. Which would you like?", nil
+		}
+		return turn.completeChatCode(ctx, emit)
+	}
 	if action.GitHubWrite != nil {
 		return turn.completeGitHubWrite(reply)
 	}
@@ -223,7 +276,8 @@ func (turn Turn) complete(ctx context.Context, dir, prompt string, protected []s
 		return turn.completeConnection(ctx, emit, run)
 	}
 	if len(action.WatchCreate) != 0 {
-		return turn.completeWatch(ctx, emit)
+		watchReply, err := turn.completeWatch(ctx, emit)
+		return joinActionNotes(reply, watchReply), err
 	}
 	var original *quickFileSnapshot
 	if action.ReadFile != nil {
@@ -264,7 +318,7 @@ func (turn Turn) complete(ctx context.Context, dir, prompt string, protected []s
 			return reply, err
 		}
 		if (action.Reaction != "" && reply == "" && action.SaveFile == nil) ||
-			action.ReadFile != nil || action.hasHandoff() || action.hasRoutines() || action.BudProposal != nil ||
+			action.RunCode != nil || action.ReadCodeResult != nil || action.ReadFile != nil || action.hasHandoff() || action.hasRoutines() || action.BudProposal != nil ||
 			action.GitHubRead != nil || action.GitHubWrite != nil || action.ConnectionRead != nil || len(action.WatchCreate) != 0 ||
 			action.hasManagement() || action.Peer != nil || action.Image != nil {
 			*action = TurnAction{}
@@ -284,11 +338,26 @@ func (turn Turn) complete(ctx context.Context, dir, prompt string, protected []s
 		}
 	}
 	if action.SaveFile == nil || action.Card != nil || action.hasHandoff() || action.hasRoutines() || action.BudProposal != nil {
+		if reply == "" && turn.chatTools != nil && turn.chatTools.snippetRan && action.SaveFile == nil &&
+			!action.hasCard() && !action.hasHandoff() && !action.hasRoutines() && action.Reaction == "" &&
+			turn.chatTools.github == nil && turn.chatTools.connection == nil {
+			return "The recorded output is in the code run card.", nil
+		}
 		return reply, nil
 	}
 	if !turn.Agent.AllowEdits || turn.Agent.Workspace == "" {
 		action.fileResult = "To save a file here, I need an editable working folder."
 		return reply, nil
+	}
+	if turn.authorizeFileWrite != nil && !turn.authorizeFileWrite(ctx, *action.SaveFile) {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		action.fileResult = "I need a request to save or update that file."
+		return reply, nil
+	}
+	if original == nil && turn.chatTools != nil {
+		original = turn.chatTools.files[strings.TrimSpace(action.SaveFile.Name)]
 	}
 	if name, err := quickFileName(action.SaveFile.Name); err == nil {
 		_ = emit("activity", activityLabel(Editing, name))
@@ -298,8 +367,10 @@ func (turn Turn) complete(ctx context.Context, dir, prompt string, protected []s
 	var invalid *InputError
 	switch {
 	case err == nil && action.SaveFile.Replace:
+		action.savedFile = name
 		action.fileResult = "I updated **" + escapeTitle(name) + "** in my working folder."
 	case err == nil:
+		action.savedFile = name
 		action.fileResult = "I saved it as **" + escapeTitle(name) + "** in my working folder."
 	case ctx.Err() != nil:
 		return "", ctx.Err()

@@ -19,6 +19,9 @@ func (a *desktop) menuButton(c *ui.Context) {
 	btn := ui.ButtonBase(c.Key("nav-menu")).Label(label).FillWidth().Height(35).
 		Gap(10).Padding(0, 9).Radius(8).Justify(ui.Start).Cursor(ui.CursorPointer).
 		OnClick(func() { a.section = "menu" })
+	if a.compactSidebar {
+		btn.Justify(ui.Center)
+	}
 	if a.section == "menu" {
 		btn.Background(c.Theme().SurfacePressed)
 	} else if btn.Hovered() {
@@ -26,39 +29,42 @@ func (a *desktop) menuButton(c *ui.Context) {
 	}
 	btn.Children(func() {
 		ui.Icon(c, menuMark).Size(17, 17)
-		ui.Text(c, "Menu").FontWeight(600).Grow(1)
+		if !a.compactSidebar {
+			ui.Text(c, "Menu").FontWeight(550).Grow(1)
+		}
 		menuUnread(c, unread)
 	})
 }
 
 func (a *desktop) menuPage(c *ui.Context) {
-	controlPage(c.Key("menu-page"), "Menu", "Review activity and manage your Buddy workspace.", nil, func() {
+	controlPage(c.Key("menu-page"), "Menu", "", nil, func() {
 		sectionLabel(c, "Activity")
 		connectionSection(c, func() {
-			menuDestination(c.Key("nav-work"), workMark, "Work", "Follow jobs and review results", 0,
+			menuDestination(c.Key("nav-work"), workMark, "Work", 0,
 				func() { a.openWork(tasks.WorkItem{}) })
-			menuDestination(c.Key("nav-autonomy"), clockMark, "Autonomy", "Inbox, watches, and memory", a.directory.AutonomyUnread, a.showAutonomy)
-			menuDestination(c.Key("nav-history"), historyMark, "Archived chats", "Open or restore archived groups", 0, func() { a.openHistory("") })
+			menuDestination(c.Key("nav-autonomy"), clockMark, "Autonomy", a.directory.AutonomyUnread, a.showAutonomy)
+			menuDestination(c.Key("nav-history"), historyMark, "Archived chats", 0, func() { a.openHistory("") })
 		})
 		sectionLabel(c, "Settings and tools")
 		connectionSection(c, func() {
-			menuDestination(c.Key("nav-preferences"), settingsMark, "Settings", "Appearance, languages, and app info", 0, a.showPreferences)
-			menuDestination(c.Key("nav-agent"), agentMark, "Bud settings", "Manage your Buds and their workspaces", 0, a.showBudSettings)
-			menuDestination(c.Key("nav-connections"), linkMark, "Connections", "Servers, devices, and integrations", 0, a.showConnections)
-			menuDestination(c.Key("nav-skills"), skillMark, "Skills", "Browse and manage reusable instructions", 0,
+			menuDestination(c.Key("nav-preferences"), settingsMark, "Settings", 0, a.showPreferences)
+			menuDestination(c.Key("nav-agent"), agentMark, "Bud settings", 0, a.showBudSettings)
+			menuDestination(c.Key("nav-connections"), linkMark, "Connections", 0, a.showConnections)
+			menuDestination(c.Key("nav-skills"), skillMark, "Skills", 0,
 				func() { a.section = "skills" })
 		})
 	})
 }
 
-func menuDestination(c *ui.Context, icon *ui.SVG, title, detail string, unread int, action func()) {
-	btn := ui.ButtonBase(c).Label(title).Description(detail).FillWidth().MinWidth(0).MinHeight(52).
+func menuDestination(c *ui.Context, icon *ui.SVG, title string, unread int, action func()) {
+	btn := ui.ButtonBase(c).Label(title).FillWidth().MinWidth(0).MinHeight(43).
 		Gap(10).Padding(9, 12).Radius(8).Justify(ui.Start).OnClick(action)
 	if btn.Hovered() {
 		btn.Background(c.Theme().SurfaceHover)
 	}
 	btn.Children(func() {
-		connectionDetail(c, icon, title, detail)
+		ui.Icon(c, icon).Size(16, 16).Shrink(0).TextColor(c.Theme().TextMuted)
+		ui.Text(c, title).Grow(1).MinWidth(0).SingleLine().FontSize(14).FontWeight(560)
 		menuUnread(c, unread)
 		ui.Icon(c, arrowMark).Size(13, 13).Shrink(0).TextColor(c.Theme().TextMuted)
 	})

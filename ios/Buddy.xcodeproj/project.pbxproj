@@ -24,7 +24,7 @@
 		};
 		B00000000000000000000002 = {
 			isa = PBXGroup;
-			children = (B00000000000000000000003, B00000000000000000000005, B00000000000000000000004);
+			children = (B00000000000000000000003, B00000000000000000000005, B0000000000000000000001A, B0000000000000000000001C, B00000000000000000000004);
 			sourceTree = "<group>";
 		};
 		B00000000000000000000003 = {
@@ -64,7 +64,7 @@
 		};
 		B00000000000000000000008 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
 		B00000000000000000000009 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
-		B0000000000000000000000A = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
+		B0000000000000000000000A = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (B0000000000000000000001B, B0000000000000000000001D); runOnlyForDeploymentPostprocessing = 0;};
 		B00000000000000000000010 = {
 			isa = XCConfigurationList;
 			buildConfigurations = (B00000000000000000000012, B00000000000000000000013, B00000000000000000000016, B00000000000000000000017);
@@ -143,6 +143,16 @@
 			buildSettings = {CODE_SIGN_ENTITLEMENTS = Buddy.entitlements; BUDDY_PUSH_ENABLED = YES; APS_ENVIRONMENT = production;};
 			name = "Release Push";
 		};
+		B0000000000000000000001A = {
+			isa = PBXFileReference;
+			lastKnownFileType = file;
+			name = Bud.mesh;
+			path = ../internal/budmodel/Bud.mesh;
+			sourceTree = SOURCE_ROOT;
+		};
+		B0000000000000000000001B = {isa = PBXBuildFile; fileRef = B0000000000000000000001A;};
+		B0000000000000000000001C = {isa = PBXFileReference; lastKnownFileType = text.json; name = status.json; path = ../internal/activitycopy/status.json; sourceTree = SOURCE_ROOT;};
+		B0000000000000000000001D = {isa = PBXBuildFile; fileRef = B0000000000000000000001C;};
 	};
 	rootObject = B00000000000000000000001;
 }

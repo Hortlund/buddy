@@ -67,9 +67,9 @@ func executionRoutes(mux *http.ServeMux, store *tasks.Store, runtime *tasks.Code
 			result(w, 0, nil, err)
 			return
 		}
-		err := store.SetAutomationPaused(r.Context(), r.PathValue("job"), input.Paused)
+		control, err := store.SetAutomationPaused(r.Context(), r.PathValue("job"), input.Paused)
 		if err == nil && runtime != nil {
-			err = runtime.PauseAutomation(r.PathValue("job"), input.Paused)
+			err = runtime.ApplyAutomationControl(r.PathValue("job"), control)
 		}
 		result(w, http.StatusOK, nil, err)
 	})

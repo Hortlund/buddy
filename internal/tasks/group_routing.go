@@ -199,8 +199,7 @@ func (r *CodexRuntime) ChooseGroupBud(ctx context.Context, route GroupRouting) s
 	emit := func(string, string) error { return nil }
 	prompt := groupRoutingInstructions + "\n\n" + string(data)
 	limits := slices.Concat(r.protected, r.readOnly, []string{r.migrationDir, r.snapshotDir, r.launcherDir})
-	answer, err := r.runPrompt(ctx, dir, turn, limits, nil, nil, "", emit, prompt,
-		func(run modelPass, _ []string) (string, error) { return run(prompt) })
+	answer, err := r.runPrompt(ctx, dir, turn, limits, nil, nil, "", emit, prompt)
 	var result struct {
 		Agent string `json:"agent_id"`
 	}

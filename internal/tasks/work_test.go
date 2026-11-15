@@ -372,6 +372,82 @@ func TestChatRoutineAndConfirmationCommitTogether(t *testing.T) {
 	}
 }
 
+func TestRoutineSearchResolvesSchedulingFollowupFromUserMessages(t *testing.T) {
+	runtime := codexExecFixture(t, `#!/bin/sh
+set -eu
+request=$(cat)
+case "$request" in
+  *"Private connector output"*) exit 1 ;;
+  *"Identify the public research"*"Go release notes"*"Schedule that every morning"*"Only stable releases."*)
+    case "$*" in *web_search=*disabled*) ;; *) exit 1 ;; esac
+    answer='{\"public_scope\":\"Official Go release notes for stable releases\"}' ;;
+  *"Use public web search"*"Official Go release notes for stable releases"*)
+    case "$request" in *"Schedule that every morning"*) exit 1 ;; esac
+    case "$*" in *web_search=*cached*) ;; *) exit 1 ;; esac
+    answer='Go release notes at https://go.dev/doc/devel/release.' ;;
+  *) exit 1 ;;
+esac
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n' "$answer"
+`)
+	ctx := t.Context()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "buddy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	send := func(request string) Task {
+		t.Helper()
+		task, _, err := store.Send(ctx, DefaultConversationID, request, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.claim(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	first := send("I want an update on Go release notes.")
+	if err := store.finishTurn(ctx, first.ID, Succeeded, "Replied.", "Private connector output.", nil); err != nil {
+		t.Fatal(err)
+	}
+	task := send("Schedule that every morning.")
+	steer, _, err := store.queueSteering(ctx, task.ID, "Only stable releases.", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.markSteering(steer.ID, steerApplied); err != nil {
+		t.Fatal(err)
+	}
+	action := TurnAction{Routine: &RoutineDraft{Name: "Go digest", Prompt: "Search Go releases. Private connector output.", Minutes: 1440}}
+	if err := store.finishTurn(ctx, task.ID, Succeeded, "Replied.", "", &action); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := store.enqueueDueRoutine(ctx, time.Now().Add(48*time.Hour)); err != nil || !queued {
+		t.Fatalf("queued = %v, %v", queued, err)
+	}
+	job, err := store.claimLane(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.turn(ctx, job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !turn.canSearchWeb() || !slices.Equal(turn.publicResearch.Requests, []researchRequest{
+		{User: "I want an update on Go release notes."}, {User: "Schedule that every morning."}, {User: "Only stable releases."},
+	}) {
+		t.Fatalf("routine request = %+v", turn.publicResearch.Requests)
+	}
+	scope, err := runtime.publicResearchScope(ctx, turn.Agent.Model, turn.publicResearch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runtime.searchPublicRequest(ctx, turn.Agent.Model, scope, func(string, string) error { return nil })
+	if err != nil || !strings.Contains(result, "https://go.dev/doc/devel/release") {
+		t.Fatalf("routine search = %q, %v", result, err)
+	}
+}
+
 func TestChatRoutineRejectsAgentOutsideTheConversation(t *testing.T) {
 	ctx := t.Context()
 	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "buddy.db"))
@@ -475,6 +551,43 @@ func TestRemoteJobCannotBeClaimedOrFinishedByAnotherDevice(t *testing.T) {
 	job, err := store.ClaimDeviceJob(ctx, one.ID)
 	if err != nil || job == nil || job.Agent.Workspace != "" || job.Brief != "Read the project summary." {
 		t.Fatalf("device got %+v, %v", job, err)
+	}
+	if !job.CommandProgress {
+		t.Fatal("the server did not advertise command progress")
+	}
+	command := &ChatCodeRun{WorkCommand: true, StartedAt: time.Now(), Status: Running,
+		chatCodeResult: chatCodeResult{Command: "go test ./...", Stdout: "running on Studio"}}
+	pulse := DevicePulse{Lease: job.Lease, Command: command}
+	if _, err := store.PulseDeviceJob(ctx, two.ID, job.ID, pulse); !errors.Is(err, ErrInactive) {
+		t.Fatalf("other device submitted command progress: %v", err)
+	}
+	if _, err := store.PulseDeviceJob(ctx, one.ID, job.ID, pulse); err != nil {
+		t.Fatal(err)
+	}
+	live, err := store.Conversation(ctx, DefaultConversationID, 0)
+	if err != nil || len(live.Work) != 1 || live.Work[0].CodeRun == nil || live.Work[0].CodeRun.Stdout != "running on Studio" {
+		t.Fatalf("missing live device command: %+v, %v", live.Work, err)
+	}
+	exitOK, exitFailed := 0, 1
+	ended := time.Now()
+	completed := DevicePulse{Lease: job.Lease, Commands: []*ChatCodeRun{
+		{RunID: "run_completed", WorkCommand: true, StartedAt: command.StartedAt, FinishedAt: &ended, Status: Succeeded,
+			chatCodeResult: chatCodeResult{Command: "go test ./api", Stdout: "pass", ExitCode: &exitOK}},
+		{RunID: "run_failed", WorkCommand: true, StartedAt: command.StartedAt, FinishedAt: &ended, Status: Failed,
+			chatCodeResult: chatCodeResult{Command: "go test ./internal", Stderr: "failure", ExitCode: &exitFailed}},
+	}}
+	for range 2 {
+		if _, err := store.PulseDeviceJob(ctx, one.ID, job.ID, completed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	details, err := store.WorkDetails(ctx, DefaultConversationID, job.ID)
+	if err != nil || len(details.CodeRuns) != 2 {
+		t.Fatalf("retry lost or duplicated the device commands: %+v, %v", details.CodeRuns, err)
+	}
+	failed, err := store.ChatCodeOutput(ctx, DefaultConversationID, job.ID+"/run_failed")
+	if err != nil || failed.Stderr != "failure" || failed.ExitCode == nil || *failed.ExitCode != 1 {
+		t.Fatalf("exact device result: %+v, %v", failed, err)
 	}
 	report := DeviceResult{Lease: job.Lease, Status: Succeeded, Reply: "I found the summary."}
 	if err := store.FinishDeviceJob(ctx, two.ID, job.ID, report); !errors.Is(err, ErrInactive) {

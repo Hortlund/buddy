@@ -429,23 +429,31 @@ func (r *CodexRuntime) executionMCP(ctx context.Context, turn Turn) ([]MCPServer
 		if launch.fingerprint != setup.Fingerprint {
 			return nil, nil, &InputError{"The automation provider changed. Test and enable it again on this host."}
 		}
-		if job := turn.BuddyTeam.CurrentTaskID; job != "" {
-			dir, err := r.frameDirectory(job)
-			if err != nil {
-				return nil, nil, err
-			}
-			exe, err := os.Executable()
-			if err != nil {
-				return nil, nil, err
-			}
-			args := append([]string{"automation-proxy", "-frames", dir, "-provider", setup.Provider, "--", launch.command}, launch.args...)
-			launch, err = inspectMCPLaunch(ctx, exe, args)
-			if err != nil {
-				return nil, nil, err
+		var tools []string
+		for _, name := range setup.Tools {
+			if automationInspectionTool(setup.Provider, name) || automationViewTool(setup.Provider, name) || turn.AutomationWriteScope != "" && automationActionTool(setup.Provider, name) {
+				tools = append(tools, name)
 			}
 		}
-		configs = append(configs, MCPServerConfig{MCPServer: MCPServer{Name: "buddy-" + setup.Provider, Transport: MCPStdio, Command: launch.command, Args: launch.args, Enabled: true, Tools: setup.Tools, ApproveTools: setup.AllowInteractions}, launchFingerprint: launch.fingerprint})
+		if len(tools) == 0 {
+			return nil, nil, &InputError{"This provider has no enabled tools for the assignment's automation scope."}
+		}
+		dir, err := r.frameDirectory(turn.BuddyTeam.CurrentTaskID)
+		if err != nil {
+			return nil, nil, err
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return nil, nil, err
+		}
+		args := append([]string{"automation-proxy", "-frames", dir, "-provider", setup.Provider, "-guard", turn.automationGuard, "--", launch.command}, launch.args...)
+		proxy, err := inspectMCPLaunch(ctx, exe, args)
+		if err != nil {
+			return nil, nil, err
+		}
+		configs = append(configs, MCPServerConfig{MCPServer: MCPServer{Name: "buddy-" + setup.Provider, Transport: MCPStdio, Command: proxy.command, Args: proxy.args, Enabled: true, Tools: tools, ApproveTools: true}, launchFingerprint: proxy.fingerprint})
 		roots = append(roots, launch.roots...)
+		roots = append(roots, proxy.roots...)
 	}
 	return configs, roots, nil
 }

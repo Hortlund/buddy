@@ -100,7 +100,7 @@ See the [voice setup guide](docs/guide.md#live-voice-calls).
 
 ### macOS desktop
 
-Install Git, Go **1.27.3 or later**, Xcode Command Line Tools, and the Codex CLI.
+Install Git, Go **1.27.4 or later**, Xcode Command Line Tools, and the Codex CLI.
 The default model is GPT-6.1 Terra, which requires Codex CLI **0.159.0 or later**.
 
 ```sh

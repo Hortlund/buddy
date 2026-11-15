@@ -135,6 +135,16 @@ func floorReply(member *roomMember) *roomReply {
 		instructions: "The caller asked to speak to you. Acknowledge you're here in one short sentence and wait for their question."}
 }
 
+func (r *voiceRoom) voiceTeamIDs(ids []string) []string {
+	if len(ids) != 0 {
+		return ids
+	}
+	for _, member := range r.members {
+		ids = append(ids, member.agent.ID)
+	}
+	return ids
+}
+
 func (r *voiceRoom) queueTeam(title, brief string, agents []string, allowEdits bool) (string, error) {
 	if r.teamQueued {
 		return "The team is already queued to continue after the call.", nil

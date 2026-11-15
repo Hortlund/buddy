@@ -59,7 +59,9 @@ func (s *Store) controlWork(ctx context.Context, job, name string, raw json.RawM
 		if json.Unmarshal(raw, &input) != nil {
 			return nil, &InputError{"Provide a job ID."}
 		}
-		return s.WorkDetails(ctx, chat, input.Job)
+		detail, err := s.WorkDetails(ctx, chat, input.Job)
+		detail.CodeRun, detail.CodeRuns = nil, nil
+		return detail, err
 	}
 	var input struct {
 		Text     string `json:"text"`
@@ -120,6 +122,7 @@ func (s *Store) controlWork(ctx context.Context, job, name string, raw json.RawM
 		if planErr != nil {
 			return nil, planErr
 		}
+		plan.AutomationWriteScope = ""
 		if input.Role != "" {
 			plan.Role = input.Role
 		}
@@ -128,7 +131,7 @@ func (s *Store) controlWork(ctx context.Context, job, name string, raw json.RawM
 		if err = tx.QueryRowContext(ctx, "SELECT t.repo,c.allow_edits FROM tasks t JOIN chat_turns c ON c.task_id=t.id WHERE t.id=?", job).Scan(&repo, &edits); err != nil {
 			return nil, err
 		}
-		out, err = enqueueAssignments(ctx, tx, assignmentSource{chat: chat, requester: owner, key: "worker:" + job + ":" + input.Request, parent: job, repo: repo, allowEdits: edits, readOnly: !edits}, []Handoff{{ExecutionPlan: plan, AgentID: input.Agent, Title: input.Title, Brief: input.Brief, ReadOnly: input.ReadOnly}})
+		out, err = enqueueAssignments(ctx, tx, assignmentSource{chat: chat, requester: owner, key: "worker:" + job + ":" + input.Request, parent: job, repo: repo, allowEdits: edits, readOnly: !edits, delegated: true}, []Handoff{{ExecutionPlan: plan, AgentID: input.Agent, Title: input.Title, Brief: input.Brief, ReadOnly: input.ReadOnly}})
 	default:
 		return nil, &InputError{"Unknown Buddy work tool."}
 	}

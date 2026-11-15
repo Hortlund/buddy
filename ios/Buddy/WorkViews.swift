@@ -127,6 +127,7 @@ struct InboxDetail: View {
 
 struct WorkList: View {
     let api: BuddyAPI
+    var chat: String? = nil
     @Environment(\.scenePhase) private var phase
     @State private var items: [WorkItem]?
     @State private var history: [WorkItem] = []
@@ -136,9 +137,9 @@ struct WorkList: View {
     @State private var error: String?
 
     @State private var search = ""
- @State private var owner = ""
- @State private var project = ""
- @State private var host = ""
+    @State private var owner = ""
+    @State private var project = ""
+    @State private var host = ""
 
     private let activeStatuses = ["queued", "running", "needs_input", "cancelling"]
 
@@ -148,14 +149,6 @@ struct WorkList: View {
                 let filtered = items.filter(matches)
                 let needs = filtered.filter { $0.status == "needs_input" }
                 let active = filtered.filter { activeStatuses.contains($0.status) && $0.status != "needs_input" }
-                Section {
-                    HStack { summary("Needs you", needs.count); Spacer(); summary("Active", active.count); Spacer(); summary("Recent", filtered.count-needs.count-active.count) }
-                    Menu("Filter team and projects") {
-                        Picker("Bud", selection: $owner) { Text("All Buds").tag(""); ForEach(Array(Set(items.map(\.agentName))).sorted(), id: \.self) { Text($0).tag($0) } }
-                        Picker("Project", selection: $project) { Text("All projects").tag(""); ForEach(Array(Set(items.compactMap(\.projectName))).sorted(), id: \.self) { Text($0).tag($0) } }
-                        Picker("Host", selection: $host) { Text("All hosts").tag(""); ForEach(Array(Set(items.map { $0.device?.nilIfEmpty ?? "Buddy server" })).sorted(), id: \.self) { Text($0).tag($0) } }
-                    }
-                }.listRowBackground(BuddyStyle.surface)
                 if !needs.isEmpty { Section("Needs you") { ForEach(needs, content: row) } }
                 let recent = filtered.filter { !activeStatuses.contains($0.status) }
                 let seen = Set(items.map(\.id))
@@ -182,8 +175,30 @@ struct WorkList: View {
         }
         .overlay { if items == nil && error == nil { ProgressView("Loading work…") } }
         .buddyPage()
-        .navigationTitle("Work")
- .searchable(text: $search, prompt: "Assignments, Buds, projects")
+        .navigationTitle(chat == nil ? "Work" : "Work runs")
+        .searchable(text: $search, prompt: "Find work")
+        .toolbar {
+            if let items, chat == nil, !items.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Picker("Bud", selection: $owner) {
+                            Text("All Buds").tag("")
+                            ForEach(Array(Set(items.map(\.agentName))).sorted(), id: \.self) { Text($0).tag($0) }
+                        }
+                        Picker("Project", selection: $project) {
+                            Text("All projects").tag("")
+                            ForEach(Array(Set(items.compactMap(\.projectName))).sorted(), id: \.self) { Text($0).tag($0) }
+                        }
+                        Picker("Host", selection: $host) {
+                            Text("All hosts").tag("")
+                            ForEach(Array(Set(items.map { $0.device?.nilIfEmpty ?? "Buddy server" })).sorted(), id: \.self) { Text($0).tag($0) }
+                        }
+                    } label: {
+                        Label("Filter work", systemImage: "line.3.horizontal.decrease")
+                    }
+                }
+            }
+        }
         .task(id: phase) { await refreshWhileActive(phase, load: load) }
         .refreshable { await load() }
     }
@@ -193,21 +208,16 @@ struct WorkList: View {
         (host.isEmpty || (item.device?.nilIfEmpty ?? "Buddy server") == host) &&
         (search.isEmpty || "\(item.title) \(item.agentName) \(item.projectName ?? "")".localizedCaseInsensitiveContains(search))
     }
-    private func summary(_ label: String, _ count: Int) -> some View {
-        VStack(alignment: .leading, spacing: 5) { Text(count, format: .number).font(.title2.bold()); Text(label).font(.caption).foregroundStyle(.secondary) }
-    }
-
     private func row(_ item: WorkItem) -> some View {
         NavigationLink(value: Destination.work(item.conversationId, item.id)) {
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.title).font(.headline)
- Text("\(item.agentName) · \((item.workerRole ?? "general").capitalized) worker").font(.subheadline.weight(.medium))
- if let project = item.projectName?.nilIfEmpty { Label(project, systemImage: "folder").font(.caption).foregroundStyle(.secondary) }
+                if let project = item.projectName?.nilIfEmpty {
+                    Label(project, systemImage: "folder").font(.caption).foregroundStyle(.secondary)
+                }
                 HStack(spacing: 7) {
-                    if item.status == "running" { ProgressView().controlSize(.small) }
-                    Text(statusLabel(item.status))
-                    Text("·")
-                    Text(item.device?.nilIfEmpty ?? "Buddy server")
+                    if item.status == "running" { BudActivityDots() }
+                    Text("\(item.agentName) · \(statusLabel(item.status))")
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -219,7 +229,7 @@ struct WorkList: View {
 
     private func load() async {
         do {
-            items = try await api.work()
+            items = try await api.work(chat: chat)
             error = nil
         } catch where !Task.isCancelled { self.error = error.localizedDescription } catch {}
     }
@@ -230,7 +240,7 @@ struct WorkList: View {
             var cursor = loadedHistory ? next : nil
             let known = Set((items ?? []).map(\.id) + history.map(\.id))
             repeat {
-                let page = try await api.workHistory(before: cursor)
+                let page = try await api.workHistory(chat: chat, before: cursor)
                 let extra = (page.items ?? []).filter { !known.contains($0.id) }
                 history += extra
                 next = page.next
@@ -257,6 +267,8 @@ struct WorkDetail: View {
     @State private var busy = false
     @State private var frame: ExecutionFrame?
     @State private var confirmStop = false
+    @State private var commandOutput: CommandOutput?
+    private struct CommandOutput: Identifiable { let id: String }
     private var currentChat: String { detail?.item.conversationId ?? chat }
 
     private struct ReplyRequest {
@@ -336,6 +348,15 @@ struct WorkDetail: View {
                         section("Latest update", update)
                     }
                     section("Assignment", detail.brief)
+                    let runs = detail.codeRuns.flatMap { $0.isEmpty ? nil : $0 } ?? detail.item.codeRun.map { [$0] } ?? []
+                    ForEach(runs.indices, id: \.self) { index in
+                        let run = runs[index]
+                        let reference = run.runId.map { id + "/" + $0 } ?? id
+                        ChatCodeRunCard(run: run, api: api, chat: currentChat, task: reference,
+                                        stopping: detail.item.status == "cancelling") {
+                            commandOutput = CommandOutput(id: reference)
+                        }
+                    }
                     if let events = detail.events, !events.isEmpty {
                         DisclosureGroup("Activity") {
                             ForEach(events) { event in
@@ -360,6 +381,7 @@ struct WorkDetail: View {
         .overlay { if detail == nil && loadError == nil { ProgressView("Loading job…") } }
         .buddyPage()
         .navigationTitle("Job details")
+        .sheet(item: $commandOutput) { ChatCodeOutputView(api: api, chat: currentChat, task: $0.id) }
         .navigationBarTitleDisplayMode(.inline)
         .task(id: phase) { await refreshWhileActive(phase, load: load) }
         .refreshable { await load() }

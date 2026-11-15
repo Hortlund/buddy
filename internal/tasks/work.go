@@ -42,6 +42,8 @@ type TurnAction struct {
 	Routine                 *RoutineDraft        `json:"routine,omitempty"`
 	Routines                []RoutineDraft       `json:"routines"`
 	Card                    *ChoiceCard          `json:"card"`
+	RunCode                 *chatCodeRequest     `json:"run_code"`
+	ReadCodeResult          *string              `json:"read_code_result"`
 	ReadFile                *QuickFileRead       `json:"read_file"`
 	SaveFile                *QuickFile           `json:"save_file"`
 	Image                   *ImageRequest        `json:"generate_image"`
@@ -58,6 +60,7 @@ type TurnAction struct {
 	managementWatchHistory  map[string]string
 	earlierAttachmentSource string
 	fileResult              string
+	savedFile               string
 	generatedImage          []byte
 	githubResult            *GitHubResult
 	githubDraft             *GitHubWrite
@@ -71,6 +74,7 @@ type TurnAction struct {
 	backgroundQuestion      bool
 	backgroundPlan          bool
 	backgroundPlanFailed    bool
+	scheduleNotice          string
 }
 
 func (action *TurnAction) hasHandoff() bool {
@@ -87,11 +91,13 @@ func (action *TurnAction) hasCard() bool {
 }
 
 type RoutineDraft struct {
-	DeviceID string `json:"device_id"`
-	AgentID  string `json:"agent_id"`
-	Name     string `json:"name"`
-	Prompt   string `json:"prompt"`
-	Minutes  int    `json:"minutes"`
+	DeviceID         string `json:"device_id"`
+	AgentID          string `json:"agent_id"`
+	Name             string `json:"name"`
+	Prompt           string `json:"prompt"`
+	Minutes          int    `json:"minutes"`
+	AllowEdits       bool   `json:"allow_edits,omitempty"`
+	ResearchPosition int    `json:"research_position,omitempty"`
 }
 
 type routineSummary struct {
@@ -125,6 +131,7 @@ type WorkItem struct {
 	CanSteer         bool              `json:"can_steer,omitempty"`
 	Steering         []SteeringMessage `json:"steering,omitempty"`
 	InputID          string            `json:"input_id,omitempty"`
+	CodeRun          *ChatCodeRun      `json:"code_run,omitempty"`
 }
 
 type workRequest struct {
@@ -133,6 +140,7 @@ type workRequest struct {
 	projectDraft                                  string
 	plan                                          ExecutionPlan
 	timeout                                       int
+	publicResearch                                publicResearchContext
 }
 
 func checkQueue(ctx context.Context, db queryer, background bool) error {
@@ -186,6 +194,10 @@ func enqueueTurn(ctx context.Context, tx *sql.Tx, kind, key, conversation string
 		t.ID, agent.ID, agent.Role, request.origin, request.title, request.brief, request.parent, request.routine)
 	if err == nil {
 		err = captureFileReferences(ctx, tx, t.ID, "")
+	}
+	if err == nil && len(request.publicResearch.Requests) != 0 {
+		data, _ := json.Marshal(request.publicResearch)
+		_, err = tx.ExecContext(ctx, "INSERT INTO task_public_requests VALUES (?,?)", t.ID, string(data))
 	}
 	if err == nil && request.device != "" {
 		_, err = tx.ExecContext(ctx, "INSERT INTO device_runs(task_id,device_id) VALUES (?,?)", t.ID, request.device)
@@ -329,7 +341,7 @@ const workFields = `
 	COALESCE(d.name,CASE WHEN p.task_id IS NOT NULL THEN 'Worker pool' ELSE '' END),ct.conversation_id,
 	COALESCE(g.name,owner.name),(EXISTS(SELECT 1 FROM removed_buds WHERE agent_id=c.agent_id) OR EXISTS(SELECT 1 FROM archived_groups WHERE conversation_id=c.id)),t.created,t.started,t.finished,
 	COALESCE((SELECT q.task_id FROM work_inputs q WHERE q.job_id=t.id AND q.answer_key IS NULL AND t.status='needs_input'),''),
-	COALESCE(we.project_id,''),COALESCE(pr.name,''),COALESCE(we.role,'general'),COALESCE(we.requirements,'[]'),COALESCE(we.environment,'')
+	COALESCE(we.project_id,''),COALESCE(pr.name,''),COALESCE(we.role,'general'),COALESCE(we.requirements,'[]'),COALESCE(we.environment,''),` + latestCodeRun + `
 	FROM chat_turns ct JOIN tasks t ON t.id=ct.task_id JOIN turn_details td ON td.task_id=t.id
 	JOIN conversations c ON c.id=ct.conversation_id JOIN agents owner ON owner.id=c.agent_id
 	LEFT JOIN group_chats g ON g.conversation_id=c.id
@@ -407,12 +419,12 @@ func readWork(ctx context.Context, db queryer, query string, args ...any) ([]Wor
 	var work []WorkItem
 	for rows.Next() {
 		var item WorkItem
-		var corrections, requirements string
+		var corrections, requirements, codeRun string
 		var created int64
 		var started, finished sql.NullInt64
 		if err := rows.Scan(&item.ID, &item.AgentID, &item.AgentName, &item.Title, &item.Status,
 			&item.Activity, &item.Update, &corrections, &item.Device, &item.ConversationID,
-			&item.ConversationName, &item.ChatArchived, &created, &started, &finished, &item.InputID, &item.ProjectID, &item.ProjectName, &item.Role, &requirements, &item.Environment); err != nil {
+			&item.ConversationName, &item.ChatArchived, &created, &started, &finished, &item.InputID, &item.ProjectID, &item.ProjectName, &item.Role, &requirements, &item.Environment, &codeRun); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(requirements), &item.Requirements); err != nil {
@@ -430,6 +442,15 @@ func readWork(ctx context.Context, db queryer, query string, args ...any) ([]Wor
 			t := time.UnixMicro(finished.Int64).UTC()
 			item.FinishedAt = &t
 		}
+		if err := json.Unmarshal([]byte(codeRun), &item.CodeRun); err != nil {
+			return nil, err
+		}
+		if run := item.CodeRun; run != nil {
+			run.keepPreview()
+			if item.FinishedAt != nil {
+				run.finishFromTask(item.Status, *item.FinishedAt)
+			}
+		}
 		item.Kind = activityKind(item.Activity)
 		if item.Status != Running {
 			item.Update = ""
@@ -442,16 +463,17 @@ func readWork(ctx context.Context, db queryer, query string, args ...any) ([]Wor
 const MinRoutineMinutes, MaxRoutineMinutes = 1, 7 * 24 * 60
 
 type Routine struct {
-	DeviceID           string    `json:"device_id,omitempty"`
-	DeviceDisconnected bool      `json:"device_disconnected,omitempty"`
-	Device             string    `json:"device,omitempty"`
-	ID                 string    `json:"id"`
-	AgentID            string    `json:"agent_id"`
-	Name               string    `json:"name"`
-	Prompt             string    `json:"prompt"`
-	Minutes            int       `json:"minutes"`
-	NextAt             time.Time `json:"next_at"`
-	Enabled            bool      `json:"enabled"`
+	DeviceID             string    `json:"device_id,omitempty"`
+	DeviceDisconnected   bool      `json:"device_disconnected,omitempty"`
+	ResearchScopeMissing bool      `json:"research_scope_missing,omitempty"`
+	Device               string    `json:"device,omitempty"`
+	ID                   string    `json:"id"`
+	AgentID              string    `json:"agent_id"`
+	Name                 string    `json:"name"`
+	Prompt               string    `json:"prompt"`
+	Minutes              int       `json:"minutes"`
+	NextAt               time.Time `json:"next_at"`
+	Enabled              bool      `json:"enabled"`
 }
 
 func RoutineCadence(minutes int) string {
@@ -474,8 +496,10 @@ func RoutineCadence(minutes int) string {
 }
 
 func listRoutines(ctx context.Context, db queryer, conversation string) ([]Routine, error) {
-	rows, err := db.QueryContext(ctx, `SELECT r.id,r.agent_id,r.name,r.prompt,r.minutes,r.next_at,r.enabled,COALESCE(rd.device_id,''),COALESCE(d.name,''),COALESCE(d.revoked,0)
+	rows, err := db.QueryContext(ctx, `SELECT r.id,r.agent_id,r.name,r.prompt,r.minutes,r.next_at,r.enabled,
+		COALESCE(rd.device_id,''),COALESCE(d.name,''),COALESCE(d.revoked,0),p.routine_id IS NULL
 		FROM routines r LEFT JOIN routine_devices rd ON rd.routine_id=r.id LEFT JOIN devices d ON d.id=rd.device_id
+		LEFT JOIN routine_public_requests p ON p.routine_id=r.id
 		WHERE r.conversation_id=? ORDER BY r.rowid DESC`, conversation)
 	if err != nil {
 		return nil, err
@@ -485,7 +509,8 @@ func listRoutines(ctx context.Context, db queryer, conversation string) ([]Routi
 	for rows.Next() {
 		var routine Routine
 		var at int64
-		if err := rows.Scan(&routine.ID, &routine.AgentID, &routine.Name, &routine.Prompt, &routine.Minutes, &at, &routine.Enabled, &routine.DeviceID, &routine.Device, &routine.DeviceDisconnected); err != nil {
+		if err := rows.Scan(&routine.ID, &routine.AgentID, &routine.Name, &routine.Prompt, &routine.Minutes, &at, &routine.Enabled,
+			&routine.DeviceID, &routine.Device, &routine.DeviceDisconnected, &routine.ResearchScopeMissing); err != nil {
 			return nil, err
 		}
 		routine.NextAt = time.UnixMicro(at).UTC()
@@ -502,6 +527,12 @@ func (s *Store) AddRoutine(ctx context.Context, conversation string, routine Rou
 	defer tx.Rollback()
 	routine, err = addRoutine(ctx, tx, conversation, routine)
 	if err != nil {
+		return Routine{}, err
+	}
+	if err := saveRoutinePermission(ctx, tx, routine.ID, true); err != nil {
+		return Routine{}, err
+	}
+	if err := saveRoutineResearch(ctx, tx, routine, 0, []researchRequest{{User: routine.Prompt}}); err != nil {
 		return Routine{}, err
 	}
 	return routine, tx.Commit()
@@ -553,7 +584,7 @@ func validateRoutine(name, prompt string, minutes int) error {
 	return nil
 }
 
-func saveRequestedRoutine(ctx context.Context, tx *sql.Tx, id string, draft RoutineDraft) (string, error) {
+func saveRequestedRoutine(ctx context.Context, tx *sql.Tx, id string, draft RoutineDraft, position int) (string, error) {
 	var conversation, requester string
 	if err := tx.QueryRowContext(ctx, `SELECT ct.conversation_id,COALESCE(td.agent_id,c.agent_id)
 		FROM chat_turns ct JOIN conversations c ON c.id=ct.conversation_id
@@ -571,8 +602,18 @@ func saveRequestedRoutine(ctx context.Context, tx *sql.Tx, id string, draft Rout
 	if err != nil {
 		return "", err
 	}
+	if err := saveRoutinePermission(ctx, tx, routine.ID, draft.AllowEdits); err != nil {
+		return "", err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO routine_skill_sources(routine_id,task_id)
 		SELECT ?,task_id FROM turn_skills WHERE task_id=?`, routine.ID, id); err != nil {
+		return "", err
+	}
+	requests, err := readPublicRequestHistory(ctx, tx, conversation, id, true)
+	if err != nil {
+		return "", err
+	}
+	if err := saveRoutineResearch(ctx, tx, routine, position, requests); err != nil {
 		return "", err
 	}
 	confirmation := "Routine scheduled · **" + escapeTitle(routine.Name) + "** · " + RoutineCadence(routine.Minutes)
@@ -582,9 +623,52 @@ func saveRequestedRoutine(ctx context.Context, tx *sql.Tx, id string, draft Rout
 	return confirmation, nil
 }
 
+func saveRoutinePermission(ctx context.Context, tx *sql.Tx, id string, allowEdits bool) error {
+	_, err := tx.ExecContext(ctx, "INSERT INTO routine_workspace_permissions VALUES (?,?)", id, allowEdits)
+	return err
+}
+
+func scanRequestLines(rows *sql.Rows) ([]string, error) {
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			return nil, err
+		}
+		lines = append(lines, line)
+	}
+	return lines, rows.Err()
+}
+
+func saveRoutineResearch(ctx context.Context, tx *sql.Tx, routine Routine, position int, requests []researchRequest) error {
+	if len(requests) == 0 {
+		return nil
+	}
+	data, _ := json.Marshal(publicResearchContext{Requests: requests, Subject: researchSubject{
+		Name: routine.Name, Minutes: routine.Minutes, Position: position,
+	}})
+	_, err := tx.ExecContext(ctx, "INSERT INTO routine_public_requests VALUES (?,?)", routine.ID, string(data))
+	return err
+}
+
 func (s *Store) saveTurnAction(ctx context.Context, tx *sql.Tx, id string, action *TurnAction, reply string) (string, error) {
 	action.reactionSaved = false
 	action.backgroundPlanFailed = false
+	if action.connectionResult != nil {
+		if err := saveConnectionCard(ctx, tx, id, *action.connectionResult); err != nil {
+			return "", err
+		}
+	}
+	if action.githubResult != nil {
+		result, err := json.Marshal(action.githubResult)
+		if err != nil {
+			return "", err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO github_chat_results(task_id,result) VALUES (?,?)", id, string(result)); err != nil {
+			return "", err
+		}
+	}
 	if action.githubDraft != nil {
 		saved, err := saveGitHubWrite(ctx, tx, id, *action.githubDraft)
 		action.githubWriteCard = saved
@@ -623,18 +707,6 @@ func (s *Store) saveTurnAction(ctx context.Context, tx *sql.Tx, id string, actio
 	if len(action.watches) != 0 {
 		return "", saveChatWatchDraft(ctx, tx, id, action.watches)
 	}
-	if action.connectionResult != nil {
-		return "", saveConnectionCard(ctx, tx, id, *action.connectionResult)
-	}
-	if action.githubResult != nil {
-		result, err := json.Marshal(action.githubResult)
-		if err != nil {
-			return "", err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO github_chat_results(task_id,result) VALUES (?,?)", id, string(result)); err != nil {
-			return "", err
-		}
-	}
 	var budNote string
 	var newBud Agent
 	var draftSaved bool
@@ -643,7 +715,9 @@ func (s *Store) saveTurnAction(ctx context.Context, tx *sql.Tx, id string, actio
 	}
 	if action.backgroundPlan && action.Card == nil && !action.hasHandoff() {
 		action.backgroundPlanFailed = true
-		return "No background job was queued.", nil
+		if !action.hasRoutines() {
+			return "No background job was queued.", nil
+		}
 	}
 	budQuestion := action.Card != nil && action.BudClarification
 	if action.BudProposal != nil && !budQuestion {
@@ -788,6 +862,11 @@ func (s *Store) saveTurnAction(ctx context.Context, tx *sql.Tx, id string, actio
 		if action.fileResult == "" {
 			return "I couldn’t save the file in my working folder.", nil
 		}
+		if action.savedFile != "" {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO chat_file_saves VALUES (?,?)", id, action.savedFile); err != nil {
+				return "", err
+			}
+		}
 		return action.fileResult, nil
 	default:
 		return budNote, nil
@@ -915,7 +994,7 @@ func joinActionNotes(first, second string) string {
 }
 
 func (s *Store) UpdateRoutine(ctx context.Context, conversation, id string, enabled *bool) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginMobileWrite(ctx)
 	if err != nil {
 		return err
 	}
@@ -978,18 +1057,24 @@ func (s *Store) enqueueDueRoutine(ctx context.Context, now time.Time) (bool, err
 	}
 	defer tx.Rollback()
 	var routine Routine
-	var conversation, skillSource string
+	var conversation, skillSource, research string
 	var next int64
+	var allowEdits bool
+	// Older routines have no trustworthy record of who authored or approved them.
 	err = tx.QueryRowContext(ctx, `SELECT r.id,r.conversation_id,r.agent_id,r.name,r.prompt,r.minutes,r.next_at,
-		COALESCE(rd.device_id,''),COALESCE(rs.task_id,'') FROM routines r
+		COALESCE(rd.device_id,''),COALESCE(rs.task_id,''),
+		COALESCE(rp.allow_edits, 0),COALESCE(pr.request,'')
+		FROM routines r
 		LEFT JOIN routine_devices rd ON rd.routine_id=r.id LEFT JOIN routine_skill_sources rs ON rs.routine_id=r.id
+		LEFT JOIN routine_workspace_permissions rp ON rp.routine_id=r.id
+		LEFT JOIN routine_public_requests pr ON pr.routine_id=r.id
 		WHERE r.enabled=1 AND r.next_at<=? AND NOT EXISTS(
 			SELECT 1 FROM turn_details td JOIN tasks t ON t.id=td.task_id WHERE td.routine_id=r.id
 				AND t.status IN ('queued','running','needs_input','cancelling'))
 			AND (rd.device_id IS NOT NULL OR NOT EXISTS(
 				SELECT 1 FROM restored_workspace_agents h WHERE h.agent_id=r.agent_id))
 		ORDER BY r.next_at,r.id LIMIT 1`, now.UnixMicro()).
-		Scan(&routine.ID, &conversation, &routine.AgentID, &routine.Name, &routine.Prompt, &routine.Minutes, &next, &routine.DeviceID, &skillSource)
+		Scan(&routine.ID, &conversation, &routine.AgentID, &routine.Name, &routine.Prompt, &routine.Minutes, &next, &routine.DeviceID, &skillSource, &allowEdits, &research)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1006,8 +1091,10 @@ func (s *Store) enqueueDueRoutine(ctx context.Context, now time.Time) (bool, err
 	if routine.DeviceID != "" {
 		agent.Workspace = ""
 	}
+	agent.AllowEdits = agent.AllowEdits && allowEdits
 	job, err := enqueueTurn(ctx, tx, BackgroundWork, routine.ID+":"+time.UnixMicro(next).UTC().Format(time.RFC3339Nano),
-		conversation, agent, workRequest{origin: "routine", title: routine.Name, brief: routine.Prompt, routine: routine.ID, device: routine.DeviceID})
+		conversation, agent, workRequest{origin: "routine", title: routine.Name, brief: routine.Prompt, routine: routine.ID, device: routine.DeviceID,
+			publicResearch: decodeRoutineResearch(research, researchSubject{Name: routine.Name, Minutes: routine.Minutes})})
 	if err != nil {
 		return false, err
 	}

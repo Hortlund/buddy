@@ -12,21 +12,57 @@ import (
 
 const automationStateSchema = `
 CREATE TABLE IF NOT EXISTS automation_control(task_id TEXT PRIMARY KEY REFERENCES tasks(id),paused INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS automation_control_revisions(task_id TEXT PRIMARY KEY REFERENCES tasks(id),revision INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS execution_frames(task_id TEXT PRIMARY KEY REFERENCES tasks(id),frame BLOB NOT NULL);
 `
 
-func (s *Store) SetAutomationPaused(ctx context.Context, job string, paused bool) error {
-	result, err := s.db.ExecContext(ctx, `INSERT INTO automation_control SELECT t.id,? FROM tasks t JOIN work_execution e ON e.task_id=t.id
+type AutomationControl struct {
+	Paused   bool  `json:"paused"`
+	Revision int64 `json:"revision"`
+}
+
+func (s *Store) SetAutomationPaused(ctx context.Context, job string, paused bool) (AutomationControl, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AutomationControl{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `INSERT INTO automation_control SELECT t.id,? FROM tasks t JOIN work_execution e ON e.task_id=t.id
 		WHERE t.id=? AND t.status='running' AND EXISTS(SELECT 1 FROM json_each(e.requirements) WHERE value IN ('desktop','browser'))
 		ON CONFLICT(task_id) DO UPDATE SET paused=excluded.paused`, paused, job)
 	if err != nil {
-		return err
+		return AutomationControl{}, err
 	}
 	n, err := result.RowsAffected()
-	if err == nil && n == 0 {
-		return ErrInactive
+	if err != nil {
+		return AutomationControl{}, err
 	}
-	return err
+	if n == 0 {
+		return AutomationControl{}, ErrInactive
+	}
+	control := AutomationControl{Paused: paused}
+	err = tx.QueryRowContext(ctx, `INSERT INTO automation_control_revisions VALUES (?,1)
+		ON CONFLICT(task_id) DO UPDATE SET revision=revision+1 RETURNING revision`, job).Scan(&control.Revision)
+	if err != nil {
+		return AutomationControl{}, err
+	}
+	return control, tx.Commit()
+}
+
+func (s *Store) ReadAutomationControl(ctx context.Context, job string) (AutomationControl, error) {
+	var control AutomationControl
+	err := s.db.QueryRowContext(ctx, `SELECT a.paused,COALESCE(r.revision,0) FROM automation_control a
+		LEFT JOIN automation_control_revisions r ON r.task_id=a.task_id WHERE a.task_id=?`, job).
+		Scan(&control.Paused, &control.Revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	return control, err
+}
+
+func (s *Store) AutomationPaused(ctx context.Context, job string) (bool, error) {
+	control, err := s.ReadAutomationControl(ctx, job)
+	return control.Paused, err
 }
 
 func (s *Store) SaveExecutionFrame(ctx context.Context, job, device, lease string, frame ExecutionFrame) error {

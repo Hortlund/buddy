@@ -29,7 +29,7 @@ const MCPProtocol = 40
 const MobileProtocol = 42
 const ReferenceProtocol = 57
 const BackgroundComposerProtocol = 60
-const DesktopProtocol = 75
+const DesktopProtocol = 85
 const AttachmentProtocol = 11
 const attachmentTransferTimeout = 2 * time.Minute
 
@@ -74,7 +74,7 @@ func Handler(token string, store *tasks.Store, worker *tasks.Worker, codex *task
 		codexRoutes(mux, codex)
 		mcpRoutes(mux, store, codex)
 		workspaceFileRoutes(mux, store, codex)
-		voiceRoutes(mux, store, worker, localconfig.VoiceKey{Dir: codex.Key.Dir}, dialRealtime, &voiceInUse)
+		voiceRoutes(mux, store, worker, localconfig.VoiceKey{Dir: codex.Key.Dir}, dialRealtime, &voiceInUse, codex)
 	}
 	mux.HandleFunc("GET /v1/conversations/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var before int64
@@ -105,6 +105,22 @@ func Handler(token string, store *tasks.Store, worker *tasks.Worker, codex *task
 			}
 		}
 		result(w, http.StatusOK, conversation, err)
+	})
+	mux.HandleFunc("GET /v1/conversations/{id}/code-runs/{run}/output", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("run")
+		if run := r.URL.Query().Get("attempt"); run != "" {
+			id += "/" + run
+		}
+		run, err := store.ChatCodeOutput(r.Context(), r.PathValue("id"), id)
+		result(w, http.StatusOK, run, err)
+	})
+	mux.HandleFunc("POST /v1/conversations/{id}/code-runs/{run}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("run")
+		if run := r.URL.Query().Get("attempt"); run != "" {
+			id += "/" + run
+		}
+		_, err := worker.CancelChatCode(r.Context(), r.PathValue("id"), id)
+		result(w, http.StatusOK, nil, err)
 	})
 	mux.HandleFunc("PUT /v1/conversations/{id}/messages/{message}/reaction", func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(r.PathValue("message"), 10, 64)

@@ -185,6 +185,9 @@ func serve(ctx context.Context, addr, dir, codex, runtimeDir, sourceDir, workspa
 	if err := runtime.ProtectLauncherDir(launcherDir); err != nil {
 		return err
 	}
+	if err := tasks.PrepareChatCodeSandbox(); err != nil {
+		log.Printf("Prepare native code execution: %v", err)
+	}
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err

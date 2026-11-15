@@ -2,10 +2,123 @@ package tasks
 
 import (
 	"encoding/json"
+	"os"
 	"slices"
 	"testing"
 	"time"
 )
+
+func TestAppServerExecutesChatToolOnlyForCurrentTurn(t *testing.T) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	defer write.Close()
+	calls := 0
+	session := appSession{input: write, threadID: "chat", turn: appTurn{ID: "current", Status: "inProgress"},
+		chatTools: map[string]chatTool{
+			"run_code": defineChatTool("run_code", "", chatCodeSchema, func(request chatCodeRequest) (any, error) {
+				calls++
+				if request.Language != "python" || request.Source != "print(42)" {
+					t.Fatalf("unexpected tool arguments: %+v", request)
+				}
+				return chatToolText{text: "Exit status: 0", success: true}, nil
+			}),
+		}}
+	decoder := json.NewDecoder(read)
+	for _, tc := range []struct {
+		turnID string
+		want   bool
+	}{{"earlier", false}, {"current", true}, {"current", true}} {
+		args, err := json.Marshal(map[string]any{
+			"threadId": "chat", "turnId": tc.turnID, "callId": "same-call", "tool": "run_code",
+			"arguments": chatCodeRequest{Language: "python", Source: "print(42)"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := session.handle(appFrame{Method: "item/tool/call", ID: json.RawMessage(`"call-1"`), Params: args}); err != nil {
+			t.Fatal(err)
+		}
+		var response struct {
+			ID     string `json:"id"`
+			Result struct {
+				Success bool `json:"success"`
+			} `json:"result"`
+		}
+		if err := decoder.Decode(&response); err != nil || response.ID != "call-1" || response.Result.Success != tc.want {
+			t.Fatalf("unexpected tool response for %s: %+v, %v", tc.turnID, response, err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("tool invoked %d times, want 1", calls)
+	}
+}
+
+func TestAppServerStreamsProjectCommandAndRecordsExit(t *testing.T) {
+	var snapshots []ChatCodeRun
+	session := appSession{threadID: "chat", turn: appTurn{ID: "current", Status: "inProgress"},
+		events: codexEvents{commandRuns: make(map[string]*commandRun), emit: func(stream, payload string) error {
+			if stream == chatCodeStream {
+				var command ChatCodeRun
+				if err := json.Unmarshal([]byte(payload), &command); err != nil {
+					return err
+				}
+				snapshots = append(snapshots, command)
+			}
+			return nil
+		}}}
+	for _, frame := range []appFrame{
+		{Method: "item/started", Params: json.RawMessage(`{"threadId":"chat","turnId":"current","item":{"type":"commandExecution","id":"command","command":"go test ./...","status":"inProgress"}}`)},
+		{Method: "item/commandExecution/outputDelta", Params: json.RawMessage(`{"threadId":"chat","turnId":"earlier","itemId":"command","delta":"old output"}`)},
+		{Method: "item/commandExecution/outputDelta", Params: json.RawMessage(`{"threadId":"chat","turnId":"current","itemId":"command","delta":"FAIL\n"}`)},
+		{Method: "item/completed", Params: json.RawMessage(`{"threadId":"chat","turnId":"current","item":{"type":"commandExecution","id":"command","status":"failed","exitCode":1,"aggregatedOutput":"FAIL\n"}}`)},
+	} {
+		if err := session.handle(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(snapshots) != 3 || snapshots[0].Status != Running || snapshots[0].Command != "go test ./..." ||
+		snapshots[1].Stdout != "FAIL\n" || snapshots[2].Status != Failed || snapshots[2].ExitCode == nil ||
+		*snapshots[2].ExitCode != 1 || snapshots[2].Stdout != "FAIL\n" || !snapshots[2].WorkCommand {
+		t.Fatalf("unexpected command snapshots: %+v", snapshots)
+	}
+}
+
+func TestAppServerKeepsSeparateCommandResults(t *testing.T) {
+	ctx, store := t.Context(), teamTestStore(t)
+	job, err := store.QueueVoiceWork(ctx, DefaultConversationID, DefaultAgentID, "commands", "run", "Test", "Run two tests.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.claimLane(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	session := appSession{threadID: "chat", turn: appTurn{ID: "current", Status: "inProgress"},
+		events: codexEvents{commandRuns: make(map[string]*commandRun), emit: func(stream, payload string) error {
+			return store.append(ctx, job.ID, stream, payload)
+		}}}
+	for _, frame := range []appFrame{
+		{Method: "item/started", Params: json.RawMessage(`{"item":{"type":"commandExecution","id":"a","command":"test a"}}`)},
+		{Method: "item/started", Params: json.RawMessage(`{"item":{"type":"commandExecution","id":"b","command":"test b"}}`)},
+		{Method: "item/completed", Params: json.RawMessage(`{"item":{"type":"commandExecution","id":"b","status":"failed","exitCode":1,"aggregatedOutput":"failure"}}`)},
+		{Method: "item/completed", Params: json.RawMessage(`{"item":{"type":"commandExecution","id":"a","status":"completed","exitCode":0,"aggregatedOutput":"success"}}`)},
+	} {
+		if err := session.handle(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	detail, err := store.WorkDetails(ctx, DefaultConversationID, job.ID)
+	if err != nil || len(detail.CodeRuns) != 2 {
+		t.Fatalf("command results: %+v, %v", detail.CodeRuns, err)
+	}
+	first, second := detail.CodeRuns[0], detail.CodeRuns[1]
+	if first.RunID == "" || second.RunID == "" || first.RunID == second.RunID ||
+		first.Status != Succeeded || first.Stdout != "success" || second.Status != Failed || second.Stdout != "failure" {
+		t.Fatalf("wrong results: %+v", detail.CodeRuns)
+	}
+}
 
 func TestAppServerKeepsAnswerPartsAcrossSteering(t *testing.T) {
 	session := appSession{threadID: "thread", events: codexEvents{emit: func(string, string) error { return nil }}}

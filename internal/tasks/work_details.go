@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"slices"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ CREATE TABLE IF NOT EXISTS work_questions (
 
 type WorkDetails struct {
 	WorkItem
+	CodeRuns     []ChatCodeRun    `json:"code_runs,omitempty"`
 	Sessions     []WorkerSession  `json:"sessions,omitempty"`
 	Artifacts    []WorkArtifact   `json:"artifacts,omitempty"`
 	Dependencies []TeamAssignment `json:"dependencies,omitempty"`
@@ -52,6 +54,10 @@ func (s *Store) workDetails(ctx context.Context, chat, id string, reference bool
 		return WorkDetails{}, ErrNotFound
 	}
 	detail := WorkDetails{WorkItem: items[0]}
+	detail.CodeRuns, err = workCommandRuns(ctx, tx, id, detail.FinishedAt, detail.Status)
+	if err != nil {
+		return WorkDetails{}, err
+	}
 	detail.Sessions, err = workerSessions(ctx, tx, id)
 	if err != nil {
 		return WorkDetails{}, err
@@ -126,4 +132,38 @@ func (s *Store) workDetails(ctx context.Context, chat, id string, reference bool
 		return WorkDetails{}, err
 	}
 	return detail, tx.Commit()
+}
+
+func workCommandRuns(ctx context.Context, db queryer, job string, finished *time.Time, status Status) ([]ChatCodeRun, error) {
+	rows, err := db.QueryContext(ctx, `SELECT e.text,CASE WHEN NOT `+currentCodeAttempt+` THEN e.at END
+		FROM events e JOIN tasks t ON t.id=e.task_id
+		WHERE e.task_id=? AND e.stream GLOB 'chat_code_run/run_*'
+		ORDER BY e.seq DESC LIMIT 8`, job)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var runs []ChatCodeRun
+	for rows.Next() {
+		var raw string
+		var previous sql.NullInt64
+		if err := rows.Scan(&raw, &previous); err != nil {
+			return nil, err
+		}
+		var run ChatCodeRun
+		if err := json.Unmarshal([]byte(raw), &run); err != nil {
+			return nil, err
+		}
+		run.keepPreview()
+		if previous.Valid {
+			if run.Status == Running {
+				run.finishFromTask(Interrupted, time.UnixMicro(previous.Int64).UTC())
+			}
+		} else if finished != nil {
+			run.finishFromTask(status, *finished)
+		}
+		runs = append(runs, run)
+	}
+	slices.Reverse(runs)
+	return runs, rows.Err()
 }

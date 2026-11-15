@@ -11,12 +11,7 @@ var buildVersion = "0.1.0-dev"
 var buildNumber = "2"
 
 func buildWordmark(c *ui.Context) {
-	ui.Row(c).Gap(7).MinWidth(0).Children(func() {
-		ui.Text(c, "Buddy").FontSize(17).FontWeight(730).LetterSpacing(-.4).Shrink(0)
-		version, _, _ := strings.Cut(buildVersion, "+")
-		ui.Text(c.Key("buddy-build"), version).SingleLine().MinWidth(0).FontSize(10).FontWeight(580).
-			TextColor(c.Theme().TextMuted).Tooltip(buildVersion + " · Build " + buildNumber)
-	})
+	ui.Text(c, "Buddy").FontSize(16).FontWeight(700).LetterSpacing(-.35).SingleLine()
 }
 
 func buildChannel() string {

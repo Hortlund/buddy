@@ -7,89 +7,104 @@ struct ChatList: View {
     @State private var directory: BuddyDirectory?
     @State private var error: String?
 
+    @State private var search = ""
+    @State private var creatingBud = false
+
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 19) {
+            VStack(alignment: .leading, spacing: 26) {
                 if let directory {
-                    if let buds = directory.agents, !buds.isEmpty {
-                        chatSection("Buds") {
-                            ForEach(buds) { bud in
-                                if let chat = bud.conversationId {
-                                    NavigationLink(value: Destination.chat(chat, bud.name)) {
-                                        chatRow(title: bud.name, detail: bud.role?.nilIfEmpty,
-                                                primary: bud.id == directory.primaryAgentId,
-                                                unread: bud.hasNewResult == true) {
-                                            BudFace(appearance: bud.avatar, size: 38)
-                                        }
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
+                    let buds = (directory.agents ?? []).filter { bud in
+                        bud.conversationId != nil && matches(bud.name)
                     }
-                    if let groups = directory.groups, !groups.isEmpty {
-                        chatSection("Group chats") {
-                            ForEach(groups) { chat in
-                                NavigationLink(value: Destination.chat(chat.id, chat.name)) {
-                                    chatRow(title: chat.name, detail: nil, primary: false, unread: chat.hasNewResult == true) {
-                                        Image(systemName: "person.2")
-                                            .font(.callout.weight(.medium)).foregroundStyle(BuddyStyle.accent)
-                                            .frame(width: 38, height: 38)
-                                            .background(BuddyStyle.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 11))
+                    let groups = (directory.groups ?? []).filter { matches($0.name) }
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 101), spacing: 8)], spacing: 20) {
+                        ForEach(buds) { bud in
+                            if let chat = bud.conversationId {
+                                let primary = bud.id == directory.primaryAgentId
+                                NavigationLink(value: Destination.chat(chat, bud.name)) {
+                                    VStack(spacing: 6) {
+                                        BudFace(appearance: bud.avatar, size: 78, mood: primary ? .idle : .still)
+                                            .overlay(alignment: .bottomTrailing) {
+                                                if primary {
+                                                    PrimaryBudStar().padding(5)
+                                                }
+                                            }
+                                        VStack(spacing: 3) {
+                                            HStack(spacing: 5) {
+                                                Text(bud.name).lineLimit(2)
+                                                if bud.hasNewResult == true { unreadDot }
+                                            }
+                                            .font(.subheadline.weight(.medium))
+                                            Text(bud.displayRole ?? "")
+                                                .font(.caption).foregroundStyle(BuddyStyle.muted)
+                                                .lineLimit(2, reservesSpace: true)
+                                                .accessibilityHidden(bud.displayRole == nil)
+                                        }
+                                        .multilineTextAlignment(.center)
                                     }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 6)
+                                    .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
                             }
                         }
+                    }
+                    if !groups.isEmpty {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("Groups").font(.subheadline.weight(.medium)).foregroundStyle(BuddyStyle.muted)
+                                .accessibilityAddTraits(.isHeader)
+                            VStack(spacing: 0) {
+                                ForEach(groups) { chat in
+                                    NavigationLink(value: Destination.chat(chat.id, chat.name)) {
+                                        HStack {
+                                            Label(chat.name, systemImage: "person.2")
+                                            Spacer()
+                                            if chat.hasNewResult == true { unreadDot }
+                                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(BuddyStyle.muted)
+                                        }
+                                        .padding(.horizontal, 14)
+                                        .frame(minHeight: 48)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    if chat.id != groups.last?.id { Divider().padding(.leading, 14) }
+                                }
+                            }
+                            .background(BuddyStyle.surface, in: RoundedRectangle(cornerRadius: 18))
+                        }
+                    }
+                    if buds.isEmpty && groups.isEmpty && !search.isEmpty {
+                        ContentUnavailableView.search(text: search)
                     }
                 }
                 if let error { ConnectionError(message: error) }
             }
             .frame(maxWidth: 620)
             .padding(.horizontal, 18)
-            .padding(.vertical, 14)
+            .padding(.vertical, 24)
             .frame(maxWidth: .infinity)
         }
         .buddyPage()
-        .overlay { if directory == nil && error == nil { ProgressView("Connecting to Buddy…") } }
-        .navigationTitle("Chats")
+        .overlay { if directory == nil && error == nil { ProgressView() } }
+        .navigationTitle("Buddy")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { creatingBud = true } label: { Label("New Bud", systemImage: "plus") }
+                    .disabled(directory == nil)
+            }
+        }
+        .sheet(isPresented: $creatingBud) {
+            NewBudSheet(api: api) { await load() }
+        }
+        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Find a chat")
         .task(id: phase) { await refreshWhileActive(phase, every: .seconds(12), load: load) }
         .refreshable { await load() }
     }
 
-    private func chatSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(BuddyStyle.muted)
-                .accessibilityAddTraits(.isHeader)
-                .padding(.leading, 4)
-            VStack(spacing: 0, content: content)
-                .background(BuddyStyle.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay(RoundedRectangle(cornerRadius: 17).strokeBorder(BuddyStyle.border))
-        }
-    }
-
-    private func chatRow<Icon: View>(title: String, detail: String?, primary: Bool, unread: Bool,
-                                     @ViewBuilder icon: () -> Icon) -> some View {
-        HStack(spacing: 11) {
-            icon()
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 5) {
-                    Text(title).font(.headline)
-                    if primary {
-                        Image(systemName: "star.fill").font(.caption2).foregroundStyle(BuddyStyle.accent)
-                            .accessibilityLabel("Primary Bud")
-                    }
-                }
-                if let detail { Text(detail).font(.subheadline).foregroundStyle(BuddyStyle.muted) }
-            }
-            Spacer()
-            if unread { unreadDot }
-            Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(BuddyStyle.muted)
-                .accessibilityHidden(true)
-        }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 9)
-        .contentShape(Rectangle())
+    private func matches(_ name: String) -> Bool {
+        search.isEmpty || name.localizedCaseInsensitiveContains(search)
     }
 
     private func load() async {
@@ -102,6 +117,122 @@ struct ChatList: View {
 
 private var unreadDot: some View {
     Circle().fill(BuddyStyle.accent).frame(width: 8, height: 8).accessibilityLabel("Unread activity")
+}
+
+struct PrimaryBudStar: View {
+    var body: some View {
+        Image(systemName: "star.fill")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(BuddyStyle.accentText)
+            .frame(width: 18, height: 18)
+            .background(BuddyStyle.accent, in: Circle())
+            .accessibilityLabel("Primary Bud")
+    }
+}
+
+private struct ChatActivity: View {
+    let active: ActiveReply
+    let appearance: BudAppearance?
+    let api: BuddyAPI
+    let chat: String
+    let onViewOutput: (String) -> Void
+
+    private var progress: String? {
+        guard active.status == "running" else { return nil }
+        if let update = active.update?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty { return update }
+        switch active.activityKind {
+        case "reading", "searching", "editing": return active.activity?.nilIfEmpty
+        case "running" where active.activity?.split(separator: " · ", maxSplits: 1).count == 2: return active.activity
+        default: return nil
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            statusRow
+            if let run = active.codeRun {
+                let reference = run.runId.map { active.id + "/" + $0 } ?? active.id
+                ChatCodeRunCard(run: run, api: api, chat: chat, task: reference, stopping: active.status == "cancelling") {
+                    onViewOutput(reference)
+                }
+            }
+        }
+    }
+
+    private var statusRow: some View {
+        HStack(spacing: 8) {
+            if active.status == "running" {
+                BudFace(appearance: appearance, size: 37, mood: .activity(active.activityKind))
+            } else {
+                BudActivityDots()
+            }
+            if active.codeRun?.status != "running" {
+                if let progress {
+                    label(progress)
+                } else {
+                    switch (active.status, active.activityKind) {
+                    case ("cancelling", _), (_, "stopping"):
+                        label("Stopping…")
+                    case ("queued", _):
+                        label("Queued")
+                    default:
+                        RotatingReplyStatus(active: active)
+                            .id(ReplyStage(id: active.id, status: active.status, kind: active.activityKind))
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 5)
+        .frame(minHeight: 32)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func label(_ text: String) -> some View {
+        Text(text).font(.footnote).foregroundStyle(BuddyStyle.muted)
+    }
+}
+
+private struct ReplyStage: Hashable {
+    let id: String
+    let status: String
+    let kind: String?
+}
+
+private struct RotatingReplyStatus: View {
+    let active: ActiveReply
+    @State private var started = Date.now
+
+    private static let catalog: [String: [String]] = {
+        guard let url = Bundle.main.url(forResource: "status", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let copy = try? JSONDecoder().decode([String: [String]].self, from: data) else { return [:] }
+        return copy
+    }()
+
+    var body: some View {
+        TimelineView(.periodic(from: started, by: 5)) { timeline in
+            let step = Int(max(0, timeline.date.timeIntervalSince(started)) / 5)
+            Text(label(step: step))
+                .font(.footnote)
+                .foregroundStyle(BuddyStyle.muted)
+        }
+    }
+
+    private func label(step: Int) -> String {
+        let kind = active.activityKind ?? "thinking"
+        let stage = Self.catalog[kind] == nil ? "thinking" : kind
+        guard let labels = Self.catalog[stage], labels.count > 1 else { return "Working…" }
+        let hash = (active.id + ":" + stage).utf8.reduce(UInt32(2166136261)) { ($0 ^ UInt32($1)) &* 16777619 }
+        let value = Int(hash), count = labels.count
+        var stride = value / count % (count - 1) + 1
+        while gcd(stride, count) != 1 { stride += 1 }
+        return labels[(value % count + step % count * stride) % count]
+    }
+
+    private func gcd(_ a: Int, _ b: Int) -> Int {
+        b == 0 ? a : gcd(b, a % b)
+    }
 }
 
 struct ConnectionError: View {
@@ -127,9 +258,15 @@ struct ChatView: View {
     @State private var cursor: Int64?
     @State private var loadingHistory = false
     @State private var loadingLatest = false
+    @State private var nearHistory = false
+    @State private var topMessage: Int64?
+    @State private var historyError: String?
     @State private var lastRead: Int64 = 0
     @State private var draft = ""
+    @State private var nearLatest = true
     @State private var busy = false
+    @State private var stoppingCode: String?
+    @State private var outputSelection: CodeOutputSelection?
     @State private var loadError: String?
     @State private var actionError: String?
     @State private var outgoing: Outgoing?
@@ -144,9 +281,12 @@ struct ChatView: View {
     private struct Outgoing {
         let text: String
         let key: String
-        let background: Bool
         let backgroundAnswer: String?
         let attachments: [ChatUpload]
+    }
+
+    private struct CodeOutputSelection: Identifiable {
+        let id: String
     }
 
     private var messages: [ChatMessage] {
@@ -155,59 +295,134 @@ struct ChatView: View {
         return older
     }
 
+    private var historyPage: Int64? {
+        if loadingHistory { return cursor }
+        guard nearHistory, !nearLatest, !loadingLatest, historyError == nil else { return nil }
+        return cursor
+    }
+
+    private var liveWork: [WorkItem] {
+        (conversation?.work ?? []).filter {
+            ["queued", "running", "cancelling", "needs_input"].contains($0.status) &&
+            ($0.codeRun != nil || $0.projectId?.nilIfEmpty != nil)
+        }
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 14) {
-                    if let before = cursor, before > 0 {
-                        Button(loadingHistory ? "Loading…" : "Load earlier messages") {
-                            loadingHistory = true
-                            Task { await loadEarlier(before: before) }
+                VStack(spacing: 0) {
+                    Color.clear
+                        .frame(height: 1)
+                        .onGeometryChange(for: Bool.self) { geometry in
+                            geometry.frame(in: .scrollView).maxY >= -120
+                        } action: { nearHistory = $0 }
+                        .accessibilityHidden(true)
+                    if loadingHistory {
+                        ProgressView("Loading earlier messages…")
+                            .font(.footnote)
+                            .padding(.bottom, 10)
+                    } else if let historyError, let before = cursor {
+                        HStack {
+                            ConnectionError(message: historyError)
+                            Button("Retry") { Task { await loadEarlier(before: before) } }
+                                .disabled(loadingLatest)
                         }
-                        .buttonStyle(.bordered)
-                        .disabled(loadingHistory || loadingLatest)
+                        .padding(.bottom, 10)
                     }
-                    ForEach(messages) { message in
-                        MessageBubble(message: message, chat: id, api: api, avatar: avatar(for: message), busy: busy || conversation?.archived == true,
-                                      reactions: reactions(for: message),
-                                      reactionOptions: conversation?.archived == true ? [] : conversation?.reactionOptions ?? [],
-                                      onReaction: { emoji in
-                                          perform {
-                                              let update = try await api.setReaction(chat: id, message: message.id, emoji: emoji)
-                                              recordReaction(update)
-                                          }
-                                      },
-                                      onChoice: { index in perform { try await api.answerCard(chat: id, card: message.taskId, choice: index) } },
-                                      onBackgroundReply: isOpenBackgroundQuestion(message) ? {
-                                          backgroundAnswer = message.taskId
-                                          composerFocused = true
-                                      } : nil,
-                                      onActivate: { perform { try await api.activateWatch(chat: id, task: message.taskId) } },
-                                      createdBud: createdBuds[message.taskId],
-                                      onCreateBud: { approval in
-                                          perform {
-                                              let bud = try await api.createProposedBud(chat: id, task: message.taskId, approval: approval)
-                                              createdBuds[message.taskId] = bud.conversationId
-                                          }
-                                      })
-                            .id(message.id)
+                    LazyVStack(spacing: 14) {
+                        ForEach(messages) { message in
+                            MessageBubble(message: message, chat: id, api: api,
+                                          showAuthor: showsAuthor(for: message), busy: busy || conversation?.archived == true,
+                                          reactions: reactions(for: message),
+                                          reactionOptions: conversation?.archived == true ? [] : conversation?.reactionOptions ?? [],
+                                          onReaction: { emoji in
+                                              perform {
+                                                  let update = try await api.setReaction(chat: id, message: message.id, emoji: emoji)
+                                                  recordReaction(update)
+                                              }
+                                          },
+                                          onChoice: { index in perform { try await api.answerCard(chat: id, card: message.taskId, choice: index) } },
+                                          onBackgroundReply: isOpenBackgroundQuestion(message) ? {
+                                              backgroundAnswer = message.taskId
+                                              composerFocused = true
+                                          } : nil,
+                                          onActivate: { perform { try await api.activateWatch(chat: id, task: message.taskId) } },
+                                          onViewOutput: showCodeOutput,
+                                          createdBud: createdBuds[message.taskId],
+                                          onCreateBud: { approval in
+                                              perform {
+                                                  let bud = try await api.createProposedBud(chat: id, task: message.taskId, approval: approval)
+                                                  createdBuds[message.taskId] = bud.conversationId
+                                              }
+                                          })
+                                .id(message.id)
+                        }
+                    }
+                    .scrollTargetLayout()
+                    ForEach(liveWork) { item in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(item.title).font(.subheadline.weight(.semibold))
+                            Text([statusLabel(item.status), item.device?.nilIfEmpty ?? "Buddy server", item.projectName?.nilIfEmpty]
+                                .compactMap { $0 }.joined(separator: " · "))
+                                .font(.caption).foregroundStyle(BuddyStyle.muted)
+                            if let update = item.update?.nilIfEmpty {
+                                Text(update).font(.footnote).foregroundStyle(BuddyStyle.muted).lineLimit(2)
+                            }
+                            if let run = item.codeRun {
+                                let reference = run.runId.map { item.id + "/" + $0 } ?? item.id
+                                ChatCodeRunCard(run: run, api: api, chat: id, task: reference, stopping: item.status == "cancelling") {
+                                    showCodeOutput(reference)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 14)
                     }
                     if let active = conversation?.active {
-                        HStack(spacing: 9) {
-                            ProgressView().controlSize(.small)
-                            Text(active.activity?.nilIfEmpty ?? statusLabel(active.status)).font(.footnote).foregroundStyle(.secondary)
-                            Spacer()
-                        }
+                        ChatActivity(active: active, appearance: activityAppearance(active), api: api, chat: id,
+                                     onViewOutput: showCodeOutput)
+                            .padding(.top, 14)
                     }
-                    Color.clear.frame(height: 1).id("chat-bottom")
+                    Color.clear
+                        .frame(height: 1)
+                        .id("chat-bottom")
+                        .onGeometryChange(for: Bool.self) { geometry in
+                            guard let viewport = geometry.bounds(of: .scrollView) else { return true }
+                            return geometry.frame(in: .scrollView).maxY <= viewport.height + 90
+                        } action: { nearLatest = $0 }
+                        .accessibilityHidden(true)
                 }
-                .padding(16)
+                .frame(maxWidth: 660)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity)
             }
+            .scrollPosition(id: $topMessage, anchor: .top)
             .defaultScrollAnchor(.bottom)
-            .onChange(of: messages.last?.id) { _, _ in
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+            .task(id: historyPage) {
+                if let before = historyPage { await loadEarlier(before: before) }
+            }
+            .onChange(of: messages.last?.id) { previous, _ in
+                if previous == nil || nearLatest || messages.last?.role == "user" {
+                    scrollToBottom(proxy)
+                }
+            }
+            .onChange(of: conversation?.active?.id) { _, id in
+                if id != nil && nearLatest { scrollToBottom(proxy) }
+            }
+            .onChange(of: conversation?.active?.codeRun) { _, run in
+                if run != nil && nearLatest { proxy.scrollTo("chat-bottom", anchor: .bottom) }
             }
             .overlay {
+                if messages.isEmpty, let conversation, conversation.active == nil, conversation.archived != true {
+                    VStack(spacing: 12) {
+                        BudFace(appearance: conversation.agent.avatar, size: 114, mood: .idle)
+                        Text(chatTitle).font(.title2.weight(.semibold))
+                    }
+                    .padding(20)
+                    .allowsHitTesting(false)
+                }
                 if conversation == nil && loadError == nil { ProgressView("Loading conversation…") }
                 if let loadError, conversation == nil { ContentUnavailableView("Can’t open chat", systemImage: "wifi.slash", description: Text(loadError)) }
             }
@@ -218,26 +433,85 @@ struct ChatView: View {
                         .foregroundStyle(.secondary)
                         .padding()
                 } else {
-                    composer
+                    VStack(spacing: 7) {
+                        if !nearLatest && !messages.isEmpty {
+                            Button { scrollToBottom(proxy) } label: {
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .frame(width: 44, height: 44)
+                                    .background(.regularMaterial, in: Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Jump to latest")
+                        }
+                        composer
+                    }
                 }
             }
         }
         .buddyPage()
+        .sheet(item: $outputSelection) { selection in
+            ChatCodeOutputView(api: api, chat: id, task: selection.id)
+        }
         .fileImporter(isPresented: $pickingFiles, allowedContentTypes: [.data], allowsMultipleSelection: true) {
             importFiles($0)
         }
-        .navigationTitle(conversation?.name?.nilIfEmpty ?? conversation?.agent.name ?? name)
+        .navigationTitle(chatTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                NavigationLink(value: Destination.chatInfo(id, chatTitle)) {
+                    HStack(spacing: 6) {
+                        if isGroup {
+                            Image(systemName: "person.2").font(.caption).foregroundStyle(BuddyStyle.muted)
+                        } else {
+                            BudFace(appearance: conversation?.agent.avatar, size: 25)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(chatTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
+                            if let role = conversation?.agent.displayRole {
+                                Text(role).font(.caption2).foregroundStyle(BuddyStyle.muted).lineLimit(1)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 11)
+                    .frame(minHeight: 38)
+                    .background(BuddyStyle.raised, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(chatTitle), conversation details")
+                .accessibilityHint(conversation?.agent.displayRole ?? "")
+                .disabled(conversation == nil)
+            }
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    if let conversation { voice.start(api: api, conversation: conversation, chat: id) }
-                } label: { Image(systemName: "phone") }
-                .accessibilityLabel(voice.active ? "Return to voice call" : "Start voice call")
-                .disabled(conversation == nil || conversation?.archived == true)
+                Menu {
+                    Button {
+                        if let conversation { voice.start(api: api, conversation: conversation, chat: id) }
+                    } label: {
+                        Label(voice.active ? "Return to call" : "Start voice call", systemImage: "waveform")
+                    }
+                    .disabled(conversation == nil || conversation?.archived == true)
+                } label: {
+                    Label("Chat actions", systemImage: "ellipsis")
+                }
             }
         }
-        .task(id: phase) { await refreshWhileActive(phase, every: .seconds(3), load: load) }
+        .task(id: phase) {
+            guard phase == .active else { return }
+            while !Task.isCancelled {
+                await load()
+                let interval: Duration = if conversation?.active != nil {
+                    .milliseconds(500)
+                } else if conversation?.work?.contains(where: { ["queued", "running", "cancelling"].contains($0.status) }) == true {
+                    .seconds(1)
+                } else {
+                    .seconds(3)
+                }
+                do { try await Task.sleep(for: interval) }
+                catch { return }
+            }
+        }
         .refreshable { await load() }
     }
 
@@ -276,8 +550,10 @@ struct ChatView: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 Button { pickingFiles = true } label: {
-                    Image(systemName: "paperclip").frame(width: 44, height: 44)
+                    Image(systemName: "plus").frame(width: 44, height: 44)
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(BuddyStyle.muted)
                 .accessibilityLabel("Attach files")
                 .accessibilityIdentifier("chat-attach")
                 .disabled(busy || conversation == nil || draftFiles.count >= 5)
@@ -289,44 +565,100 @@ struct ChatView: View {
                     .accessibilityIdentifier("chat-composer")
                     .focused($composerFocused)
                     .disabled(busy)
-                if backgroundAnswer == nil {
-                    Button { send(background: true) } label: {
-                        Image(systemName: "briefcase").font(.body.weight(.medium))
-                            .frame(width: 40, height: 44)
+                if let active = conversation?.active, active.codeRun?.status == "running" {
+                    let stopping = active.status == "cancelling" || stoppingCode == (active.codeRun?.runId ?? active.id)
+                    Button {
+                        stopCodeRun(active.id, attempt: active.codeRun?.runId)
+                    } label: {
+                        if showsVoiceAction {
+                            composerAction("stop.fill")
+                        } else {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(BuddyStyle.muted)
+                                .frame(width: 36, height: 44)
+                                .contentShape(Rectangle())
+                        }
                     }
-                    .accessibilityLabel("Run in background")
-                    .accessibilityIdentifier("chat-run-background")
-                    .disabled(!canRunInBackground)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(stopping ? "Stopping code run" : "Stop code run")
+                    .disabled(stopping)
+                } else if showsVoiceAction {
+                    Button {
+                        if let conversation { voice.start(api: api, conversation: conversation, chat: id) }
+                    } label: {
+                        composerAction("waveform")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(voice.active ? "Return to voice call" : "Start voice call")
+                    .disabled(conversation == nil || conversation?.archived == true)
                 }
-                Button { send(background: false) } label: {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 32))
-                        .frame(width: 42, height: 44)
+                if !showsVoiceAction {
+                    Button(action: send) { composerAction("arrow.up") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Send")
+                        .disabled(!canSend)
                 }
-                .accessibilityLabel("Send")
-                .disabled(!canSend)
             }
             .padding(3)
-            .background(BuddyStyle.surface, in: RoundedRectangle(cornerRadius: 20))
-            .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(BuddyStyle.border))
+            .background(BuddyStyle.surface, in: RoundedRectangle(cornerRadius: 26))
+            .overlay(RoundedRectangle(cornerRadius: 26).strokeBorder(BuddyStyle.border))
         }
+        .frame(maxWidth: 660)
         .padding(.horizontal, 16)
-        .padding(.vertical, 9)
-        .background(BuddyStyle.background)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(.regularMaterial)
+    }
+
+    private func composerAction(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 18, weight: .semibold))
+            .foregroundStyle(BuddyStyle.accentText)
+            .frame(width: 36, height: 36)
+            .background(BuddyStyle.accent, in: Circle())
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+    }
+
+    private var chatTitle: String { conversation?.name?.nilIfEmpty ?? conversation?.agent.name ?? name }
+    private var isGroup: Bool { conversation?.name?.nilIfEmpty != nil }
+
+    private var showsVoiceAction: Bool {
+        backgroundAnswer == nil && draftFiles.isEmpty && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+    }
+
+    private func showCodeOutput(_ task: String) {
+        outputSelection = CodeOutputSelection(id: task)
+    }
+
+    private func stopCodeRun(_ task: String, attempt: String?) {
+        stoppingCode = attempt ?? task
+        actionError = nil
+        Task {
+            do {
+                try await api.stopCodeRun(chat: id, run: task, attempt: attempt)
+                await load()
+                stoppingCode = nil
+            } catch {
+                stoppingCode = nil
+                actionError = error.localizedDescription
+            }
+        }
     }
 
     private var composerPlaceholder: String {
         if backgroundAnswer != nil { return "Reply…" }
-        return conversation?.name?.nilIfEmpty == nil ? "Message" : "Message the group"
+        return isGroup ? "Message the group" : "Message \(chatTitle)"
     }
 
     private var canSend: Bool {
         !busy && conversation != nil &&
             (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draftFiles.isEmpty)
-    }
-
-    private var canRunInBackground: Bool {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return canSend && !text.isEmpty && !text.hasPrefix("/")
     }
 
     private func importFiles(_ selection: Result<[URL], Error>) {
@@ -355,11 +687,15 @@ struct ChatView: View {
         }
     }
 
-    private func avatar(for message: ChatMessage) -> BudAppearance? {
-        guard let conversation else { return nil }
-        guard let sender = message.agentId, sender != conversation.agent.id else { return conversation.agent.avatar }
-        return conversation.profiles?.first { $0.id == sender }?.avatar
-            ?? conversation.members?.first { $0.id == sender }?.avatar
+    private func showsAuthor(for message: ChatMessage) -> Bool {
+        isGroup || message.origin == "voice" || (message.agentId != nil && message.agentId != conversation?.agent.id)
+    }
+
+    private func activityAppearance(_ active: ActiveReply) -> BudAppearance? {
+        guard let agent = active.agentId else { return conversation?.agent.avatar }
+        return conversation?.profiles?.first(where: { $0.id == agent })?.avatar
+            ?? conversation?.members?.first(where: { $0.id == agent })?.avatar
+            ?? conversation?.agent.avatar
     }
 
     private func load() async {
@@ -375,6 +711,7 @@ struct ChatView: View {
             if conversation == nil || archiveChanged { cursor = snapshot.before }
             if archiveChanged {
                 older = []
+                historyError = nil
                 reactionOverrides = [:]
             }
             if let first = snapshot.messages?.first {
@@ -422,9 +759,12 @@ struct ChatView: View {
     }
 
     private func loadEarlier(before: Int64) async {
+        guard !loadingHistory, !loadingLatest, cursor == before else { return }
+        loadingHistory = true
         defer { loadingHistory = false }
         do {
             let page = try await api.chat(id, before: before)
+            try Task.checkCancellation()
             guard (page.transcriptRevision ?? 0) == (conversation?.transcriptRevision ?? 0) else { return }
             let first = messages.first?.id ?? Int64.max
             older.insert(contentsOf: (page.messages ?? []).filter { $0.id < first }, at: 0)
@@ -432,8 +772,8 @@ struct ChatView: View {
             if let revision = page.reactionRevision, let reactionCursor, revision < reactionCursor {
                 self.reactionCursor = revision
             }
-            actionError = nil
-        } catch { actionError = error.localizedDescription }
+            historyError = nil
+        } catch where !Task.isCancelled { historyError = error.localizedDescription } catch {}
     }
 
     private func reactions(for message: ChatMessage) -> [MessageReaction] {
@@ -449,18 +789,18 @@ struct ChatView: View {
         }
     }
 
-    private func send(background: Bool) {
+    private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard background ? canRunInBackground : canSend else { return }
+        guard canSend else { return }
         let retry = outgoing.flatMap {
-            $0.text == text && $0.background == background && $0.backgroundAnswer == backgroundAnswer &&
+            $0.text == text && $0.backgroundAnswer == backgroundAnswer &&
                 $0.attachments == draftFiles ? $0 : nil
         }
-        let message = retry ?? Outgoing(text: text, key: UUID().uuidString, background: background,
+        let message = retry ?? Outgoing(text: text, key: UUID().uuidString,
                                         backgroundAnswer: backgroundAnswer, attachments: draftFiles)
         outgoing = message
         perform {
-            try await api.send(chat: id, text: message.text, background: message.background,
+            try await api.send(chat: id, text: message.text,
                                backgroundAnswer: message.backgroundAnswer, attachments: message.attachments, key: message.key)
             backgroundAnswer = nil
             draftFiles = []
@@ -492,7 +832,7 @@ private struct MessageBubble: View {
     let message: ChatMessage
     let chat: String
     let api: BuddyAPI
-    let avatar: BudAppearance?
+    let showAuthor: Bool
     let busy: Bool
     let reactions: [MessageReaction]
     let reactionOptions: [ReactionOption]
@@ -500,6 +840,7 @@ private struct MessageBubble: View {
     let onChoice: (Int) -> Void
     let onBackgroundReply: (() -> Void)?
     let onActivate: () -> Void
+    let onViewOutput: (String) -> Void
     let createdBud: String?
     let onCreateBud: (BuddyAPI.BudApproval?) -> Void
 
@@ -508,10 +849,17 @@ private struct MessageBubble: View {
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
             if outgoing { Spacer(minLength: 24) }
-            if !outgoing { BudFace(appearance: avatar, size: 29) }
             VStack(alignment: .leading, spacing: 8) {
-                if let name = message.agentName?.nilIfEmpty, !outgoing {
+                if let name = message.agentName?.nilIfEmpty, !outgoing && showAuthor {
                     Text(name).font(.caption.bold()).foregroundStyle(.secondary)
+                }
+                let runs = message.codeRuns ?? message.codeRun.map { [$0] } ?? []
+                ForEach(runs.indices, id: \.self) { index in
+                    let run = runs[index]
+                    let reference = run.runId.map { message.taskId + "/" + $0 } ?? message.taskId
+                    ChatCodeRunCard(run: run, api: api, chat: chat, task: reference) {
+                        onViewOutput(reference)
+                    }
                 }
                 if !message.text.isEmpty { RichText(message.text, bud: message.agentId, task: message.taskId) }
                 if message.generatedImage == true {
@@ -522,7 +870,8 @@ private struct MessageBubble: View {
                 if let onBackgroundReply {
                     Button("Reply", action: onBackgroundReply).buttonStyle(.bordered).disabled(busy)
                 }
-                if let card = message.connectionCard {
+                ForEach([message.connectionCard, message.watchCard].compactMap { $0 }.indices, id: \.self) { index in
+                    let card = [message.connectionCard, message.watchCard].compactMap { $0 }[index]
                     evidence(title: card.heading, detail: card.detail, body: card.body, url: card.url, items: card.items)
                     if card.watchDraft == true {
                         Button("Activate watch", action: onActivate)
@@ -550,10 +899,10 @@ private struct MessageBubble: View {
             .padding(12)
             .background(outgoing ? BuddyStyle.raised : BuddyStyle.surface,
                         in: RoundedRectangle(cornerRadius: 18))
-            if !outgoing {
-                if !reactionOptions.isEmpty { reactionPicker }
-                Spacer(minLength: 8)
+            .contextMenu {
+                if !outgoing && !reactionOptions.isEmpty { reactionActions }
             }
+            if !outgoing { Spacer(minLength: 18) }
         }
     }
 
@@ -590,28 +939,19 @@ private struct MessageBubble: View {
         .background(BuddyStyle.raised, in: RoundedRectangle(cornerRadius: 13))
     }
 
-    private var reactionPicker: some View {
-        let current = reactions.first(where: \.mine)?.emoji
-        return Menu {
-            ForEach(reactionOptions) { option in
-                Button {
-                    onReaction(option.emoji == current ? "" : option.emoji)
-                } label: {
-                    if option.emoji == current {
-                        Label("\(option.emoji)  \(option.label)", systemImage: "checkmark")
-                    } else {
-                        Text("\(option.emoji)  \(option.label)")
-                    }
+    @ViewBuilder
+    private var reactionActions: some View {
+        ForEach(reactionOptions) { option in
+            let selected = reactions.contains { $0.mine && $0.emoji == option.emoji }
+            Button { onReaction(selected ? "" : option.emoji) } label: {
+                if selected {
+                    Label("\(option.emoji) \(option.label)", systemImage: "checkmark")
+                } else {
+                    Text("\(option.emoji) \(option.label)")
                 }
             }
-        } label: {
-            Image(systemName: "face.smiling")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(width: 32, height: 36)
-                .accessibilityLabel("React to message")
+            .disabled(busy)
         }
-        .disabled(busy)
     }
 
     private var reactionChips: some View {

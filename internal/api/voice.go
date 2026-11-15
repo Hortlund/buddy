@@ -49,7 +49,7 @@ type VoiceMember struct {
 	Name string `json:"name"`
 }
 
-func voiceRoutes(mux *http.ServeMux, store *tasks.Store, worker *tasks.Worker, key localconfig.VoiceKey, dial realtimeDial, inUse *atomic.Bool) {
+func voiceRoutes(mux *http.ServeMux, store *tasks.Store, worker *tasks.Worker, key localconfig.VoiceKey, dial realtimeDial, inUse *atomic.Bool, runtime ...*tasks.CodexRuntime) {
 	status := func(w http.ResponseWriter, _ *http.Request) {
 		_, source, err := key.Read()
 		if err != nil {
@@ -153,6 +153,9 @@ func voiceRoutes(mux *http.ServeMux, store *tasks.Store, worker *tasks.Worker, k
 			}()
 		}
 		room := newVoiceRoom(ctx, conn, store, worker, chat, apiKey, dial)
+		if len(runtime) != 0 {
+			room.workspace = runtime[0]
+		}
 		room.run(agent)
 	})
 }

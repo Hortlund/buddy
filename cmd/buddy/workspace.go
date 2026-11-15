@@ -59,10 +59,13 @@ func (a *desktop) openConversation(id string) {
 	delete(a.attachmentDraftsByChat, id)
 	a.dictationPending = time.Time{}
 	a.skillCaretPending = false
+	a.skillPicker = skillPicker{}
 	a.conversationID, a.draft, a.inspectedAgent = id, a.drafts[id], ""
 	a.chat, a.workspace = tasks.Conversation{}, tasks.Workspace{}
 	a.list = ui.ListState{}
 	a.chatViewport = chatViewport{}
+	a.codeOutput = codeOutputView{request: a.codeOutput.request + 1}
+	a.historyRequest++
 	a.loadingHistory = false
 	a.chatErr, a.historyErr, a.workspaceErr, a.inspectorErr, a.retryKey = "", "", "", "", ""
 	a.refreshSoon()
@@ -212,21 +215,44 @@ func (a *desktop) createRoutine() {
 }
 
 func (a *desktop) changeRoutine(id string, enabled *bool) {
-	if !a.online {
+	if !a.online || a.chat.Archived || a.window == nil {
 		return
 	}
+	if _, pending := a.routinePending[id]; pending {
+		return
+	}
+	if a.routinePending == nil {
+		a.routinePending = make(map[string]*bool)
+	}
+	a.routinePending[id] = enabled
+	a.inspectorErr = ""
 	win, chat := a.window, a.currentConversation()
 	go func() {
 		err := a.client.UpdateRoutine(a.ctx, chat, id, enabled)
 		win.Update(func() {
+			delete(a.routinePending, id)
+			a.refreshSoon()
 			if a.currentConversation() != chat {
 				return
 			}
-			a.inspectorErr = ""
 			if err != nil {
 				a.inspectorErr = errorMessage(err, "Couldn't update the routine.")
+				return
 			}
-			a.refreshSoon()
+			if enabled == nil {
+				a.chat.Routines = slices.DeleteFunc(a.chat.Routines, func(routine tasks.Routine) bool { return routine.ID == id })
+				return
+			}
+			for i := range a.chat.Routines {
+				routine := &a.chat.Routines[i]
+				if routine.ID == id {
+					if *enabled && !routine.Enabled {
+						routine.NextAt = time.Now().Add(time.Duration(routine.Minutes) * time.Minute)
+					}
+					routine.Enabled = *enabled
+					break
+				}
+			}
 		})
 	}()
 }

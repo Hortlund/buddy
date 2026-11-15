@@ -12,7 +12,6 @@ struct PairingView: View {
     @State private var pairing = false
     @State private var error: String?
     @State private var appeared = false
-    @State private var floating = false
     @State private var showLink = !DataScannerViewController.isSupported
 
     var body: some View {
@@ -31,17 +30,12 @@ struct PairingView: View {
             }
             .background {
                 BuddyStyle.background.ignoresSafeArea()
-                RadialGradient(colors: [BuddyStyle.accent.opacity(0.14), .clear],
+                RadialGradient(colors: [BuddyStyle.accent.opacity(0.09), .clear],
                                center: .top, startRadius: 24, endRadius: 360).ignoresSafeArea()
             }
             .toolbar(.hidden, for: .navigationBar)
             .task(id: reduceMotion) {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.38)) { appeared = true }
-                if reduceMotion {
-                    floating = false
-                } else {
-                    withAnimation(.easeInOut(duration: 2.6).repeatForever(autoreverses: true)) { floating = true }
-                }
             }
             .sheet(isPresented: $scanning) {
                 NavigationStack {
@@ -64,14 +58,7 @@ struct PairingView: View {
 
     private var hero: some View {
         VStack(spacing: 13) {
-            ZStack {
-                Circle().fill(.linearGradient(colors: [BuddyStyle.accent.opacity(0.24), BuddyStyle.accent.opacity(0.04)],
-                                               startPoint: .topLeading, endPoint: .bottomTrailing))
-                BudFace(appearance: BudAppearance(color: "plum", shape: "cloud"), size: 87)
-                    .offset(y: floating && !reduceMotion ? -4 : 4)
-            }
-            .frame(width: 124, height: 124)
-            .accessibilityHidden(true)
+            BudFace(appearance: BudAppearance(color: "coral", shape: "orb"), size: 126, mood: .idle)
 
             Text("Connect to Buddy")
                 .font(.system(size: titleSize, weight: .bold))
@@ -130,7 +117,8 @@ struct PairingView: View {
                     }
                     .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderedProminent)
+                .foregroundStyle(BuddyStyle.accentText)
                 .controlSize(.large)
                 .disabled(pairing || link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                           deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

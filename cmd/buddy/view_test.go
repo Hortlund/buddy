@@ -281,8 +281,13 @@ func TestActivityBubbleShowsOnlyMeaningfulText(t *testing.T) {
 	}
 	active.Kind, active.Activity, active.Update = tasks.Replying, "Writing a reply…", ""
 	view.Frame()
-	if view.HasText(active.Activity) {
-		t.Fatalf("reply filler appeared: %v", view.Texts())
+	if view.HasText(active.Activity) || !view.HasText(replyStatus(active, 0)) {
+		t.Fatalf("reply did not use its stage status: %v", view.Texts())
+	}
+	view.SetPreferences(ui.Preferences{ReduceMotion: true})
+	view.Advance(10 * time.Second)
+	if !view.HasText(replyStatus(active, 10*time.Second)) || view.HasText(replyStatus(active, 0)) {
+		t.Fatalf("long-running reply did not vary its stage status: %v", view.Texts())
 	}
 }
 
@@ -309,24 +314,44 @@ func TestReplyKeepsItsRowAndComposerSlot(t *testing.T) {
 }
 
 func TestCompactHeaderAndInlineComposer(t *testing.T) {
-	a := &desktop{online: true}
+	a := &desktop{online: true, draft: "Hi", inspectorClosed: true}
 	a.chat.Agent = tasks.Agent{Name: "Scout", Model: tasks.DefaultCodexModel}
 	view := ui.NewTester(a.view, 820, 590)
 	view.SetTitleBar(ui.TitleBar{Height: 42, Left: 80, Right: 140})
 	view.Frame()
 	brand, brandFound := view.Find("Buddy")
-	chat, chatFound := view.Find("Scout")
-	workspace, workspaceFound := view.Find("Workspace")
-	if !brandFound || !chatFound || !workspaceFound || brand.X >= 24 || brand.Y < 42 || workspace.X+workspace.W > 820-140 {
-		t.Fatalf("header overlapped the window controls: %v, %v, %v", brand, chat, workspace)
+	chat, chatFound := view.Find("Scout, conversation details")
+	if !brandFound || !chatFound || brand.X < 80 || brand.Y >= 42 || chat.Y >= 42 {
+		t.Fatalf("header overlapped the window controls: Buddy %v, Chat %v", brand, chat)
 	}
-	if chat.Y > 22 || workspace.Y > 22 {
-		t.Fatalf("headers dropped below the title bar: %v, %v, %v", brand, chat, workspace)
+	if view.HasText("Server connected") || view.HasText("Run in background") || view.HasText("Work runs") {
+		t.Fatalf("chat displayed redundant chrome: %v", view.Texts())
 	}
 	input, inputFound := view.Find("Message")
 	send, sendFound := view.Find("Send")
 	if !inputFound || !sendFound || input.X+input.W > send.X || input.Y+input.H/2 != send.Y+send.H/2 {
 		t.Fatalf("send button was not inline: %v, %v", input, send)
+	}
+	if err := view.Click("Scout, conversation details"); err != nil {
+		t.Fatal(err)
+	}
+	if close, ok := view.Find("Close conversation details"); !ok || close.X+close.W > 820-140 {
+		t.Fatalf("inspector control overlapped the title bar: %+v", close)
+	}
+	if !view.HasText("Work runs") || view.HasText("Files") {
+		t.Fatalf("details did not open on Activity: %v", view.Texts())
+	}
+	if err := view.Click("Library"); err != nil {
+		t.Fatal(err)
+	}
+	if !view.HasText("Files") || view.HasText("Work runs") {
+		t.Fatalf("Library showed the wrong content: %v", view.Texts())
+	}
+	if err := view.Click("Compact sidebar"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := view.Find("Expand sidebar"); !ok || !a.compactSidebar {
+		t.Fatal("sidebar could not switch to compact mode")
 	}
 }
 
@@ -357,11 +382,11 @@ func TestDesktopPagesAlignAtEveryWindowSize(t *testing.T) {
 
 			a.section = "menu"
 			view.Frame()
-			wantHeading := find("Review activity and manage your Buddy workspace.")
+			wantHeading := find("Activity")
 			wantBack := find("Back to chat")
 			menuRow := find("Work")
-			if wantBack.X < 186 || wantBack.X-186 > 24 ||
-				menuRow.X != wantHeading.X+1 || float32(size.width)-(menuRow.X+menuRow.W) != menuRow.X-186 {
+			if wantBack.X < 174 || wantBack.X-174 > 24 ||
+				menuRow.X != wantHeading.X+1 || float32(size.width)-(menuRow.X+menuRow.W) != menuRow.X-174 {
 				t.Fatalf("menu did not fill the main pane with even gutters: heading %v, back %v, row %v", wantHeading, wantBack, menuRow)
 			}
 			for _, page := range []struct {
@@ -380,7 +405,7 @@ func TestDesktopPagesAlignAtEveryWindowSize(t *testing.T) {
 				a.section = page.section
 				view.Frame()
 				heading, back := find(page.subtitle), find(page.back)
-				if heading.X != wantHeading.X || heading.Y != wantHeading.Y || back.X != wantBack.X || back.Y != wantBack.Y {
+				if heading.X != wantHeading.X || back.X != wantBack.X || back.Y != wantBack.Y {
 					t.Errorf("%s: heading %v and back %v did not align with %v and %v", page.section, heading, back, wantHeading, wantBack)
 				}
 				if page.back == "Back to chat" {

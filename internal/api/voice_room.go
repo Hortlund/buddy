@@ -55,6 +55,8 @@ type voiceRoom struct {
 	tools                 voicePermission
 	turn                  uint64
 	toolSteps, hops       int
+	workspace             *tasks.CodexRuntime
+	voiceCheck            *voiceToolCheck
 	didSchedule           bool
 	didManage             bool
 	didCreateBud          bool
@@ -196,7 +198,13 @@ func (r *voiceRoom) run(initial tasks.Agent) {
 	defer tick.Stop()
 	for {
 		var err error
+		var checked <-chan voiceToolVerdict
+		if r.voiceCheck != nil {
+			checked = r.voiceCheck.done
+		}
 		select {
+		case verdict := <-checked:
+			err = r.completeVoiceToolCheck(verdict)
 		case <-r.ctx.Done():
 			end = r.ctx.Err().Error()
 			return
@@ -261,6 +269,10 @@ func (r *voiceRoom) departMember(member *roomMember, notice string) error {
 	}
 	_ = member.conn.CloseNow()
 	r.members = slices.DeleteFunc(r.members, func(m *roomMember) bool { return m == member })
+	if r.voiceCheck != nil && r.voiceCheck.batch.member == member {
+		r.voiceCheck.cancel()
+		r.voiceCheck = nil
+	}
 	if len(r.members) == 0 {
 		return errors.New("last voice session closed")
 	}
@@ -373,13 +385,14 @@ func (r *voiceRoom) join(agent tasks.Agent, index int) {
 				"Speak naturally and keep replies short. You share a call with other Buddy agents. " +
 				"Quiet pauses are normal. Leave space, avoid filler, and never comment on silence. " +
 				"Answer questions, discuss ideas, and sketch plans aloud. For example, discuss how a health endpoint would work if the caller asks about the idea. " +
-				"If the caller clearly asks you to add the endpoint and tests, delegate that work without asking again. If they are still deciding whether to proceed, ask before starting. " +
+				"When the caller asks for work that needs research, code changes, builds, tests, or another machine, delegate it and keep the call available. For example, a request to add the endpoint and tests is enough to delegate. If the caller is still deciding whether to proceed, talk through the options. " +
 				"When the caller names several Buds with different assignments, use one delegate_work call containing all assignments. Order dependent work after its prerequisites and leave independent jobs free to run together. " +
 				"When the caller requests background work, call delegate_work now. When they ask to create a Bud, call create_bud. Choose reasonable details for a sample. A spoken promise does not perform either action. " +
 				"Use buddy_work for status. When stop_work is available, use it for the caller's stop request. If it is unavailable and the caller wants to stop a job, suggest saying 'stop that job' or using Stop job in Work. " +
 				"When the caller answers a job's pending question, use answer_work to continue that job. If they request several independent actions, return the necessary tool calls in the same response. " +
 				"Resolve 'that job' from the latest handoff or look up active jobs in this chat. Ask which job only when the target is unclear. Report whether it stopped, is stopping, or already finished. " +
 				"Use buddy_context to see the Lead Bud, who is available, and what is happening in the chat. " +
+				"Use read_workspace when available to inspect a file in your own working folder and answer from its contents. If the request needs a connected account, public research, or code execution, start one background assignment with the specific sources or files it needs and let it post the result to chat. " +
 				"Use invite_agent when someone should join. When asked to hand over the floor, call ask_agent immediately without a spoken preamble. " +
 				"Use the requested Bud’s ID, or the Lead Bud’s ID when asked for the lead. Omit the question for a simple handoff. " +
 				"Call invite_agent without a spoken preamble. The invited agent will greet the room. " +
@@ -471,7 +484,7 @@ func (r *voiceRoom) roster(kind string) error {
 }
 
 func (r *voiceRoom) idle() bool {
-	return !r.speech && r.pendingItem == "" && r.reply == nil && r.newBudReply == nil && r.floorHandoff == nil && !r.requested && r.playback == nil
+	return r.voiceCheck == nil && !r.speech && r.pendingItem == "" && r.reply == nil && r.newBudReply == nil && r.floorHandoff == nil && !r.requested && r.playback == nil
 }
 
 func (r *voiceRoom) applyFocus() error {
@@ -518,6 +531,12 @@ func (r *voiceRoom) input(in roomInput) error {
 		}
 		return r.requestReply(voiceSpeakOnly, "Greet the caller now in one short, friendly sentence. For example: Hey, I’m here. Do not start a task.")
 	case "interrupt":
+		if r.voiceCheck != nil {
+			r.reply, r.newBudReply, r.floorHandoff = nil, nil, nil
+			if err := r.cancelVoiceToolCheck(); err != nil {
+				return err
+			}
+		}
 		if r.playback != nil {
 			return r.interrupt(m)
 		}
@@ -607,7 +626,7 @@ func (r *voiceRoom) input(in roomInput) error {
 }
 
 func (r *voiceRoom) advance() error {
-	if r.requested || r.playback != nil || r.speech || r.pendingItem != "" {
+	if r.requested || r.playback != nil || r.speech || r.pendingItem != "" || r.voiceCheck != nil {
 		return nil
 	}
 	reply := r.newBudReply
@@ -689,6 +708,9 @@ func (r *voiceRoom) requestRoomReply(reply *roomReply) error {
 		tools := voiceTools(permission)
 		if r.workAnswer.input == "" {
 			tools = slices.DeleteFunc(tools, func(tool object) bool { return tool["name"] == "answer_work" })
+		}
+		if r.workspace == nil {
+			tools = slices.DeleteFunc(tools, func(tool object) bool { return tool["name"] == "read_workspace" })
 		}
 		params["tools"] = tools
 	}
@@ -854,6 +876,9 @@ func (r *voiceRoom) handleSpeech(m *roomMember, e realtimeEvent) error {
 			return nil
 		}
 		r.speech, r.pendingItem = true, e.Item
+		if err := r.cancelVoiceToolCheck(); err != nil {
+			return err
+		}
 		r.reply, r.newBudReply, r.floorHandoff = nil, nil, nil
 		r.turn++
 		r.stopRequested, r.stopTarget = false, ""

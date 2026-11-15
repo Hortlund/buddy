@@ -79,9 +79,22 @@ func TestRemoteExecutionControlPinsTLSAndRestrictsArtifacts(t *testing.T) {
 	if paused, err := worker.AutomationControl(ctx, device.ID, job.ID, job.Lease); err != nil || !paused {
 		t.Fatal("worker missed human control", err)
 	}
+	pausedState, err := worker.AutomationControlState(ctx, device.ID, job.ID, job.Lease)
+	if err != nil || !pausedState.Paused || pausedState.Revision == 0 {
+		t.Fatalf("worker missed control revision: %+v, %v", pausedState, err)
+	}
 	frame, err := owner.ExecutionFrame(ctx, job.ID)
 	if err != nil || !frame.Paused || len(frame.Data) == 0 {
 		t.Fatal("frame or takeover state missing", err)
+	}
+	for _, paused := range []bool{false, true, false} {
+		if err := owner.PauseAutomation(ctx, job.ID, paused); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resumed, err := worker.AutomationControlState(ctx, device.ID, job.ID, job.Lease)
+	if err != nil || resumed.Paused || resumed.Revision != pausedState.Revision+3 {
+		t.Fatalf("worker missed takeover between polls: %+v, %v", resumed, err)
 	}
 	if _, err := worker.WorkArtifact(ctx, job.ID, detail.Artifacts[0].ID); err == nil {
 		t.Fatal("worker could browse owner artifacts")

@@ -55,6 +55,8 @@ final class BuddyHome {
 
 enum Destination: Hashable {
     case chat(String, String)
+    case chatInfo(String, String)
+    case chatWork(String)
     case inbox(String)
     case work(String, String)
     case file(String, String, String?)
@@ -227,7 +229,7 @@ struct BuddyTabs: View {
             case .inbox: inbox = [route.destination]; selected = .inbox
             case .work: work = [route.destination]; selected = .work
             case .chat: chats = [route.destination]; selected = .chats
-            case .file, .artifact: chats = [route.destination]; selected = .chats
+            case .file, .artifact, .chatInfo, .chatWork: chats = [route.destination]; selected = .chats
             }
         }
         .task(id: PushSync(token: push.token, enabled: alerts, work: workAlerts, phase: phase)) {
@@ -263,6 +265,8 @@ struct BuddyTabs: View {
     private func show(_ destination: Destination) -> some View {
         switch destination {
         case let .chat(id, name): ChatView(api: api, id: id, name: name)
+        case let .chatInfo(id, name): ChatDetails(api: api, id: id, name: name)
+        case let .chatWork(id): WorkList(api: api, chat: id)
         case let .inbox(id): InboxDetail(api: api, id: id)
         case let .work(chat, id): WorkDetail(api: api, chat: chat, id: id)
         case let .file(bud, path, task): WorkspacePreview(api: api, bud: bud, path: path, sourceTask: task)
@@ -297,12 +301,12 @@ struct PhoneSettings: View {
                 .accessibilityIdentifier("appearance-picker")
             }
             .listRowBackground(BuddyStyle.surface)
-            Section("Execution") { NavigationLink("Hosts and capabilities") { HostCapabilities(api: api) } }.listRowBackground(BuddyStyle.surface)
- Section("Buddy home") {
+            Section("Buddy home") {
                 if let credentials = api.credentials {
                     LabeledContent("This iPhone", value: credentials.name)
                     LabeledContent("Server", value: credentials.server.host() ?? credentials.server.absoluteString)
                 }
+                NavigationLink("Hosts and capabilities") { HostCapabilities(api: api) }
                 Button("Disconnect iPhone", role: .destructive) { showDisconnect = true }
                     .disabled(disconnecting)
                 if canForget {
@@ -320,7 +324,7 @@ struct PhoneSettings: View {
             } header: {
                 Text("Notifications")
             } footer: {
-                Text(notificationHelp)
+                if let notificationHelp { Text(notificationHelp) }
             }
             .listRowBackground(BuddyStyle.surface)
             if let message = error ?? issue {
@@ -339,10 +343,10 @@ struct PhoneSettings: View {
         }
     }
 
-    private var notificationHelp: String {
+    private var notificationHelp: String? {
         if !PhonePush.supported { return "Build the Buddy Push scheme to enable alerts." }
         if available == false { return "This Buddy server hasn’t set up iPhone notifications." }
-        return "Get notified when a Bud needs input or a watch has an update."
+        return nil
     }
 
     private func changeAlerts(_ enabled: Bool) {

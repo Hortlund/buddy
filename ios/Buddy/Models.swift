@@ -14,11 +14,18 @@ struct Bud: Decodable, Identifiable {
     let conversationId: String?
     let hasNewResult: Bool?
     let avatar: BudAppearance?
+    let removed: Bool?
+
+    var displayRole: String? {
+        role?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
 }
 
 struct BudAppearance: Decodable {
     let color: String?
     let shape: String?
+    var animate: Bool? = nil
+    var image: Data? = nil
 }
 
 struct GroupChat: Decodable, Identifiable {
@@ -42,11 +49,45 @@ struct Conversation: Decodable {
     let reactionOptions: [ReactionOption]?
     let reactionRevision: Int64?
     let reactionUpdates: [ReactionUpdate]?
+    let work: [WorkItem]?
+    let routines: [ChatRoutine]?
 }
 
 struct ActiveReply: Decodable {
+    let id: String
+    let agentId: String?
     let status: String
     let activity: String?
+    let activityKind: String?
+    let update: String?
+    let codeRun: ChatCodeRun?
+}
+
+struct ChatCodeRun: Decodable, Equatable {
+    let runId: String?
+    let workCommand: Bool?
+    let status: String
+    let startedAt: Date
+    let finishedAt: Date?
+    let command: String?
+    let exitCode: Int?
+    let stdout: String?
+    let stderr: String?
+    let error: String?
+    let truncated: Bool?
+    let outputPreview: Bool?
+}
+
+struct ChatRoutine: Decodable, Identifiable {
+    let id: String
+    let agentId: String?
+    let name: String
+    let minutes: Int
+    let nextAt: Date
+    let enabled: Bool
+    let deviceDisconnected: Bool?
+    let deviceId: String?
+    let researchScopeMissing: Bool?
 }
 
 struct ChatMessage: Decodable, Identifiable {
@@ -60,6 +101,8 @@ struct ChatMessage: Decodable, Identifiable {
     let card: ChoiceCard?
     let backgroundQuestion: Bool?
     let connectionCard: ConnectionCard?
+    let watchCard: ConnectionCard?
+    let codeRuns: [ChatCodeRun]?
     let budProposal: BudProposal?
     let github: GitHubCard?
     let jobId: String?
@@ -68,6 +111,7 @@ struct ChatMessage: Decodable, Identifiable {
     let generatedImage: Bool?
     let reactions: [MessageReaction]?
     let reactionRevision: Int64?
+    let codeRun: ChatCodeRun?
 }
 
 struct BudProposal: Decodable {
@@ -159,6 +203,7 @@ struct WatchSignal: Decodable {
 }
 
 struct WorkItem: Decodable, Identifiable {
+    let codeRun: ChatCodeRun?
     let projectId: String?
     let projectName: String?
     let workerRole: String?
@@ -186,8 +231,11 @@ struct WorkDetails: Decodable {
     let result: String?
     let question: String?
     let events: [WorkEvent]?
+    let codeRuns: [ChatCodeRun]?
 
-    private enum CodingKeys: String, CodingKey { case brief, result, question, events, sessions, artifacts, dependencies, delegated }
+    private enum CodingKeys: String, CodingKey {
+        case brief, result, question, events, codeRuns, sessions, artifacts, dependencies, delegated
+    }
 
     init(from decoder: Decoder) throws {
         item = try WorkItem(from: decoder)
@@ -200,6 +248,7 @@ struct WorkDetails: Decodable {
         result = try data.decodeIfPresent(String.self, forKey: .result)
         question = try data.decodeIfPresent(String.self, forKey: .question)
         events = try data.decodeIfPresent([WorkEvent].self, forKey: .events)
+        codeRuns = try data.decodeIfPresent([ChatCodeRun].self, forKey: .codeRuns)
     }
 }
 

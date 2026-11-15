@@ -36,12 +36,7 @@ func (a *desktop) connections(c *ui.Context) {
 	t := c.Theme()
 	ui.Column(c).FillWidth().Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(880).AlignSelf(ui.Center).Padding(30, 28, 16).Gap(18).Children(func() {
-			ui.Row(c).AlignItems(ui.Center).Gap(13).Children(func() {
-				ui.Box(c).Size(42, 42).Radius(13).Background(t.Accent.Alpha(.12)).Center().Children(func() {
-					ui.Icon(c, linkMark).Size(20, 20).TextColor(t.Accent)
-				})
-				ui.Text(c, "Connections").Role(ui.RoleHeading).FontSize(29).FontWeight(710).LetterSpacing(-1)
-			})
+			ui.Text(c, "Connections").Role(ui.RoleHeading).FontSize(29).FontWeight(690).LetterSpacing(-.8)
 			ui.Row(c).Gap(4).Padding(4).Wrap().Background(t.Surface).Radius(12).Border(1, t.Border).Children(func() {
 				for i, tab := range tabs {
 					id := connectionsTab(i)
@@ -52,7 +47,10 @@ func (a *desktop) connections(c *ui.Context) {
 					if selected || btn.Hovered() {
 						bg, color = t.SurfacePressed, t.Text
 					}
-					btn.Background(btn.AnimateColor("fill", bg, ui.Animation{Duration: 140 * time.Millisecond})).Children(func() {
+					if !c.Preferences().ReduceMotion {
+						bg = btn.AnimateColor("fill", bg, ui.Animation{Duration: 140 * time.Millisecond})
+					}
+					btn.Background(bg).Children(func() {
 						ui.Icon(c, tab.icon).Size(14, 14).TextColor(color)
 						ui.Text(c, tab.title).SingleLine().FontSize(12).FontWeight(620).TextColor(color)
 					})

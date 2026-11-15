@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 )
 
@@ -92,29 +93,122 @@ func (s *Store) JoinVoiceGroup(ctx context.Context, conversation, callID, name, 
 }
 
 func (s *Store) AddVoiceRoutine(ctx context.Context, conversation, callID string, routine Routine) (Routine, error) {
-	saved, err := s.AddVoiceRoutines(ctx, conversation, callID, []Routine{routine})
+	saved, err := s.addVoiceRoutines(ctx, conversation, callID, []voiceRoutine{{routine: routine, allowEdits: true}}, nil)
 	if err != nil {
 		return Routine{}, err
 	}
 	return saved[0], nil
 }
 
-func (s *Store) AddVoiceRoutines(ctx context.Context, conversation, callID string, routines []Routine) ([]Routine, error) {
-	if len(routines) == 0 || len(routines) > 8 {
-		return nil, &InputError{"Schedule one to eight routines at a time."}
+type voiceRoutine struct {
+	routine    Routine
+	allowEdits bool
+	position   int
+}
+
+type VoiceSchedule struct {
+	Jobs     []Handoff
+	Routines []RoutineDraft
+	Notice   string
+	research publicResearchContext
+}
+
+func VoiceRequest(request string) VoiceSchedule {
+	return VoiceSchedule{research: publicResearchContext{Requests: []researchRequest{{User: request}}}}
+}
+
+func (s *Store) AuthorizeVoiceSchedule(ctx context.Context, runtime *CodexRuntime, conversation, callID string, agent Agent,
+	jobs []Handoff, routines []RoutineDraft, request string) (VoiceSchedule, error) {
+	if len(jobs)+len(routines) == 0 || len(jobs)+len(routines) > 8 {
+		return VoiceSchedule{}, &InputError{"Schedule one to eight jobs or routines at a time."}
 	}
+	rows, err := s.db.QueryContext(ctx, `SELECT m.text FROM messages m JOIN voice_call_turns vc ON vc.task_id=m.task_id
+		JOIN chat_turns ct ON ct.task_id=m.task_id
+		WHERE vc.call_id=? AND ct.conversation_id=? AND m.role='user' ORDER BY m.id DESC LIMIT 8`, callID, conversation)
+	if err != nil {
+		return VoiceSchedule{}, err
+	}
+	research, err := scanRequestLines(rows)
+	if err != nil {
+		return VoiceSchedule{}, err
+	}
+	if len(research) == 0 || research[0] != request {
+		research = append([]string{request}, research...)
+	}
+	action := TurnAction{Handoffs: slices.Clone(jobs), Routines: slices.Clone(routines)}
+	if len(routines) != 0 || slices.ContainsFunc(jobs, HandoffNeedsAuthorization) {
+		// Independent jobs without workspace writes or automation remain eligible.
+		var turn Turn
+		if runtime != nil {
+			hosts, err := s.Hosts(ctx)
+			if err != nil {
+				return VoiceSchedule{}, err
+			}
+			projects, err := s.Projects(ctx)
+			if err != nil {
+				return VoiceSchedule{}, err
+			}
+			directory, err := s.Directory(ctx)
+			if err != nil {
+				return VoiceSchedule{}, err
+			}
+			turn = Turn{Agent: agent, Buds: directory.Agents, Devices: hosts, Projects: projects}
+			for _, line := range plainResearchRequests(research) {
+				turn.Messages = append(turn.Messages, Message{Role: "user", Text: line.User})
+			}
+		}
+		action.authorizeSchedule(ctx, func(ctx context.Context, jobs []Handoff, routines []RoutineDraft) schedulePermissions {
+			if runtime == nil {
+				return schedulePermissions{}
+			}
+			return runtime.authorizeChatSchedule(ctx, turn, jobs, routines)
+		})
+	}
+	if ctx.Err() != nil {
+		return VoiceSchedule{}, ctx.Err()
+	}
+	return VoiceSchedule{Jobs: action.Handoffs, Routines: action.Routines, Notice: action.scheduleNotice,
+		research: publicResearchContext{Requests: plainResearchRequests(research)}}, nil
+}
+
+func (s *Store) SaveVoiceRoutines(ctx context.Context, conversation, callID, agent string, schedule VoiceSchedule) ([]Routine, error) {
+	if len(schedule.Routines) == 0 {
+		return nil, &InputError{"I couldn’t verify an authorized schedule in the caller’s request."}
+	}
+	routines := make([]voiceRoutine, 0, len(schedule.Routines))
+	for _, draft := range schedule.Routines {
+		id := strings.TrimSpace(draft.AgentID)
+		if id == "" {
+			id = agent
+		}
+		routines = append(routines, voiceRoutine{
+			routine: Routine{AgentID: id, DeviceID: strings.TrimSpace(draft.DeviceID),
+				Name: draft.Name, Prompt: draft.Prompt, Minutes: draft.Minutes},
+			allowEdits: draft.AllowEdits, position: draft.ResearchPosition,
+		})
+	}
+	return s.addVoiceRoutines(ctx, conversation, callID, routines, schedule.research.Requests)
+}
+
+func (s *Store) addVoiceRoutines(ctx context.Context, conversation, callID string, routines []voiceRoutine, research []researchRequest) ([]Routine, error) {
 	tx, err := s.beginMobileWrite(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 	saved := make([]Routine, 0, len(routines))
-	for _, routine := range routines {
-		routine, err = addRoutine(ctx, tx, conversation, routine)
+	for _, draft := range routines {
+		routine, err := addRoutine(ctx, tx, conversation, draft.routine)
 		if err != nil {
 			return nil, err
 		}
+		if err := saveRoutinePermission(ctx, tx, routine.ID, draft.allowEdits); err != nil {
+			return nil, err
+		}
 		if _, err := tx.ExecContext(ctx, "INSERT INTO voice_call_routines VALUES (?,?)", routine.ID, callID); err != nil {
+			return nil, err
+		}
+		if err := saveRoutineResearch(ctx, tx, routine, draft.position, research); err != nil {
 			return nil, err
 		}
 		saved = append(saved, routine)
@@ -267,7 +361,7 @@ func (s *Store) QueueVoiceWork(ctx context.Context, conversation, agentID, callI
 // QueueVoiceHandoff keeps a call independent of the worker and posts its
 // result to the originating chat.
 func (s *Store) QueueVoiceHandoff(ctx context.Context, conversation, callID, actionID string, handoff Handoff) (Task, error) {
-	jobs, err := s.queueVoiceAssignments(ctx, conversation, "", callID, actionID, []Handoff{handoff}, false)
+	jobs, err := s.queueVoiceAssignments(ctx, conversation, "", callID, actionID, []Handoff{handoff}, false, publicResearchContext{})
 	if err != nil {
 		return Task{}, err
 	}
@@ -275,10 +369,14 @@ func (s *Store) QueueVoiceHandoff(ctx context.Context, conversation, callID, act
 }
 
 func (s *Store) QueueVoiceAssignments(ctx context.Context, conversation, requester, callID, actionID string, handoffs []Handoff) ([]AssignedWork, error) {
-	return s.queueVoiceAssignments(ctx, conversation, requester, callID, actionID, handoffs, true)
+	return s.queueVoiceAssignments(ctx, conversation, requester, callID, actionID, handoffs, true, publicResearchContext{})
 }
 
-func (s *Store) queueVoiceAssignments(ctx context.Context, conversation, requester, callID, actionID string, handoffs []Handoff, allowOutside bool) ([]AssignedWork, error) {
+func (s *Store) QueueAuthorizedVoiceAssignments(ctx context.Context, conversation, requester, callID, actionID string, schedule VoiceSchedule) ([]AssignedWork, error) {
+	return s.queueVoiceAssignments(ctx, conversation, requester, callID, actionID, schedule.Jobs, true, schedule.research)
+}
+
+func (s *Store) queueVoiceAssignments(ctx context.Context, conversation, requester, callID, actionID string, handoffs []Handoff, allowOutside bool, research publicResearchContext) ([]AssignedWork, error) {
 	if actionID == "" || len(actionID) > 512 || len(handoffs) == 0 || len(handoffs) > 8 {
 		return nil, &InputError{"Give one to eight clear assignments at a time."}
 	}
@@ -314,7 +412,7 @@ func (s *Store) queueVoiceAssignments(ctx context.Context, conversation, request
 		return existing, nil
 	}
 	jobs, err := enqueueAssignments(ctx, tx, assignmentSource{
-		chat: conversation, requester: requester, key: key, call: callID, allowOutside: allowOutside,
+		chat: conversation, requester: requester, key: key, call: callID, allowOutside: allowOutside, publicResearch: research,
 	}, handoffs)
 	if err != nil {
 		return nil, err

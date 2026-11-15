@@ -97,6 +97,9 @@ func (r *CodexRuntime) mcpForRun(ctx context.Context, turn Turn) ([]MCPServerCon
 			}
 		}
 		if config.Enabled && !reservedMCPName(config.Name) && turn.WatchSignal == nil {
+			if turn.Brief != "" && !turn.Agent.AllowEdits {
+				config.ApproveTools = false
+			}
 			enabled = append(enabled, config)
 		}
 	}

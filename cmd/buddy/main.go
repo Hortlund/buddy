@@ -66,7 +66,8 @@ func main() {
 	defer client.Close()
 	themeFile := filepath.Join(filepath.Dir(hostFile), "desktop-theme")
 	app := &desktop{
-		themeFile: themeFile, theme: localconfig.ReadDesktopTheme(themeFile),
+		inspectorClosed: true,
+		themeFile:       themeFile, theme: localconfig.ReadDesktopTheme(themeFile),
 		ctx: ctx, client: client, endpoint: *endpoint, initialRepo: *repo, hostFile: hostFile, canRelaunchHost: *profile == "", hasSavedHost: !errors.Is(hostFileErr, os.ErrNotExist), remoteHost: remote, hostNotice: hostNotice,
 	}
 	app.localServer = local

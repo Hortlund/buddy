@@ -74,13 +74,13 @@ func (a *desktop) voiceSettings(c *ui.Context) {
 }
 
 var (
-	callCanvas   = ui.Hex("#16171C")
-	callTile     = ui.Hex("#22242D")
-	callEdge     = ui.Hex("#373946")
-	callWhite    = ui.Hex("#F5F5F8")
-	callDim      = ui.Hex("#B3B5C5")
-	callAccent   = ui.Hex("#B9AEFF")
-	callOnAccent = ui.Hex("#211943")
+	callCanvas   = ui.Hex("#141414")
+	callTile     = ui.Hex("#202020")
+	callEdge     = ui.Hex("#303030")
+	callWhite    = ui.Hex("#F3F1EF")
+	callDim      = ui.Hex("#ADA9A4")
+	callAccent   = ui.Hex("#FFA269")
+	callOnAccent = ui.Hex("#281509")
 	callRed      = ui.Hex("#B93650")
 	hangMark     = svg(`<path d="M3.5 15.4v-2.9c0-1.5 3.4-3.7 8.5-3.7s8.5 2.2 8.5 3.7v2.9h-4.7l-.9-2.7a10.4 10.4 0 0 0-5.8 0l-.9 2.7z"/>`)
 	mutedMicMark = svg(`<path d="m4 4 16 16M9 9V6a3 3 0 0 1 6 0v6m-9-1v1a6 6 0 0 0 9 5m3-5v-1m-6 7v3m-3 0h6"/>`)
@@ -289,20 +289,8 @@ func (a *desktop) callAgentTile(c *ui.Context, call *desktopVoice, member api.Vo
 	size := callAvatarSize(c, call, count)
 	tile.Children(func() {
 		ui.Column(c).AlignItems(ui.Center).Gap(5).MinWidth(0).Padding(8, 12).Children(func() {
-			halo := ui.Hex("#A8ABCC")
-			if speaking {
-				halo = callAccent
-			}
-			ui.Box(c).Size(size+18, size+18).Radius((size+18)/2).Border(3, halo.Alpha(.57)).
-				Background(ui.Hex("#DFDDEF")).Center().Children(func() {
-				a.drawProfile(c, profile, size, speaking || mood != orbIdle, mood)
-			})
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, member.Name).FontSize(15).FontWeight(700).MinWidth(0).SingleLine().TextColor(callWhite)
-				if lead {
-					ui.Icon(c, primaryMark).Size(13, 13).Shrink(0).TextColor(callAccent)
-				}
-			})
+			a.drawProfile(c, profile, size, true, mood)
+			ui.Text(c, member.Name).FontSize(15).FontWeight(630).MinWidth(0).SingleLine().TextColor(callWhite)
 			stateColor := callDim
 			if speaking || active {
 				stateColor = callAccent

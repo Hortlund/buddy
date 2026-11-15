@@ -59,6 +59,7 @@ type desktop struct {
 	skillBusy                bool
 	skillNotice              string
 	skillCaretPending        bool
+	skillPicker              skillPicker
 	selectedSkills           map[string]string
 	creatingProposal         string
 	dictationPending         time.Time
@@ -78,6 +79,7 @@ type desktop struct {
 	authBusy                 bool
 
 	loadingHistory  bool
+	historyRequest  uint64
 	historyErr      string
 	revision        uint64
 	refreshing      bool
@@ -98,7 +100,6 @@ type desktop struct {
 	retryTarget     string
 	retryJob        string
 	retrySkill      string
-	retryBackground bool
 	retryQuestion   string
 
 	conversationID    string
@@ -106,13 +107,16 @@ type desktop struct {
 	directory         tasks.Directory
 	workspace         tasks.Workspace
 	workspaceErr      string
+	compactSidebar    bool
 	inspectorClosed   bool
+	inspectorLibrary  bool
 	otherAvatars      map[string]*avatarCache
 	drafts            map[string]string
 	jobDrafts         map[string]tasks.WorkItem
 	backgroundAnswers map[string]string
 	chatReads         map[string]chatReadProgress
 	chatViewport      chatViewport
+	codeOutput        codeOutputView
 	creatingAgent     bool
 	editLoading       bool
 	editReturn        string
@@ -126,6 +130,7 @@ type desktop struct {
 	routine           tasks.Routine
 	routineInterval   string
 	routineCadence    int
+	routinePending    map[string]*bool
 	inspectorErr      string
 	answeringCard     string
 	hostFile          string
@@ -194,7 +199,7 @@ func (a *desktop) refresh(c *ui.Context) {
 	startup := a.conversationID == "" && a.section == ""
 	inChat := a.section == "" && !a.onboarding
 	inspected := a.inspectedAgent
-	inspect := inChat && !a.inspectorClosed
+	inspect := inChat && !a.inspectorClosed && a.inspectorLibrary
 	connections := a.section == "connections"
 	checkProtocol := time.Since(a.protocolChecked) >= 15*time.Second
 	go func() {
@@ -252,6 +257,8 @@ func (a *desktop) refresh(c *ui.Context) {
 			}
 			if chat.TranscriptRevision != a.chat.TranscriptRevision {
 				a.chatViewport, a.list = chatViewport{}, ui.ListState{}
+				a.historyRequest++
+				a.loadingHistory, a.historyErr = false, ""
 			} else if len(a.chat.Messages) != 0 && len(chat.Messages) != 0 &&
 				chat.Messages[0].ID <= a.chat.Messages[len(a.chat.Messages)-1].ID+1 {
 				chat.Before = a.chat.Before
@@ -330,11 +337,12 @@ func (a *desktop) loadEarlier() {
 		return
 	}
 	a.loadingHistory, a.historyErr = true, ""
-	win, before, id := a.window, a.chat.Before, a.currentConversation()
+	a.historyRequest++
+	win, before, id, request := a.window, a.chat.Before, a.currentConversation(), a.historyRequest
 	go func() {
 		page, err := a.client.Conversation(a.ctx, id, before)
 		win.Update(func() {
-			if a.currentConversation() != id {
+			if a.historyRequest != request || a.currentConversation() != id {
 				return
 			}
 			a.loadingHistory = false
@@ -345,13 +353,13 @@ func (a *desktop) loadEarlier() {
 				a.historyErr = errorMessage(err, "Couldn't load earlier messages. Try again.")
 				return
 			}
+			a.list.HoldPlace()
 			a.chat.Messages = mergeMessages(page.Messages, a.chat.Messages)
 			a.chat.Before = page.Before
 			if page.ReactionRevision < a.chat.ReactionRevision {
 				a.chat.ReactionRevision = page.ReactionRevision
 				a.refreshSoon()
 			}
-			a.list.ScrollTo(0, ui.Start)
 		})
 	}()
 }
@@ -367,8 +375,6 @@ func (a *desktop) agentName() string {
 	}
 	return "Buddy"
 }
-
-func (a *desktop) showSettings() { a.showSettingsFor(a.focusedAgent()) }
 
 func (a *desktop) showSettingsFor(profile tasks.Agent) {
 	if a.saving {
@@ -455,15 +461,13 @@ func copyAgent(agent tasks.Agent) tasks.Agent {
 	return agent
 }
 
-func (a *desktop) send() { a.submit("", false) }
-
-func (a *desktop) sendBackground() { a.submit("", true) }
+func (a *desktop) send() { a.submit("") }
 
 func (a *desktop) canSendAttachments() bool {
 	return a.protocolChecked.IsZero() || a.serverProtocol >= api.AttachmentProtocol
 }
 
-func (a *desktop) submit(target string, background bool) {
+func (a *desktop) submit(target string) {
 	if a.chat.Archived || a.chat.Agent.Removed {
 		return
 	}
@@ -501,9 +505,9 @@ func (a *desktop) submit(target string, background bool) {
 	}
 	a.sending, a.chatErr = true, ""
 	jobKey := job.ID + "/" + job.InputID
-	if a.retryKey == "" || a.retryText != text || a.retryTarget != target || a.retryJob != jobKey || a.retrySkill != skill || a.retryBackground != background || a.retryQuestion != question {
+	if a.retryKey == "" || a.retryText != text || a.retryTarget != target || a.retryJob != jobKey || a.retrySkill != skill || a.retryQuestion != question {
 		a.retryKey, a.retryText, a.retryTarget, a.retryJob, a.retrySkill = rand.Text(), text, target, jobKey, skill
-		a.retryBackground, a.retryQuestion = background, question
+		a.retryQuestion = question
 	}
 	files := slices.Clone(a.attachments)
 	win, key := a.window, a.retryKey
@@ -516,7 +520,7 @@ func (a *desktop) submit(target string, background bool) {
 			err = a.client.Steer(a.ctx, target, text, key)
 		default:
 			_, err = a.client.SendMessage(a.ctx, id, key, tasks.MessageRequest{
-				Text: text, Attachments: files, JobID: job.ID, SkillName: skill, Background: background, BackgroundAnswer: question,
+				Text: text, Attachments: files, JobID: job.ID, SkillName: skill, BackgroundAnswer: question,
 			})
 		}
 		win.Update(func() {

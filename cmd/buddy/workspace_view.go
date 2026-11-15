@@ -1,7 +1,7 @@
 package main
 
 import (
-	"path/filepath"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -13,13 +13,15 @@ import (
 )
 
 var (
-	groupMark   = svg(`<circle cx="9" cy="8" r="3"/><path d="M3 19v-1a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v1m2-14a3 3 0 0 1 0 6m4 8v-1a4 4 0 0 0-3-3.9"/>`)
-	plusMark    = svg(`<path d="M12 5v14M5 12h14"/>`)
-	detailsMark = svg(`<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16"/>`)
-	fileMark    = svg(`<path d="M6 3h8l4 4v14H6zm8 0v5h4"/>`)
-	clockMark   = svg(`<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>`)
-	moreMark    = svg(`<path d="M5 12h.01m7 0h.01m7 0h.01" stroke-width="2.8"/>`)
-	arrowMark   = svg(`<path d="M9 6l6 6-6 6"/>`)
+	groupMark    = svg(`<circle cx="9" cy="8" r="3"/><path d="M3 19v-1a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v1m2-14a3 3 0 0 1 0 6m4 8v-1a4 4 0 0 0-3-3.9"/>`)
+	plusMark     = svg(`<path d="M12 5v14M5 12h14"/>`)
+	sidebarMark  = svg(`<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>`)
+	waveformMark = svg(`<path d="M4 10v4m4-7v10m4-13v16m4-13v10m4-7v4"/>`)
+	fileMark     = svg(`<path d="M6 3h8l4 4v14H6zm8 0v5h4"/>`)
+	clockMark    = svg(`<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>`)
+	moreMark     = svg(`<path d="M5 12h.01m7 0h.01m7 0h.01" stroke-width="2.8"/>`)
+	arrowMark    = svg(`<path d="M9 6l6 6-6 6"/>`)
+	primaryMark  = svg(`<path d="m12 3 2.5 5.6 6 .6-4.5 4 1.3 6-5.3-3.1-5.3 3.1 1.3-6-4.5-4 6-.6L12 3Z" fill="currentColor" stroke="none"/>`)
 )
 
 func smallIcon(c *ui.Context, label string, mark *ui.SVG, enabled bool, action func()) {
@@ -34,8 +36,11 @@ func smallIcon(c *ui.Context, label string, mark *ui.SVG, enabled bool, action f
 func (a *desktop) chatNav(c *ui.Context, id, title string, icon *ui.SVG, unread bool) {
 	selected := id == a.currentConversation() && (a.section == "" || a.section == "routine")
 	label := unreadChatLabel(title, unread)
-	btn := ui.ButtonBase(c.Key("chat-"+id)).Label(label).Tooltip(label).FillWidth().Height(32).
-		Gap(8).Padding(0, 8).Radius(7).Justify(ui.Start).OnClick(func() { a.openConversation(id) })
+	btn := ui.ButtonBase(c.Key("chat-"+id)).Label(label).Tooltip(label).Selected(selected).FillWidth().Height(33).
+		Gap(8).Padding(0, 8).Radius(10).Justify(ui.Start).OnClick(func() { a.openConversation(id) })
+	if a.compactSidebar {
+		btn.Justify(ui.Center)
+	}
 	if a.serverProtocol >= api.ConversationHistoryProtocol {
 		btn.ContextMenu(func(menu *ui.Menu) {
 			if menu.Item("Open chat").Chosen() {
@@ -57,7 +62,9 @@ func (a *desktop) chatNav(c *ui.Context, id, title string, icon *ui.SVG, unread 
 	}
 	btn.Children(func() {
 		ui.Icon(c, icon).Size(15, 15).Shrink(0).TextColor(c.Theme().TextMuted)
-		ui.Text(c, title).Grow(1).SingleLine().MinWidth(0).FontSize(13).FontWeight(600)
+		if !a.compactSidebar {
+			ui.Text(c, title).Grow(1).SingleLine().MinWidth(0).FontSize(13).FontWeight(530).TextColor(c.Theme().Text)
+		}
 		if unread {
 			sidebarUnreadDot(c)
 		}
@@ -65,43 +72,66 @@ func (a *desktop) chatNav(c *ui.Context, id, title string, icon *ui.SVG, unread 
 }
 
 func (a *desktop) budNav(c *ui.Context, bud tasks.AgentRef) {
-	role := budRole(bud.Role)
 	selected := bud.ConversationID == a.currentConversation() && (a.section == "" || a.section == "routine")
 	primary := bud.ID == a.directory.PrimaryAgentID
+	role := strings.TrimSpace(bud.Role)
 	unread := a.chatHasUnread(bud.ConversationID, bud.HasNewResult, bud.UnreadThrough)
-	detail := bud.Name + " · " + role
+	label := unreadChatLabel(bud.Name, unread)
+	detail := role
 	if primary {
-		detail += " · Primary Bud"
+		detail = "Primary Bud"
+		if role != "" {
+			detail += " · " + role
+		}
 	}
-	if unread {
-		detail += " · Unread activity"
+	tooltip := label
+	if detail != "" {
+		tooltip += " · " + detail
 	}
-	btn := ui.ButtonBase(c.Key("chat-"+bud.ConversationID)).Label(unreadChatLabel(bud.Name, unread)).Description(role).Tooltip(detail).
-		FillWidth().Height(43).Padding(0, 8).Radius(7).Justify(ui.Start).
+	btn := ui.ButtonBase(c.Key("chat-"+bud.ConversationID)).Label(label).Description(detail).Tooltip(tooltip).Selected(selected).
+		FillWidth().Height(43).Padding(0, 8).Gap(7).Radius(10).Justify(ui.Start).
 		OnClick(func() { a.openConversation(bud.ConversationID) })
+	if a.compactSidebar {
+		btn.Height(45).Justify(ui.Center)
+	}
 	if selected {
 		btn.Background(c.Theme().SurfacePressed)
 	} else if btn.Hovered() {
 		btn.Background(c.Theme().Surface)
 	}
+	working := a.chat.Active != nil && (a.chat.Active.Status == tasks.Running || a.chat.Active.Status == tasks.Cancelling) &&
+		(a.chat.Active.AgentID == bud.ID || (a.chat.Active.AgentID == "" && selected))
+	mood := orbIdle
+	if working {
+		mood = orbSidebarActive
+	}
+	live := primary || selected || working || btn.Hovered()
+	profile := a.directoryProfile(bud)
 	btn.Children(func() {
-		ui.Row(c).FillWidth().Gap(7).AlignItems(ui.Center).Children(func() {
-			a.drawProfile(c, a.directoryProfile(bud), 27, false, orbIdle)
-			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, bud.Name).FontSize(13).FontWeight(650).MinWidth(0).SingleLine()
-					if primary {
-						ui.Icon(c, primaryMark).Size(12, 12).Shrink(0).TextColor(c.Theme().Success)
-					}
-				})
-				if bud.Role != "" {
-					ui.Text(c, role).FontSize(11).TextColor(c.Theme().TextMuted).SingleLine()
+		if a.compactSidebar {
+			ui.Box(c).Size(27, 27).Shrink(0).Center().Children(func() {
+				a.drawProfile(c, profile, 27, live, mood)
+				if primary {
+					ui.Icon(c, primaryMark).Size(10, 10).Absolute().Bottom(-1).Right(-2).TextColor(c.Theme().Accent)
 				}
 			})
-			if unread {
-				sidebarUnreadDot(c)
-			}
-		})
+		} else {
+			a.drawProfile(c, profile, 27, live, mood)
+			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+				ui.Row(c).Gap(4).Children(func() {
+					ui.Text(c, bud.Name).FontSize(13).FontWeight(570).MinWidth(0).SingleLine().TextColor(c.Theme().Text)
+					if primary {
+						ui.Icon(c, primaryMark).Size(12, 12).Shrink(0).TextColor(c.Theme().Accent)
+					}
+				})
+				if role != "" {
+					ui.Text(c, role).MinWidth(0).SingleLine().FontSize(11).TextColor(c.Theme().TextMuted)
+				}
+			})
+		}
+		if unread {
+			sidebarUnreadDot(c)
+		}
 	})
 }
 
@@ -125,44 +155,80 @@ func sidebarHeading(c *ui.Context, title, action string, enabled bool, add func(
 
 func (a *desktop) inspector(c *ui.Context, header, inset float32) {
 	profile := a.inspectorAgent()
-	ui.Column(c).Width(234).Shrink(0).MinHeight(0).Background(c.Theme().SurfaceHover).
+	name := profile.Name
+	if name == "" {
+		name = "Buddy"
+	}
+	ui.Column(c).Width(272).Shrink(0).MinHeight(0).Background(c.Theme().Background).
 		BorderWidth(0, 0, 0, 1).BorderColor(c.Theme().Border).Children(func() {
-		ui.Row(c).Height(header).Shrink(0).FillWidth().Padding(0, max(14, inset+8), 0, 14).
-			BorderWidth(0, 0, 1, 0).BorderColor(c.Theme().Border).DragWindow().Children(func() {
-			ui.Text(c, "Workspace").Role(ui.RoleHeading).Grow(1).MinWidth(0).SingleLine().FontSize(13).FontWeight(680)
-		})
-		ui.Scroll(c.Key("agent-inspector")).Grow(1).MinHeight(0).FillWidth().Padding(13, 14, 18).Gap(13).Children(func() {
-			ui.Column(c).Gap(8).Children(func() {
-				ui.Row(c).Gap(8).Children(func() {
-					a.drawProfile(c, profile, 28, false, orbIdle)
-					ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
-						name := profile.Name
-						if name == "" {
-							name = "Buddy"
+		ui.Row(c).Height(header).Shrink(0).FillWidth().Padding(0, max(12, inset+8), 0, 12).
+			Gap(5).DragWindow().Children(func() {
+			ui.Box(c).Grow(1)
+			if len(a.chat.Members) > 1 {
+				ui.ButtonBase(c.Key("inspector-agent")).Label("Choose Bud workspace").Size(26, 26).Center().Radius(13).
+					PopoverMenuButton(func(menu *ui.Menu) {
+						for _, member := range a.chat.Members {
+							if menu.Item(member.Name).Checked(member.ID == profile.ID).Chosen() {
+								a.inspectAgent(member.ID)
+							}
 						}
-						ui.Text(c, name).SingleLine().FontSize(13).FontWeight(650)
-						ui.Text(c, budRole(profile.Role)).SingleLine().FontSize(11).TextColor(c.Theme().TextMuted)
-					})
-					if len(a.chat.Members) > 1 {
-						ui.Button(c.Key("inspector-agent"), "⋯").Label("Choose Bud workspace").Size(25, 24).
-							PopoverMenuButton(func(menu *ui.Menu) {
-								for _, member := range a.chat.Members {
-									if menu.Item(member.Name).Checked(member.ID == profile.ID).Chosen() {
-										a.inspectAgent(member.ID)
-									}
-								}
-							})
+					}).Children(func() { ui.Icon(c, moreMark).Size(15, 15).TextColor(c.Theme().TextMuted) })
+			}
+			smallIcon(c.Key("close-details"), "Close conversation details", closeMark, true, a.toggleInspector)
+		})
+		ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(9).Padding(0, 12, 14).Children(func() {
+			mood := orbIdle
+			if active := a.chat.Active; active != nil && (active.AgentID == "" || active.AgentID == profile.ID) {
+				mood = orbMood(active.Kind)
+			}
+			a.drawProfile(c, profile, 86, true, mood)
+			ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(3).Children(func() {
+				ui.Row(c).Gap(5).MinWidth(0).Children(func() {
+					ui.Text(c, name).SingleLine().MinWidth(0).FontSize(19).FontWeight(620).Role(ui.RoleHeading)
+					if profile.ID != "" && profile.ID == a.directory.PrimaryAgentID {
+						ui.Icon(c, primaryMark).Size(14, 14).Shrink(0).Label("Primary Bud").TextColor(c.Theme().Accent)
 					}
 				})
+				if role := strings.TrimSpace(profile.Role); role != "" {
+					ui.Text(c, role).TextAlign(ui.Center).FontSize(12).TextColor(c.Theme().TextMuted)
+				}
 			})
-			a.workspaceFiles(c, profile)
-			a.backgroundWork(c)
-			a.scheduledRoutines(c)
+			if a.chat.Name == "" && !profile.Removed {
+				quietControl(c.Key("edit-chat-bud"), "Edit", nil, a.online, func() { a.showSettingsFor(profile) })
+			}
+			ui.Row(c).Gap(4).Children(func() {
+				inspectorTab(c.Key("inspector-activity"), "Activity", !a.inspectorLibrary, func() { a.inspectorLibrary = false })
+				inspectorTab(c.Key("inspector-library"), "Library", a.inspectorLibrary, func() { a.inspectorLibrary = true; a.refreshSoon() })
+			})
+		})
+		ui.Scroll(c.Key("agent-inspector")).Grow(1).MinHeight(0).FillWidth().Padding(0, 14, 18).Gap(16).Children(func() {
+			panel := ui.Column(c.Key(a.inspectorLibrary)).FillWidth().Gap(12)
+			revealPanel(c, panel)
+			panel.Children(func() {
+				if a.inspectorLibrary {
+					a.workspaceFiles(c, profile)
+				} else {
+					a.scheduledRoutines(c)
+					a.backgroundWork(c)
+				}
+			})
 			if a.inspectorErr != "" {
 				ui.Text(c, a.inspectorErr).FontSize(11).TextColor(c.Theme().Danger)
 			}
 		})
 	})
+}
+
+func inspectorTab(c *ui.Context, label string, selected bool, action func()) {
+	t := c.Theme()
+	button := ui.ButtonBase(c).Height(28).Padding(0, 12).Radius(14).
+		Label(label).Selected(selected).OnClick(action)
+	color := t.TextMuted
+	if selected || button.Hovered() {
+		button.Background(t.SurfaceHover)
+		color = t.Text
+	}
+	button.Children(func() { ui.Text(c, label).FontSize(12).TextColor(color) })
 }
 
 func (a *desktop) toggleInspector() {
@@ -172,22 +238,19 @@ func (a *desktop) toggleInspector() {
 
 func inspectorHeading(c *ui.Context, title string, mark *ui.SVG) {
 	ui.Icon(c, mark).Size(14, 14).Shrink(0).TextColor(c.Theme().TextMuted)
-	ui.Text(c, title).Grow(1).FontSize(12).FontWeight(680)
+	ui.Text(c, title).Grow(1).FontSize(12).FontWeight(560).TextColor(c.Theme().TextMuted)
 }
 
 func (a *desktop) workspaceFiles(c *ui.Context, profile tasks.Agent) {
 	path := profile.Workspace
 	canBrowse := a.canBrowseWorkspace(profile)
-	ui.Column(c).Gap(5).Padding(12, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).Children(func() {
+	ui.Column(c).Gap(5).Padding(8, 10).Radius(13).Background(c.Theme().Surface).Children(func() {
 		ui.Row(c).Gap(6).Height(25).Children(func() {
 			inspectorHeading(c, "Files", repoMark)
 			smallIcon(c.Key("open-workspace"), "Browse workspace files", arrowMark, canBrowse, func() {
 				a.openWorkspaceFile(profile, ".")
 			})
 		})
-		if path != "" {
-			ui.Text(c, displayWorkspace(path, profile.ID)).Tooltip(path).SingleLine().FontSize(11).TextColor(c.Theme().TextMuted)
-		}
 		switch {
 		case a.workspaceErr != "":
 			ui.Text(c, a.workspaceErr).FontSize(11).TextColor(c.Theme().TextMuted)
@@ -218,49 +281,44 @@ func (a *desktop) workspaceFiles(c *ui.Context, profile tasks.Agent) {
 	})
 }
 
-func displayWorkspace(path, id string) string {
-	if filepath.Base(path) == id {
-		return "Bud workspace"
-	}
-	return filepath.Base(path)
-}
-
 func (a *desktop) backgroundWork(c *ui.Context) {
-	ui.Column(c).Gap(8).Padding(12, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).Children(func() {
-		ui.Row(c).Gap(6).Height(22).Children(func() {
-			inspectorHeading(c, "Background work", workMark)
-			smallIcon(c.Key("work-overview"), "See all jobs in this chat", arrowMark, a.online, func() {
-				a.openWorkInChat(tasks.WorkItem{}, a.currentConversation())
-			})
+	items := a.chat.Work
+	var active []tasks.WorkItem
+	for _, item := range items {
+		switch item.Status {
+		case tasks.Running, tasks.Queued, tasks.NeedsInput, tasks.Cancelling:
+			active = append(active, item)
+		}
+	}
+	status := "Idle"
+	if len(active) != 0 {
+		status = fmt.Sprintf("%d active", len(active))
+	}
+	ui.Column(c).Gap(5).Padding(8, 10).Radius(13).Background(c.Theme().Surface).Children(func() {
+		button := ui.ButtonBase(c.Key("work-overview")).Label("Work runs").FillWidth().Height(34).
+			Radius(8).Gap(7).Padding(0, 4).Disabled(!a.online).OnClick(func() {
+			a.openWorkInChat(tasks.WorkItem{}, a.currentConversation())
 		})
-		if len(a.chat.Work) == 0 {
-			ui.Text(c, "No background tasks yet.").FontSize(11).TextColor(c.Theme().TextMuted)
+		if button.Hovered() {
+			button.Background(c.Theme().SurfaceHover)
 		}
-		for _, work := range a.chat.Work[:min(3, len(a.chat.Work))] {
-			ui.Column(c.Key("work-" + work.ID)).Gap(3).Children(func() {
-				ui.Row(c).Gap(5).Children(func() {
-					ui.ButtonBase(c.Key("open-work-" + work.ID)).Label("Open " + work.Title).Grow(1).MinWidth(0).Justify(ui.Start).
-						Tooltip("See progress and result").OnClick(func() {
-						work.ConversationID = a.currentConversation()
-						a.openWorkInChat(work, work.ConversationID)
-					}).Children(func() {
-						ui.Text(c, work.Title).Grow(1).MinWidth(0).FontWeight(620).FontSize(12).SingleLine()
-						ui.Icon(c, arrowMark).Size(12, 12).Shrink(0).TextColor(c.Theme().TextMuted)
-					})
-					if work.Status == tasks.Running || work.Status == tasks.Queued || work.Status == tasks.NeedsInput {
-						smallIcon(c.Key("stop-work-"+work.ID), "Stop "+work.Title, stopMark, a.online && a.stopping == "",
-							func() { a.cancelTurn(work.ID, false) })
-					}
+		button.Children(func() {
+			ui.Icon(c, workMark).Size(15, 15).TextColor(c.Theme().TextMuted)
+			ui.Text(c, "Work runs").Grow(1).FontSize(13)
+			ui.Text(c, status).FontSize(11).TextColor(c.Theme().TextMuted)
+			ui.Icon(c, arrowMark).Size(13, 13).TextColor(c.Theme().TextMuted)
+		})
+		for _, item := range active[:min(3, len(active))] {
+			ui.ButtonBase(c.Key("open-work-" + item.ID)).Label("Open " + item.Title).FillWidth().
+				Gap(8).MinHeight(38).Radius(8).Padding(4).Justify(ui.Start).OnClick(func() {
+				a.openWorkInChat(item, a.currentConversation())
+			}).Children(func() {
+				ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+					ui.Text(c, item.Title).SingleLine().FontSize(12)
+					ui.Text(c, workStatus(item.Status)).FontSize(11).TextColor(c.Theme().TextMuted)
 				})
-				ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
-					jobIndicator(c, work.Status)
-					ui.Text(c, workStatus(work.Status)).FontSize(11).TextColor(c.Theme().TextMuted)
-				})
+				ui.Icon(c, arrowMark).Size(12, 12).TextColor(c.Theme().TextMuted)
 			})
-		}
-		if len(a.chat.Work) > 3 {
-			ui.Button(c.Key("more-chat-jobs"), "See all jobs in this chat").AlignSelf(ui.Start).Height(25).
-				Disabled(!a.online).OnClick(func() { a.openWorkInChat(tasks.WorkItem{}, a.currentConversation()) })
 		}
 	})
 }
@@ -306,25 +364,30 @@ func workStatus(status tasks.Status) string {
 }
 
 func (a *desktop) scheduledRoutines(c *ui.Context) {
-	ui.Column(c).Gap(8).Padding(12, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).Children(func() {
+	ui.Column(c).Gap(8).Padding(8, 10).Radius(13).Background(c.Theme().Surface).Children(func() {
 		ui.Row(c).Gap(6).Height(25).Children(func() {
 			inspectorHeading(c, "Routines", clockMark)
 			smallIcon(c.Key("new-routine"), "New routine", plusMark, a.online && a.chat.ID != "" && !a.chat.Archived && !a.chat.Agent.Removed, a.startRoutine)
 		})
-		if len(a.chat.Routines) == 0 {
-			ui.Text(c, "No routines yet. Ask in chat or add one here.").FontSize(11).TextColor(c.Theme().TextMuted)
-		}
 		for _, routine := range a.chat.Routines {
 			removed := a.budWasRemoved(routine.AgentID)
-			ui.Row(c.Key("routine-" + routine.ID)).Gap(6).Children(func() {
+			requested, pending := a.routinePending[routine.ID]
+			enabled := routine.Enabled
+			if requested != nil {
+				enabled = *requested
+			}
+			ui.Row(c.Key("routine-" + routine.ID)).Gap(7).MinHeight(34).Children(func() {
 				ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
-					ui.Text(c, routine.Name).SingleLine().FontSize(12).FontWeight(620).Tooltip(routine.Prompt)
+					ui.Text(c, routine.Name).SingleLine().FontSize(12).FontWeight(580).Tooltip(routine.Prompt)
 					status := "Paused"
-					if removed {
+					switch {
+					case removed:
 						status = "Bud removed"
-					} else if routine.DeviceDisconnected {
+					case routine.DeviceDisconnected:
 						status = "Disconnected"
-					} else if routine.Enabled {
+					case pending:
+						status = "Updating…"
+					case enabled:
 						status = "Next " + routineDate(routine.NextAt, c.Now())
 					}
 					if routine.Device != "" {
@@ -332,27 +395,30 @@ func (a *desktop) scheduledRoutines(c *ui.Context) {
 					}
 					ui.Text(c, tasks.RoutineCadence(routine.Minutes)+" · "+status).
 						FontSize(11).TextColor(c.Theme().TextMuted)
-					if routine.DeviceDisconnected && !removed {
-						ui.Text(c, "Create a new routine on an available device.").FontSize(11).TextColor(c.Theme().TextMuted)
+					if routine.ResearchScopeMissing && routine.DeviceID == "" {
+						ui.Text(c, "To use web search, recreate this routine.").
+							FontSize(11).TextColor(c.Theme().TextMuted)
 					}
 				})
-				button := ui.ButtonBase(c.Key("routine-menu-"+routine.ID)).Label("Manage "+routine.Name).Size(26, 26).
-					Radius(6).Center().Shrink(0).Disabled(!a.online)
+				canManage := a.online && !a.chat.Archived && !pending
+				label := "Resume " + routine.Name
+				if enabled {
+					label = "Pause " + routine.Name
+				}
+				ui.Themed(c, routineTheme(c.Theme())).Background(ui.Transparent).Shrink(0).Children(func() {
+					toggle := ui.Switch(c.Key("routine-switch-"+routine.ID), &enabled).
+						Label(label).Tooltip(label).Disabled(!canManage || removed || routine.DeviceDisconnected)
+					if toggle.Changed() && canManage && !removed && !routine.DeviceDisconnected {
+						a.changeRoutine(routine.ID, &enabled)
+					}
+				})
+				button := ui.ButtonBase(c.Key("routine-menu-"+routine.ID)).Label("Manage "+routine.Name).Size(20, 26).
+					Radius(6).Center().Shrink(0).Disabled(!canManage)
 				if button.Hovered() {
 					button.Background(c.Theme().SurfacePressed)
 				}
 				button.Children(func() { ui.Icon(c, moreMark).Size(14, 14).TextColor(c.Theme().TextMuted) })
 				button.PopoverMenuButton(func(menu *ui.Menu) {
-					if !routine.DeviceDisconnected && !removed {
-						label := "Resume"
-						if routine.Enabled {
-							label = "Pause"
-						}
-						if menu.Item(label).Chosen() {
-							enabled := !routine.Enabled
-							a.changeRoutine(routine.ID, &enabled)
-						}
-					}
 					if menu.Item("Delete routine").Chosen() {
 						a.changeRoutine(routine.ID, nil)
 					}

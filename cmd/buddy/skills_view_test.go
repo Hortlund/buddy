@@ -45,8 +45,41 @@ func TestComposerSkillPicker(t *testing.T) {
 	}
 	a.draft = "/tmp/build.log"
 	view.Frame()
-	if view.HasText("Skills · Tab to complete") {
+	if view.HasText("/plan") || view.HasText("/triage-ci") {
 		t.Fatal("an absolute file path opened the slash menu")
+	}
+}
+
+func TestComposerNavigatesSkillSuggestionsWithArrowKeys(t *testing.T) {
+	a := &desktop{online: true, serverProtocol: api.SkillSelectionProtocol, draft: "/"}
+	for _, name := range []string{"build", "deploy", "inspect", "plan", "review", "test", "triage-ci"} {
+		a.directory.Skills = append(a.directory.Skills, tasks.SkillInfo{Name: name})
+	}
+	view := ui.NewTester(a.composer, 760, 340)
+	if err := view.Click("Message"); err != nil {
+		t.Fatal(err)
+	}
+	view.Key(0, ui.KeyDown)
+	if a.skillPicker.selected != 1 || a.draft != "/" || !view.Focused("Message") {
+		t.Fatalf("Down should move the highlight and keep focus: selection %d, draft %q", a.skillPicker.selected, a.draft)
+	}
+	view.Key(0, ui.KeyUp)
+	view.Key(0, ui.KeyUp)
+	if !view.HasText("/triage-ci") {
+		t.Fatalf("moving to a later skill did not bring it into view: %v", view.Texts())
+	}
+	view.Key(0, ui.KeyEnter)
+	view.Type("check the run")
+	if a.draft != "/triage-ci check the run" || a.skillForDraft(a.draft) != "triage-ci" {
+		t.Fatalf("Enter did not complete the highlighted skill: %q", a.draft)
+	}
+	a.draft = "/"
+	view.Frame()
+	view.Key(0, ui.KeyDown)
+	view.Type("r")
+	view.Key(0, ui.KeyTab)
+	if a.draft != "/review " {
+		t.Fatalf("filtering did not reset the highlight before Tab: %q", a.draft)
 	}
 }
 
