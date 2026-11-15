@@ -30,13 +30,23 @@ around the clock.
 - **Work that keeps going.** Hand off development or research, keep chatting, and
   get results or questions back in the conversation. Review assignments, worker
   sessions, project branches, and returned files in Work on desktop or iPhone.
+- **Coding in real projects.** Work with existing repositories or create a new
+  project. Codex workers inspect instructions and Git state, edit code, build,
+  run tests, and report the commands and results. Command cards show execution
+  progress and output directly in chat.
+- **Models chosen for the work.** Buds choose tools and workflows from the
+  capabilities available to them. Background workers choose a model, reasoning
+  effort, and speed for each assignment using their host's Codex catalog. Keep
+  **Let Bud decide**, or choose fixed settings in Edit Bud.
 - **A workspace for each Bud.** Open files beside the chat, preview Markdown and
   code, inspect diffs, and edit text in the desktop app. Follow file and job links
   in messages, with native file previews on iPhone too.
 - **Routines and watches.** Schedule recurring tasks or ask Buds to watch specific
   activity in connected services.
-- **Connections and tools.** Connect GitHub, Gmail, Grafana, Prometheus, and custom
-  MCP servers. Add worker devices and route projects to hosts with the right tools.
+- **Connections and tools.** Inspect GitHub pull requests, diffs, discussions, and
+  CI results; triage Gmail and draft replies in chat. Connect Grafana, Prometheus,
+  and custom MCP servers. Add worker devices and route projects to hosts with the
+  right tools.
 - **Browser and desktop work.** Enable isolated Playwright browsers on headless
   hosts, or Cua Driver on a desktop or paired Lume guest. Follow screenshots,
   pause automation, and stop assignments. See [execution setup](docs/execution.md).
@@ -48,21 +58,39 @@ Buddy is for people who want ongoing help across projects and daily life. A Bud
 can help plan a day, maintain project notes, investigate a failing build, or keep
 an eye on an inbox while longer work runs elsewhere.
 
+## Project work across your machines
+
+Register a project and bind its checkout on Buddy Home, a connected Mac, or a
+Linux worker. Buds can choose a compatible host using its advertised tools and
+project bindings, or use the machine you name. Each host uses its own local
+checkout, toolchain, credentials, and Codex connection.
+
+Edits in a clean registered Git project use an isolated worktree by default.
+When a task needs pending changes, workers can use the original checkout and
+preserve those edits. Paused jobs keep their workspace choice when resumed, and
+conflicting active checkout sessions are rejected. Worktrees with unmerged work
+remain available for inspection.
+
+Repositories and credentials are not copied between hosts automatically. Use Git
+or returned artifacts to move work between machines. See the [project and worker
+guide](docs/guide.md#run-work-on-another-device) for setup and permissions.
+
 ## Screenshots
 
-Captured from the running apps with fictional demo conversations, files, jobs,
-and call participants.
-The iPhone screenshots are from the iOS Simulator.
+Captured November 15, 2026 from the current native app views with fictional demo
+conversations, command output, jobs, and call participants. The iPhone screenshots
+are from the iOS Simulator. Demo calls show the call interface without starting
+microphone or model sessions.
 
 ### Desktop
 
-Chat, quick decisions, files, and background work in one place.
+Chat, verified command output, quick decisions, and background work in one place.
 
-![Buddy desktop conversation with three Buds, an inline choice card, and workspace activity](docs/screenshots/desktop-chat.png)
+![Buddy desktop chat with command output, a native choice card, routines, and an active code review](docs/screenshots/desktop-chat.png)
 
 Inspect a job’s result, rendered code, and progress in Work.
 
-![Buddy Work view showing a completed Go health endpoint task and another job in progress](docs/screenshots/desktop-work.png)
+![Buddy Work view showing a completed Go health endpoint, its project worktree, verification results, and an active review](docs/screenshots/desktop-work.png)
 
 ### iPhone
 
@@ -71,7 +99,7 @@ Choose Light, Dark, or your system appearance in Settings.
 
 <p>
   <img src="docs/screenshots/iphone-chats.png" width="270" alt="Buddy for iPhone showing Buds and group chats">
-  <img src="docs/screenshots/iphone-chat.png" width="270" alt="Buddy for iPhone in GitHub Dark with a native choice card and detailed options">
+  <img src="docs/screenshots/iphone-chat.png" width="270" alt="Buddy for iPhone in Dark appearance with verified command output and a native choice card">
 </p>
 
 ## Voice calls
@@ -85,7 +113,7 @@ When a one-to-one call becomes a group, Buddy keeps its participants and transcr
 together in a group chat. Ask the Buds to continue collaborating there after you
 hang up.
 
-The desktop call room with three demo Buds and the caller.
+The desktop call room with Buddy, Ada, Scout, and the caller.
 
 ![Buddy desktop group voice call with Buddy, Ada, Scout, shared captions, and call controls](docs/screenshots/desktop-call.png)
 
@@ -101,7 +129,8 @@ See the [voice setup guide](docs/guide.md#live-voice-calls).
 ### macOS desktop
 
 Install Git, Go **1.27.4 or later**, Xcode Command Line Tools, and the Codex CLI.
-The default model is GPT-6.1 Terra, which requires Codex CLI **0.159.0 or later**.
+The server installer pins Codex CLI **0.169.0**; use that version or newer for the
+current tool and worker features. GPT-6.1 Terra is the default model.
 
 ```sh
 git clone https://github.com/Hortlund/buddy.git
@@ -157,8 +186,9 @@ the pairing link into the iPhone app.
 ## Documentation
 
 The [setup and usage guide](docs/guide.md) covers first launch, runtime credentials,
-integrations, voice calls, routines, memory, custom skills, MCP servers, and
-deployment. It also documents current limits and optional configuration.
+automatic worker settings, projects, integrations, voice calls, routines, memory,
+custom skills, MCP servers, and deployment. It also documents current limits and
+optional configuration.
 
 ## Development and contributions
 
