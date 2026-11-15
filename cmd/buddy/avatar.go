@@ -172,7 +172,7 @@ func characterAction(mood orbMood) budmodel.Action {
 	case orbSpeaking:
 		return budmodel.Talk
 	case orbSidebarActive:
-		return budmodel.DoubleHop
+		return budmodel.Think
 	default:
 		return budmodel.Rest
 	}

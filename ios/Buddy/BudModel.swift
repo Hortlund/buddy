@@ -4,6 +4,7 @@ import simd
 
 enum BudAction: Int, CaseIterable {
     case rest, look, hop, think, investigate, notebook, idea, nod, talk, twirl, doubleHop, tilt
+    case tea, sketch, music, letter, telescope, sway, stretch, sleepy, peek, lookUp, settle
 }
 
 private struct BudPose {
@@ -33,14 +34,17 @@ private struct BudModel {
 
     private init() {
         guard let url = Bundle.main.url(forResource: "Bud", withExtension: "mesh"),
-              let data = try? Data(contentsOf: url), data.starts(with: [66, 85, 68, 52]) else {
+              let data = try? Data(contentsOf: url), data.starts(with: [66, 85, 68, 53]) else {
             preconditionFailure("The built app is missing its Bud mesh resource")
         }
         var reader = MeshReader(data: data)
+        precondition(Int(reader.byte()) == Self.shapes.count, "Unexpected Bud shape count")
+        let meshCount = Int(reader.byte())
+        precondition(meshCount == 17 && Int(reader.byte()) == BudAction.allCases.count, "Unexpected Bud model contents")
         eyes = Self.shapes.map { _ in
             (0..<2).map { _ in SIMD3(reader.float(), reader.float(), reader.float()) }
         }
-        meshes = (0..<12).map { _ in
+        meshes = (0..<meshCount).map { _ in
             let vertexCount = reader.word(), faceCount = reader.word()
             var positions: [SIMD3<Float>] = [], normals: [SIMD3<Float>] = []
             positions.reserveCapacity(vertexCount)
@@ -74,7 +78,7 @@ private struct BudModel {
 
         mutating func word() -> Int { Int(byte()) | Int(byte()) << 8 }
         mutating func coordinate() -> Float { Float(Int16(bitPattern: UInt16(word()))) / 12000 }
-        mutating func normal() -> Float { Float(Int8(bitPattern: byte())) / 127 }
+        mutating func normal() -> Float { Float(Int16(bitPattern: UInt16(word()))) / 32767 }
         mutating func float() -> Float { Float(bitPattern: UInt32(word()) | UInt32(word()) << 16) }
     }
 
@@ -87,67 +91,88 @@ private struct BudModel {
         guard let index = keys.indices.dropFirst().first(where: { Double(keys[$0].time) > age }) else { return BudPose() }
         let before = keys[index - 1], after = keys[index]
         let t = max(0, (Float(age) - before.time) / (after.time - before.time))
-        let mix = t * t * (3 - 2 * t)
+        let mix = t * t * t * (10 + t * (-15 + 6 * t))
         return BudPose(values: zip(before.values, after.values).map { $0 + ($1 - $0) * mix }, action: action)
     }
 }
 
 private struct BudDirector {
     var started = 0.0, next = 0.0, blink = 0.0, tempo = 1.0
-    var action = BudAction.rest, requested = BudAction.rest, lastPlayed = BudAction.rest, lastAccent = BudAction.rest
+    var action = BudAction.rest, requested = BudAction.rest
+    var recent = [BudAction](repeating: .rest, count: 3)
+    var lastPlayful = 0.0
+    var breathPhase = 0.0
+    var intensity: Float = 1
     var requestChanged = false, mirror = false
 
     mutating func sample(time: Double, desired: BudAction, small: Bool, model: BudModel) -> BudPose {
         if next == 0 {
-            next = time + Double.random(in: 2.2...3.8)
-            blink = time + Double.random(in: 1.7...2.8)
+            next = time + Double.random(in: 7.5...14)
+            blink = time + Double.random(in: 2.2...5)
+            lastPlayful = time
+            breathPhase = Double.random(in: 0...(2 * .pi))
         }
         if desired != requested {
+            let wasRest = requested == .rest
             requested = desired
             requestChanged = true
-            next = time
+            if desired != .rest && (started == 0 || wasRest) {
+                var ready = time + Double.random(in: 0.65...1)
+                if started != 0 { ready = max(ready, started + model.duration(action) / tempo + 2.5) }
+                next = min(next, ready)
+            }
         }
         if (time - started) * tempo >= model.duration(action) && time >= next {
             action = desired
-            if desired == .rest || (!requestChanged && desired == lastPlayed) {
-                let pool: [BudAction]
-                switch desired {
-                case .rest where small: pool = [.tilt, .look, .hop, .twirl, .nod, .doubleHop]
-                case .rest, .think, .idea: pool = [.look, .tilt, .hop, .doubleHop, .nod, .twirl]
-                default: pool = [.tilt, .nod, .look, .hop]
-                }
-                var pick = Int.random(in: pool.indices)
-                if pool[pick] == lastAccent {
-                    pick = (pick + 1 + Int.random(in: 0..<(pool.count - 1))) % pool.count
-                }
-                action = pool[pick]
-                lastAccent = action
+            if desired == .rest || !requestChanged {
+                action = choose(time: time, desired: desired)
             }
-            lastPlayed = action
+            recent = [action, recent[0], recent[1]]
             requestChanged = false
             started = time
-            tempo = Double.random(in: 0.90...1.12)
-            mirror = [.look, .hop, .think, .talk, .twirl, .tilt, .doubleHop].contains(action) && Bool.random()
-            let delay = desired == .rest ? Double.random(in: 1.9...4.1) : Double.random(in: 0.39...1.11)
+            tempo = Double.random(in: 0.74...0.90)
+            intensity = Float.random(in: 0.80...1)
+            mirror = [.look, .hop, .think, .talk, .twirl, .tilt, .doubleHop,
+                      .sway, .stretch, .sleepy, .peek, .lookUp, .settle].contains(action) && Bool.random()
+            var delay = desired == .rest ? Double.random(in: 7.5...15) : Double.random(in: 3.8...8.5)
+            if small { delay += Double.random(in: 2.5...6) }
             next = time + model.duration(action) / tempo + delay
         }
         var pose = model.pose(action, age: (time - started) * tempo)
+        for i in 0..<5 where pose.action != .twirl || i != 0 { pose.values[i] *= intensity }
         if mirror {
             let v = pose.values
             pose.values[0] = -v[0]
             pose.values[2] = -v[2]
             pose.values[6] = -v[6]
         }
-        let breath = Float(sin(time.truncatingRemainder(dividingBy: 11) * 6 * .pi / 11))
-        pose.values[3] += breath * 0.020
-        pose.values[4] += breath * 0.016
+        let breath = Float(sin(time.truncatingRemainder(dividingBy: 8.5) * 2 * .pi / 8.5 + breathPhase))
+        pose.values[3] += breath * 0.008
+        pose.values[4] += breath * 0.005
         let blinkAge = time - blink
-        if blinkAge >= 0.2 {
-            blink = time + Double.random(in: 2.3...5.2)
+        if blinkAge >= 0.24 {
+            blink = time + Double.random(in: 2.8...7.5)
         } else if blinkAge >= 0 {
-            pose.values[5] = max(pose.values[5], Float(sin(blinkAge * .pi / 0.2)))
+            pose.values[5] = max(pose.values[5], Float(sin(blinkAge * .pi / 0.24)))
         }
         return pose
+    }
+
+    private mutating func choose(time: Double, desired: BudAction) -> BudAction {
+        if desired == .rest && time - lastPlayful > 75 && Int.random(in: 0..<12) == 0 {
+            lastPlayful = time
+            return [.hop, .twirl, .doubleHop].randomElement()!
+        }
+        let pool: [BudAction]
+        switch desired {
+        case .rest: pool = [.look, .tilt, .sway, .stretch, .sleepy, .peek, .lookUp, .settle, .tea, .music, .notebook]
+        case .think: pool = [.think, .tilt, .lookUp, .notebook, .sketch, .settle, .nod]
+        case .investigate: pool = [.investigate, .telescope, .look, .peek, .think, .letter]
+        case .notebook: pool = [.notebook, .sketch, .letter, .think, .lookUp, .settle]
+        case .idea: pool = [.idea, .letter, .sketch, .think, .nod, .lookUp]
+        default: pool = [desired, .tilt, .nod, .look, .sway, .settle]
+        }
+        return pool.filter { !recent.contains($0) }.randomElement()!
     }
 }
 
@@ -205,14 +230,18 @@ private struct BudRenderer {
         let v = pose.values
         let root = rotation(0.145 + v[0], 0.025 + v[1], 0.12 + v[2])
         let lift = SIMD3<Float>(0, v[3] + 0.045, 0)
+        let bodyScale = SIMD3<Float>(1 + v[4], 1 - v[4], 1 + v[4] * 0.6)
         let framing: Float = portrait ? 2.48 : 2.86
         var parts: [Part] = [
-            Part(mesh: index, scale: [1 + v[4], 1 - v[4], 1 + v[4] * 0.6])
+            Part(mesh: index, scale: bodyScale)
         ]
-        if index == 0 { parts.append(Part(mesh: 7, position: [-0.25,0.83,0.08], roll: 0.18)) }
+        if index == 0 {
+            parts.append(Part(mesh: 7, position: SIMD3<Float>(-0.25,0.83,0.08) * bodyScale, scale: bodyScale, roll: 0.18))
+        }
         for (i, anchor) in model.eyes[index].enumerated() {
-            let position = anchor + SIMD3(v[6], v[7], -0.30 * v[7])
-            parts.append(Part(mesh: 8, position: position, scale: [1 - 0.09 * Float(i), 1 - 0.87 * v[5], 1],
+            let position = (anchor + SIMD3(v[6], v[7], -0.30 * v[7])) * bodyScale
+            let scale = SIMD3<Float>(1 - 0.09 * Float(i), 1 - 0.87 * v[5], 1) * bodyScale
+            parts.append(Part(mesh: 8, position: position, scale: scale,
                               roll: 0.39 - 0.07 * Float(i)))
         }
         let pop = v[11]
@@ -223,6 +252,11 @@ private struct BudRenderer {
             case .investigate: parts.append(Part(mesh: 9, position: position, scale: scale, roll: v[12]))
             case .notebook: parts.append(Part(mesh: 10, position: position, scale: scale, roll: v[12]))
             case .idea: parts.append(Part(mesh: 11, position: position, scale: scale, roll: v[12]))
+            case .tea: parts.append(Part(mesh: 12, position: position, scale: scale, roll: v[12]))
+            case .sketch: parts.append(Part(mesh: 13, position: position, scale: scale, roll: v[12]))
+            case .music: parts.append(Part(mesh: 14, position: position, scale: scale, roll: v[12]))
+            case .letter: parts.append(Part(mesh: 15, position: position, scale: scale, roll: v[12]))
+            case .telescope: parts.append(Part(mesh: 16, position: position, scale: scale, roll: v[12]))
             default: break
             }
         }
@@ -239,8 +273,8 @@ private struct BudRenderer {
                 let square = specular * specular, fourth = square * square
                 let eighth = fourth * fourth
                 return Vertex(x: half + point.x * unit, y: half - point.y * unit, z: point.z,
-                              light: 0.58 + 0.43 * diffuse + 0.075 * max(0, -normal.y),
-                              shine: part.mesh == 8 ? 0 : eighth * eighth * 43.35)
+                              light: part.mesh == 8 ? 1 : 0.54 + 0.42 * diffuse + 0.045 * max(0, -normal.y),
+                              shine: part.mesh == 8 ? 0 : eighth * 30.6)
             }
             pixels.withUnsafeMutableBufferPointer { pixels in
                 depth.withUnsafeMutableBufferPointer { depth in

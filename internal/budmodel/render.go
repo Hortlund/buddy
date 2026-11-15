@@ -73,12 +73,14 @@ func (r *Renderer) Draw(pixels int, shape string, bodyColor, eyeColor color.RGBA
 	}
 	r.part(index, vector{}, scale, 0, root, framing, colors)
 	if index == 0 {
-		r.part(crest, vector{-.25, .83, .08}, vector{1, 1, 1}, .18, root, framing, colors)
+		r.part(crest, vector{-.25 * scale.x, .83 * scale.y, .08 * scale.z}, scale, .18, root, framing, colors)
 	}
 	for i, anchor := range bud.eyes[index] {
 		angle := float32(.39 - .07*float32(i))
 		position := anchor.add(vector{v[6], v[7], -.30 * v[7]})
-		r.part(eye, position, vector{1 - .09*float32(i), 1 - .87*v[5], 1}, angle, root, framing, colors)
+		position = vector{position.x * scale.x, position.y * scale.y, position.z * scale.z}
+		eyeScale := vector{(1 - .09*float32(i)) * scale.x, (1 - .87*v[5]) * scale.y, scale.z}
+		r.part(eye, position, eyeScale, angle, root, framing, colors)
 	}
 	if pop := v[11]; !portrait && pop > .01 {
 		size := vector{pop, pop, pop}
@@ -90,6 +92,16 @@ func (r *Renderer) Draw(pixels int, shape string, bodyColor, eyeColor color.RGBA
 			r.part(book, position, size, v[12], root, framing, colors)
 		case Idea:
 			r.part(bulb, position, size, v[12], root, framing, colors)
+		case Tea:
+			r.part(teacup, position, size, v[12], root, framing, colors)
+		case Sketch:
+			r.part(pencil, position, size, v[12], root, framing, colors)
+		case Music:
+			r.part(headphones, position, size, v[12], root, framing, colors)
+		case Letter:
+			r.part(envelope, position, size, v[12], root, framing, colors)
+		case Telescope:
+			r.part(telescope, position, size, v[12], root, framing, colors)
 		}
 	}
 	return r.pixels
@@ -118,16 +130,17 @@ func (r *Renderer) part(index int, position, scale vector, roll float32, root tr
 		power := specular * specular
 		power *= power
 		power *= power
-		power *= power
-		shine := power * .17
+		shine := power * .12
+		light := .54 + .42*diffuse + .045*max(0, -normal.y)/length
 		if index == eye {
 			shine = 0
+			light = 1
 		}
 		r.vertices[i] = projectedVertex{
 			dimension*.5 + point.x*unit,
 			dimension*.50 - point.y*unit,
 			point.z,
-			(.58 + .43*diffuse + .075*max(0, -normal.y)/length),
+			light,
 			shine,
 		}
 	}
