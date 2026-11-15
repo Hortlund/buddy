@@ -168,6 +168,13 @@ func (s *Store) assignGroupTurn(ctx context.Context, task Task, chat, id string)
 			return task, err
 		}
 	}
+	rawPreferences, err := json.Marshal(agent.ModelPreferences)
+	if err != nil {
+		return task, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO turn_model_preferences VALUES (?,?) ON CONFLICT(task_id) DO UPDATE SET preferences=excluded.preferences`, task.ID, string(rawPreferences)); err != nil {
+		return task, err
+	}
 	if err := tx.Commit(); err != nil {
 		return task, err
 	}

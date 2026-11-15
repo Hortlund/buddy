@@ -220,7 +220,7 @@ func (r *CodexRuntime) DiscoverHost(ctx context.Context) HostProfile {
 	if r.MCPStore != nil {
 		profile.Slots = localBackgroundSlots
 	}
-	for _, name := range []string{"git", "go", "node", "python3", "docker", "xcodebuild", "codex", "lume"} {
+	for _, name := range []string{"git", "go", "node", "npm", "pnpm", "bun", "deno", "python3", "uv", "ruby", "bash", "rustc", "cargo", "java", "javac", "dotnet", "swift", "clang", "cmake", "make", "sqlite3", "psql", "gh", "docker", "xcodebuild", "codex", "lume"} {
 		binary, err := exec.LookPath(name)
 		if name == "codex" {
 			if r.lookupErr != nil {

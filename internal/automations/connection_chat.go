@@ -96,7 +96,7 @@ func (s *Service) ResolveWatchScope(ctx context.Context, w tasks.Watch) (string,
 }
 
 func (s *Service) ReadConnection(ctx context.Context, query tasks.ConnectionQuery) (tasks.ConnectionCard, error) {
-	if len(query.Query) > 1000 || len(query.ItemID) > 160 {
+	if len(query.Query) > 1000 || len(query.ItemID) > 160 || len(query.PageToken) > 4096 || query.Page < 0 || query.Page > 200 {
 		return tasks.ConnectionCard{}, &tasks.InputError{Message: "Use a shorter query or a valid item ID."}
 	}
 	c, err := s.activeConnection(ctx, query.ConnectionID)
@@ -105,7 +105,7 @@ func (s *Service) ReadConnection(ctx context.Context, query tasks.ConnectionQuer
 	}
 	card := tasks.ConnectionCard{Source: c.Source, Connection: c.Name, ConnectionID: c.ID}
 	switch {
-	case c.Source == tasks.GmailLabel && (query.Kind == "search" || query.Kind == "message"):
+	case c.Source == tasks.GmailLabel && (query.Kind == "search" || query.Kind == "message" || query.Kind == "thread"):
 		err = s.readGmailChat(ctx, c, query, &card)
 	case (c.Source == tasks.GrafanaAlerts || c.Source == tasks.PrometheusAlerts) && query.Kind == "alerts":
 		err = s.readAlertsChat(ctx, c, &card)
@@ -134,11 +134,12 @@ type gmailChatPart struct {
 }
 
 type gmailChatMessage struct {
-	ID       string
-	ThreadID string
-	Snippet  string
-	LabelIDs []string
-	Payload  gmailChatPart
+	ID           string
+	ThreadID     string
+	Snippet      string
+	LabelIDs     []string
+	Payload      gmailChatPart
+	InternalDate string
 }
 
 func gmailWeb(account string) string {
@@ -149,7 +150,7 @@ func gmailWeb(account string) string {
 }
 
 func (m gmailChatMessage) cardItem(account string) tasks.ConnectionItem {
-	item := tasks.ConnectionItem{ID: m.ID, Title: "(No subject)", Body: cleanHeading(m.Snippet, 420)}
+	item := tasks.ConnectionItem{ID: m.ID, ThreadID: m.ThreadID, Title: "(No subject)", Body: cleanHeading(m.Snippet, 420)}
 	var from, date string
 	for _, h := range m.Payload.Headers {
 		switch strings.ToLower(h.Name) {
@@ -205,6 +206,7 @@ func (s *Service) readGmailChat(ctx context.Context, c tasks.ProviderCredentials
 		}
 		item := m.cardItem(c.Account)
 		card.Heading, card.Detail, card.URL, card.ItemID = item.Title, item.Detail, item.URL, item.ID
+		card.ThreadID = m.ThreadID
 		card.Body = gmailPartText(m.Payload, "text/plain", 0)
 		if card.Body == "" {
 			card.Body = gmailPartText(m.Payload, "text/html", 0)
@@ -215,11 +217,55 @@ func (s *Service) readGmailChat(ctx context.Context, c tasks.ProviderCredentials
 		}
 		return nil
 	}
+	if query.Kind == "thread" {
+		if !providerItemID.MatchString(query.ItemID) {
+			return &tasks.InputError{Message: "Choose a thread_id returned by Gmail search or a message read."}
+		}
+		var thread struct {
+			ID       string
+			Messages []gmailChatMessage
+		}
+		if err := s.getJSON(ctx, gmailAPI+"/threads/"+query.ItemID+"?format=full", token, &thread); err != nil {
+			return err
+		}
+		if thread.ID != query.ItemID {
+			return &tasks.InputError{Message: "Gmail returned an invalid thread."}
+		}
+		sort.SliceStable(thread.Messages, func(i, j int) bool {
+			left, _ := strconv.ParseInt(thread.Messages[i].InternalDate, 10, 64)
+			right, _ := strconv.ParseInt(thread.Messages[j].InternalDate, 10, 64)
+			return left < right
+		})
+		end := max(0, len(thread.Messages)-(max(1, query.Page)-1)*5)
+		start := max(0, end-5)
+		card.Heading, card.ThreadID = "Gmail conversation", thread.ID
+		card.URL, card.ItemID = gmailWeb(c.Account)+"#all/"+thread.ID, thread.ID
+		card.Detail = fmt.Sprintf("%d messages · page %d · message excerpts (up to 4,000 characters each), newest pages first", len(thread.Messages), max(1, query.Page))
+		for _, message := range thread.Messages[start:end] {
+			item := message.cardItem(c.Account)
+			item.Body = gmailPartText(message.Payload, "text/plain", 0)
+			if item.Body == "" {
+				item.Body = gmailPartText(message.Payload, "text/html", 0)
+			}
+			if item.Body == "" {
+				item.Body = cleanHeading(message.Snippet, 4000)
+			}
+			card.Items = append(card.Items, item)
+		}
+		card.More = start > 0
+		if card.More {
+			card.NextPage = max(1, query.Page) + 1
+		}
+		return nil
+	}
 	text := strings.TrimSpace(query.Query)
 	if text == "" {
 		text = "in:inbox"
 	}
 	params := url.Values{"q": {text}, "maxResults": {"6"}}
+	if query.PageToken != "" {
+		params.Set("pageToken", query.PageToken)
+	}
 	var page struct {
 		NextPageToken string
 		Messages      []struct{ ID string }
@@ -229,6 +275,7 @@ func (s *Service) readGmailChat(ctx context.Context, c tasks.ProviderCredentials
 	}
 	card.Heading, card.Detail, card.URL = "Gmail search", text, gmailWeb(c.Account)+"#search/"+url.PathEscape(text)
 	card.More = page.NextPageToken != "" || len(page.Messages) > connectionPreviewRows
+	card.NextPageToken = page.NextPageToken
 	for _, ref := range page.Messages[:min(len(page.Messages), connectionPreviewRows)] {
 		message, err := read(ref.ID, false)
 		if errors.Is(err, responseError(http.StatusNotFound)) {

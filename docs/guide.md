@@ -40,12 +40,34 @@ Run this command from the repository root.
 
 ## Using Buddy
 
+For daily development, register project checkouts in Connections and keep host
+capabilities current. Buds can use installed Go, Node, Python, Rust, Java, .NET,
+Swift, Ruby and build tools through Codex jobs. Use `/code` for implementation,
+`/debug` for reproduction and verification, and `/review` for a read-only review;
+these workflows are also discoverable by the model during ordinary chat.
+
+GitHub lookups support paginated open PRs and issues, changed-file lists,
+individual patch chunks, source files at a ref, discussion and inline review
+comments, workflow runs and their job steps. Reviews should record both head and
+base commits, read beyond the preview, and restart if either changes. GitHub may
+omit large or binary patches and limits its file listing to 3,000 files; use a
+checkout for complete coverage when needed.
+
+Use `/inbox` or ordinary chat for Gmail triage. Search supports continuation
+cursors, and conversation reads include five message excerpts per page (up to 4,000
+characters each), newest pages first with messages ordered chronologically within each page. The model
+can request older pages. Gmail access remains read-only: reply drafts appear in
+chat, and are not saved or sent in Gmail.
+
+
 For Docker-based inline code execution, prepare the runtimes you want to use.
 Buddy uses installed images and can delegate work when an image is unavailable.
 
 ```sh
 docker pull docker.io/library/golang@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea
 docker pull docker.io/library/python@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb558c0c17db5ffefbcf8094871c32b
+docker pull docker.io/library/node@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496
+docker pull docker.io/library/ruby@sha256:d7c312a48736dd291d7ce043c847f04dfde9bdf7334491ca6a545a4a184395be
 ```
 
 1. Pick a Bud in the left sidebar and send a message. Normal conversation
@@ -58,7 +80,13 @@ docker pull docker.io/library/python@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb5
    For longer research and development, it can start a Codex background job.
    Keep chatting while it runs, or quit Buddy and open it later. The result
    lands in the originating chat.
-   Ask a Bud to run or verify a short, standalone Go or Python snippet.
+   Ask a Bud to run or verify a short standalone snippet in Go, Python,
+   JavaScript, TypeScript, Bash, Ruby or SQL. Only available isolated runtimes
+   appear in its tool catalog. The Go image also enables Bash; the Python image
+   enables in-memory SQLite. The Node image enables JavaScript and TypeScript.
+   TypeScript runs with [Node type stripping](https://nodejs.org/api/typescript.html),
+   without a separate type check; ask for a project job to run tsc or dependency-based tests.
+   On native Linux, TypeScript requires Node 24 or newer.
    Each execution has its own output and exit status in chat. The server
    uses a network-disabled sandbox. On macOS, inline runs require running
    Docker and a pinned runtime image. On Linux, the installer delegates the
@@ -97,6 +125,21 @@ docker pull docker.io/library/python@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb5
    default model is GPT-6.1 Terra. Use **Remove** in Bud settings to take a
    Bud out of active chats and stop its routines. **Removed Buds** keeps
    its chat history and workspace files accessible.
+   In **Edit Bud → Codex · task profiles**, choose a default model and optional
+   coding, review, research, mail and everyday profiles. Each profile has its own
+   model, reasoning effort and speed. Choices come from the connected Codex
+   catalog; effort and speed depend on the model and account. Profile controls
+   use Codex CLI 0.169.0 or newer and Buddy server protocol 86. Configure coding
+   and review with your strongest available model and high effort; choose a
+   lighter model for mail and everyday tasks. Empty profiles use the default.
+   Choosing effort or speed on an empty profile enables it with the current
+   default model. With profiles configured, a separate bounded Codex pass chooses
+   the task category from the current request and recent context. If that pass
+   fails, the default settings apply. Tool and workflow decisions remain with the
+   working model. Queued work captures the preferences; local retries retain the
+   selected profile. Remote jobs carry the same configured preferences and need
+   an updated buddyworker. Chats from the phone and jobs requested in voice use
+   the server's configured profiles too. Realtime voice itself keeps its voice model.
 3. Use **+** next to **Group chats** to bring Buds into the same conversation.
    Buds receive the current team roster, roles, primary Bud, group lead, active
    assignments, dependencies, and recent joins or departures. They can coordinate
@@ -761,6 +804,10 @@ can discover those instructions by name and use them for a matching request.
 Explicit slash commands still select and save the workflow for that task and
 any work or routines it hands off. A skill uses the selected Bud's normal
 permissions. Imported instructions are Markdown.
+
+Built-in command names are reserved for new imports. If an upgrade introduces a
+built-in with a name you already installed, your custom definition stays active
+and can still be updated. Removing that custom definition restores the built-in.
 
 ## How it works
 

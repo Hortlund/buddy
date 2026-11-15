@@ -15,6 +15,8 @@ import (
 
 const (
 	chatGoImage     = "docker.io/library/golang@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea"
+	chatNodeImage   = "docker.io/library/node@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496"
+	chatRubyImage   = "docker.io/library/ruby@sha256:d7c312a48736dd291d7ce043c847f04dfde9bdf7334491ca6a545a4a184395be"
 	chatPythonImage = "docker.io/library/python@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb558c0c17db5ffefbcf8094871c32b"
 )
 
@@ -35,18 +37,29 @@ func containerChatCodeRuntimes() map[string]chatCodeRuntime {
 			return result
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	capabilities, err := containerChatCommand(ctx, chatCodeRuntime{binary: docker, root: endpoint}, "info",
 		"--format={{.OSType}} {{.MemoryLimit}} {{.SwapLimit}} {{.PidsLimit}}").Output()
 	if err != nil || strings.TrimSpace(string(capabilities)) != "linux true true true" {
 		return result
 	}
+	available := make(map[string]bool)
+	inspected := make(map[string]bool)
 	for language, runtime := range map[string]chatCodeRuntime{
-		"go":     {binary: docker, root: endpoint, image: chatGoImage, filename: "main.go", args: []string{"go", "build", "-o", "program", "main.go", "&&", "./program"}},
-		"python": {binary: docker, root: endpoint, image: chatPythonImage, filename: "main.py", args: []string{"python3", "-I", "-B", "-u", "-"}},
+		"go":         {binary: docker, root: endpoint, image: chatGoImage, filename: "main.go", args: []string{"go", "build", "-o", "program", "main.go", "&&", "./program"}},
+		"python":     {binary: docker, root: endpoint, image: chatPythonImage, filename: "main.py", args: []string{"python3", "-I", "-B", "-u", "-"}},
+		"javascript": {binary: docker, root: endpoint, image: chatNodeImage, filename: "main.mjs", args: []string{"node", "--input-type=module", "-"}},
+		"typescript": {binary: docker, root: endpoint, image: chatNodeImage, filename: "main.mts", args: []string{"node", "--experimental-strip-types", "--input-type=module-typescript", "-"}},
+		"ruby":       {binary: docker, root: endpoint, image: chatRubyImage, filename: "main.rb", args: []string{"ruby", "--disable-gems", "-"}},
+		"bash":       {binary: docker, root: endpoint, image: chatGoImage, filename: "main.sh", args: []string{"bash", "--noprofile", "--norc", "-s"}},
+		"sql":        {binary: docker, root: endpoint, image: chatPythonImage, filename: "main.sql", args: []string{"python3", "-I", "-B", "-u", "-c", chatSQLRunner}},
 	} {
-		if containerChatCommand(ctx, runtime, "image", "inspect", runtime.image).Run() == nil {
+		if !inspected[runtime.image] {
+			available[runtime.image] = containerChatCommand(ctx, runtime, "image", "inspect", runtime.image).Run() == nil
+			inspected[runtime.image] = true
+		}
+		if available[runtime.image] {
 			result[language] = runtime
 		}
 	}

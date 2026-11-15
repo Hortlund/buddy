@@ -10,41 +10,140 @@ import (
 )
 
 func (a *desktop) modelSettings(c *ui.Context) {
-	ui.Column(c).Gap(6).Children(func() {
-		ui.Text(c, "Codex model").FontWeight(650)
-		ui.Row(c).Gap(8).Children(func() {
-			ui.TextInput(c.Key("agent-model"), &a.edit.Model).Label("Codex model ID").
-				Placeholder(tasks.DefaultCodexModel).Height(36).Grow(1).MinWidth(0)
-			if len(a.models) > 0 {
-				selectModel := ui.SelectBase(c.Key("agent-model-picker"), &a.edit.Model)
-				selectModel.Trigger.Label("Choose a Codex model").Height(36).Padding(0, 12).
-					Radius(8).Border(1, c.Theme().Border).Background(c.Theme().Surface).Children(func() {
-					ui.Text(c, "Choose model ▾").FontSize(13).FontWeight(600)
-				})
-				selectModel.Popup(func(menu ui.Element) {
-					menu.Background(c.Theme().Surface).Border(1, c.Theme().Border).Radius(8).Padding(4).MinWidth(185)
-					for _, model := range a.models {
-						item := selectModel.Item(model.ID).Padding(7, 9).Radius(5)
-						if item.Highlighted() || a.edit.Model == model.ID {
-							item.Background(c.Theme().SurfacePressed).TextColor(c.Theme().Text)
-						}
-						item.Children(func() {
-							name := model.Name
-							if name == "" {
-								name = model.ID
-							}
-							ui.Text(c, name).SingleLine()
-						})
-					}
-				})
+	if !a.protocolChecked.IsZero() && a.serverProtocol < api.ModelProfilesProtocol {
+		ui.TextInput(c.Key("agent-model"), &a.edit.Model).Label("Codex model ID").Placeholder(tasks.DefaultCodexModel).Height(36)
+		ui.Text(c, "Update the Buddy server to configure model profiles.").FontSize(12).TextColor(c.Theme().TextMuted)
+		return
+	}
+	if a.edit.ModelPreferences == nil {
+		a.edit.ModelPreferences = &tasks.ModelPreferences{}
+	}
+	preferences := a.edit.ModelPreferences
+	for _, kind := range tasks.TaskProfileKinds {
+		index := -1
+		for i := range preferences.Profiles {
+			if preferences.Profiles[i].Kind == kind {
+				index = i
+				break
 			}
-		})
-		label := "New requests use this model. The default is GPT-6.1 Terra."
+		}
+		if index < 0 {
+			preferences.Profiles = append(preferences.Profiles, tasks.TaskModelProfile{Kind: kind})
+			index = len(preferences.Profiles) - 1
+		}
+	}
+	ui.Column(c).Gap(9).Children(func() {
+		ui.Text(c, "Codex · task profiles").FontWeight(650)
+		a.modelProfileFields(c, "Default", &a.edit.Model, &preferences.Effort, &preferences.Speed, false)
+		label := "Codex chooses a configured profile for each request. Empty profiles use your default."
 		if a.modelsLoading {
-			label = "Checking which models Codex offers…"
+			label = "Checking Codex models, effort levels and speed options…"
 		}
 		ui.Text(c, label).FontSize(12).TextColor(c.Theme().TextMuted)
+		for index := range preferences.Profiles {
+			profile := &preferences.Profiles[index]
+			kind := profile.Kind
+			name := strings.ToUpper(kind[:1]) + kind[1:]
+			a.modelProfileFields(c.Key("profile-"+kind), name, &profile.Model, &profile.Effort, &profile.Speed, true)
+		}
+		ui.Text(c, "Choose high effort for coding and review, and a lighter model for mail or research. Speed options depend on your Codex account and model.").FontSize(12).TextColor(c.Theme().TextMuted)
 	})
+}
+
+func (a *desktop) modelProfileFields(c *ui.Context, label string, model, effort, speed *string, inherit bool) {
+	prefix := strings.ToLower(label)
+	modelKey := prefix + "-model"
+	if !inherit {
+		modelKey = "agent-model"
+	}
+	ui.Column(c).Gap(5).Children(func() {
+		ui.Text(c, label).FontSize(12).FontWeight(600)
+		ui.Row(c).Gap(7).Children(func() {
+			placeholder := tasks.DefaultCodexModel
+			if inherit {
+				placeholder = "Use default model"
+			}
+			input := ui.TextInput(c.Key(modelKey), model).Label(label + " model ID").Placeholder(placeholder).Height(33).Grow(1).MinWidth(0)
+			if input.Changed() {
+				*effort, *speed = "", ""
+			}
+			options := []tasks.ModelSpeed{}
+			if inherit {
+				options = append(options, tasks.ModelSpeed{ID: "", Name: "Use default"})
+			}
+			for _, choice := range a.models {
+				name := choice.Name
+				if name == "" {
+					name = choice.ID
+				}
+				options = append(options, tasks.ModelSpeed{ID: choice.ID, Name: name})
+			}
+			if len(options) != 0 {
+				if modelOption(c.Key(prefix+"-model-picker"), model, "Choose model", label+" model", options) {
+					*effort, *speed = "", ""
+				}
+			}
+		})
+		var efforts, speeds []tasks.ModelSpeed
+		efforts = append(efforts, tasks.ModelSpeed{ID: "", Name: "Model default"})
+		speeds = append(speeds, tasks.ModelSpeed{ID: "", Name: "Account default"})
+		selected := *model
+		if selected == "" {
+			selected = a.edit.Model
+		}
+		if selected == "" {
+			selected = tasks.DefaultCodexModel
+		}
+		for _, choice := range a.models {
+			if choice.ID != selected {
+				continue
+			}
+			for _, value := range choice.Efforts {
+				efforts = append(efforts, tasks.ModelSpeed{ID: value, Name: value})
+			}
+			speeds = append(speeds, choice.Speeds...)
+		}
+		ui.Row(c).Gap(7).Children(func() {
+			effortChanged := modelOption(c.Key(prefix+"-effort"), effort, "Model default", label+" reasoning effort", efforts)
+			speedChanged := modelOption(c.Key(prefix+"-speed"), speed, "Account default", label+" speed", speeds)
+			if inherit && *model == "" && (effortChanged || speedChanged) {
+				*model = selected
+			}
+		})
+	})
+}
+
+func modelOption(c *ui.Context, value *string, empty, label string, options []tasks.ModelSpeed) bool {
+	selectOption := ui.SelectBase(c, value)
+	title := *value
+	if title == "" {
+		title = empty
+	}
+	for _, option := range options {
+		if option.ID == *value && *value != "" {
+			title = option.Name
+		}
+	}
+	if strings.HasSuffix(label, "reasoning effort") {
+		title = "Effort: " + title
+	}
+	if strings.HasSuffix(label, "speed") {
+		title = "Speed: " + title
+	}
+	selectOption.Trigger.Label(label).Height(31).Padding(0, 10).Radius(7).
+		Border(1, c.Theme().Border).Background(c.Theme().Surface).Children(func() { ui.Text(c, title+" ▾").FontSize(12) })
+	selectOption.Popup(func(menu ui.Element) {
+		menu.Background(c.Theme().Surface).Border(1, c.Theme().Border).Radius(8).Padding(4).MinWidth(160)
+		for _, option := range options {
+			item := selectOption.Item(option.ID).Label(option.Name).Padding(7, 9).Radius(5)
+			if item.Highlighted() || *value == option.ID {
+				item.Background(c.Theme().SurfacePressed).TextColor(c.Theme().Text)
+			}
+			item.Children(func() { ui.Text(c, option.Name).SingleLine() })
+		}
+	})
+	return selectOption.Trigger.Changed()
+
 }
 
 var runtimeMark = svg(`<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="m7 9 3 3-3 3m5 0h4"/>`)

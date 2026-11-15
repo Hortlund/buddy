@@ -248,8 +248,18 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         press("avatar-shape-cloud")
         wait_for("selected Cloud shape", lambda: "checked" in (node("avatar-shape-cloud") or {}).get("states", []))
         capture(screenshot)
+        ui("input", events=[dict(type="wheel", x=700, y=520, dy=480, precise=True)])
+        coding_model = wait_for("Coding task profile", lambda: next((n for n in ui("tree")["nodes"]
+                                  if n.get("label") == "Coding model ID"), None))
+        set_value(coding_model["key"], "gpt-6.1-terra")
+        if screenshot:
+            capture(screenshot.with_stem(screenshot.stem + "-profiles"))
         press("agent-save")
         wait_for("return to Bud directory", lambda: node("edit-bud-" + forge["id"]))
+        saved_profile = api("agents/" + forge["id"])
+        coding = next(p for p in saved_profile["model_preferences"]["profiles"] if p["kind"] == "coding")
+        if coding["model"] != "gpt-6.1-terra" or saved_profile["model"] != "gpt-6.1-terra":
+            raise RuntimeError("Task profile model did not save independently of the default")
         avatar = chat(forge["conversation_id"])["agent"]["avatar"]
         if avatar["color"] != "teal" or avatar["shape"] != "cloud":
             raise RuntimeError(f"Buddy did not save the new look: {avatar}")

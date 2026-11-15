@@ -15,7 +15,7 @@ func TestNativeChatCodeSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimes := nativeChatCodeRuntimes()
-	if len(runtimes) != 2 {
+	if runtimes["go"].binary == "" || runtimes["python"].binary == "" {
 		t.Fatalf("Expected native Go and Python, got %v", runtimes)
 	}
 	t.Run("short memory spike", TestChatCodeRejectsShortMemorySpike)

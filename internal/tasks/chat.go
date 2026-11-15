@@ -44,6 +44,14 @@ CREATE TABLE IF NOT EXISTS agent_models (
 	agent_id TEXT PRIMARY KEY REFERENCES agents(id),
 	model TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_model_preferences (
+ agent_id TEXT PRIMARY KEY REFERENCES agents(id),
+ preferences TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS turn_model_preferences (
+ task_id TEXT PRIMARY KEY REFERENCES chat_turns(task_id),
+ preferences TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS conversations (
 	id TEXT PRIMARY KEY,
 	agent_id TEXT NOT NULL REFERENCES agents(id)
@@ -102,18 +110,19 @@ INSERT OR IGNORE INTO conversations VALUES ('conv_buddy','agt_buddy');
 `
 
 type Agent struct {
-	Removed              bool    `json:"removed,omitempty"`
-	WorkspaceNeedsReview bool    `json:"workspace_needs_review,omitempty"`
-	ConfirmWorkspace     bool    `json:"confirm_workspace,omitempty"`
-	ID                   string  `json:"id"`
-	ConversationID       string  `json:"conversation_id,omitempty"`
-	Name                 string  `json:"name"`
-	Role                 string  `json:"role,omitempty"`
-	Instructions         string  `json:"instructions"`
-	Workspace            string  `json:"workspace"`
-	AllowEdits           bool    `json:"allow_edits"`
-	Model                string  `json:"model,omitempty"`
-	Avatar               *Avatar `json:"avatar,omitempty"`
+	Removed              bool              `json:"removed,omitempty"`
+	WorkspaceNeedsReview bool              `json:"workspace_needs_review,omitempty"`
+	ConfirmWorkspace     bool              `json:"confirm_workspace,omitempty"`
+	ID                   string            `json:"id"`
+	ConversationID       string            `json:"conversation_id,omitempty"`
+	Name                 string            `json:"name"`
+	Role                 string            `json:"role,omitempty"`
+	Instructions         string            `json:"instructions"`
+	Workspace            string            `json:"workspace"`
+	AllowEdits           bool              `json:"allow_edits"`
+	Model                string            `json:"model,omitempty"`
+	ModelPreferences     *ModelPreferences `json:"model_preferences,omitempty"`
+	Avatar               *Avatar           `json:"avatar,omitempty"`
 }
 
 type Message struct {
@@ -247,20 +256,22 @@ type AgentRunner func(context.Context, Turn, Emit) (string, error)
 const agentFields = `a.id,a.name,a.instructions,a.workspace,a.allow_edits,COALESCE(am.model,'` + DefaultCodexModel + `'),
 	COALESCE(p.color,'ink'),COALESCE(p.shape,'orb'),COALESCE(p.face,'smile'),COALESCE(p.finish,'satin'),COALESCE(p.animate,1),p.image,COALESCE(ar.role,''),
 	EXISTS(SELECT 1 FROM restored_workspace_agents h WHERE h.agent_id=a.id),
-	EXISTS(SELECT 1 FROM removed_buds WHERE agent_id=a.id)`
+	EXISTS(SELECT 1 FROM removed_buds WHERE agent_id=a.id),COALESCE(mp.preferences,'null')`
 
-const agentSettings = ` LEFT JOIN agent_appearance p ON p.agent_id=a.id LEFT JOIN agent_models am ON am.agent_id=a.id LEFT JOIN agent_roles ar ON ar.agent_id=a.id`
+const agentSettings = ` LEFT JOIN agent_appearance p ON p.agent_id=a.id LEFT JOIN agent_models am ON am.agent_id=a.id LEFT JOIN agent_roles ar ON ar.agent_id=a.id LEFT JOIN agent_model_preferences mp ON mp.agent_id=a.id`
 
 func scanAgent(row scanner) (Agent, error) {
 	var a Agent
 	var avatar Avatar
+	var preferences string
 	err := row.Scan(&a.ID, &a.Name, &a.Instructions, &a.Workspace, &a.AllowEdits, &a.Model,
-		&avatar.Color, &avatar.Shape, &avatar.Face, &avatar.Finish, &avatar.Animate, &avatar.Image, &a.Role, &a.WorkspaceNeedsReview, &a.Removed)
+		&avatar.Color, &avatar.Shape, &avatar.Face, &avatar.Finish, &avatar.Animate, &avatar.Image, &a.Role, &a.WorkspaceNeedsReview, &a.Removed, &preferences)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
 	}
 	if err == nil {
 		a.Avatar = &avatar
+		err = json.Unmarshal([]byte(preferences), &a.ModelPreferences)
 	}
 	return a, err
 }
@@ -302,6 +313,9 @@ func (s *Store) saveAgentInTx(ctx context.Context, tx *sql.Tx, id string, a Agen
 	}
 	if a.Model != "" && !validModel(a.Model) {
 		return Agent{}, &InputError{"Enter a valid Codex model ID."}
+	}
+	if err := a.ModelPreferences.validate(); err != nil {
+		return Agent{}, err
 	}
 	if !validTitle(a.Name, 100) || len(a.Instructions) > 8000 {
 		return Agent{}, &InputError{"Enter a name and keep the instructions under 8,000 bytes."}
@@ -411,6 +425,15 @@ func (s *Store) saveAgentInTx(ctx context.Context, tx *sql.Tx, id string, a Agen
 	if a.Model != "" {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO agent_models(agent_id,model) VALUES (?,?)
 			ON CONFLICT(agent_id) DO UPDATE SET model=excluded.model`, id, a.Model); err != nil {
+			return Agent{}, err
+		}
+	}
+	if a.ModelPreferences != nil {
+		preferences := a.ModelPreferences.Clone()
+		preferences.Selected = ""
+		raw, _ := json.Marshal(preferences)
+		if _, err = tx.ExecContext(ctx, `INSERT INTO agent_model_preferences VALUES (?,?)
+            ON CONFLICT(agent_id) DO UPDATE SET preferences=excluded.preferences`, id, string(raw)); err != nil {
 			return Agent{}, err
 		}
 	}
@@ -930,10 +953,19 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 			&turn.Agent.Role, &turn.Origin, &turn.Title, &turn.Brief, &parent); err != nil {
 		return Turn{}, err
 	}
+	var preferences string
+	preferencesErr := s.db.QueryRowContext(ctx, "SELECT preferences FROM turn_model_preferences WHERE task_id=?", task.ID).Scan(&preferences)
+	if preferencesErr == nil {
+		preferencesErr = json.Unmarshal([]byte(preferences), &turn.Agent.ModelPreferences)
+	}
+	if preferencesErr != nil && !errors.Is(preferencesErr, sql.ErrNoRows) {
+		return Turn{}, preferencesErr
+	}
 	if turn.Origin == backgroundRequest {
 		turn.Agent.Workspace = ""
 	}
 	if turn.Origin == WatchOrigin {
+		turn.BuddyTeam.CurrentTaskID = task.ID
 		var raw string
 		if err := s.db.QueryRowContext(ctx, "SELECT signal FROM standing_inbox WHERE task_id=?", task.ID).Scan(&raw); err != nil {
 			return Turn{}, err

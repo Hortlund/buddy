@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -179,8 +180,13 @@ func nativeChatCodeRuntimes() map[string]chatCodeRuntime {
 		program, filename string
 		args              []string
 	}{
-		"go":     {"go", "main.go", []string{"build", "-o", "program", "main.go"}},
-		"python": {"python3", "main.py", []string{"-I", "-B", "-u", "main.py"}},
+		"go":         {"go", "main.go", []string{"build", "-o", "program", "main.go"}},
+		"python":     {"python3", "main.py", []string{"-I", "-B", "-u", "main.py"}},
+		"javascript": {"node", "main.mjs", []string{"main.mjs"}},
+		"typescript": {"node", "main.mts", []string{"--experimental-strip-types", "main.mts"}},
+		"ruby":       {"ruby", "main.rb", []string{"--disable-gems", "main.rb"}},
+		"bash":       {"bash", "main.sh", []string{"--noprofile", "--norc", "main.sh"}},
+		"sql":        {"python3", "main.sql", []string{"-I", "-B", "-u", "-c", chatSQLRunner, "main.sql"}},
 	} {
 		path, err := exec.LookPath(candidate.program)
 		if err != nil {
@@ -189,6 +195,18 @@ func nativeChatCodeRuntimes() map[string]chatCodeRuntime {
 		path, err = filepath.EvalSymlinks(path)
 		if err != nil || !filepath.IsAbs(path) || strings.ContainsAny(path, "*?[") {
 			continue
+		}
+		if language == "typescript" {
+			check, cancel := context.WithTimeout(context.Background(), time.Second)
+			version, err := exec.CommandContext(check, path, "--version").Output()
+			cancel()
+			var major int
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Sscanf(strings.TrimSpace(string(version)), "v%d.", &major); err != nil || major < 24 {
+				continue
+			}
 		}
 		root := path
 		// The bundled Go toolchain keeps its standard library alongside the binary.

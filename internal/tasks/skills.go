@@ -135,7 +135,16 @@ func (s *Store) InstallSkill(ctx context.Context, markdown string) (SkillInfo, e
 	}
 	for _, builtIn := range builtInSkills() {
 		if skill.Name == builtIn.Name {
-			return SkillInfo{}, &InputError{"That name belongs to a built-in skill. Choose a different name."}
+			// An older home may already own this name. Update only an existing
+			// custom definition so new imports cannot replace reserved commands.
+			result, err := s.db.ExecContext(ctx, "UPDATE installed_skills SET description=?,instructions=? WHERE name=?",
+				skill.Description, skill.Instructions, skill.Name)
+			if err := requireStandingChange(result, err); errors.Is(err, ErrInactive) {
+				return SkillInfo{}, &InputError{"That name belongs to a built-in skill. Choose a different name."}
+			} else if err != nil {
+				return SkillInfo{}, err
+			}
+			return skill.SkillInfo, nil
 		}
 	}
 	result, err := s.db.ExecContext(ctx, `INSERT INTO installed_skills SELECT ?,?,? WHERE
@@ -161,7 +170,9 @@ func (s *Store) RemoveSkill(ctx context.Context, name string) error {
 
 func listSkills(ctx context.Context, db queryer) ([]SkillInfo, error) {
 	var out []SkillInfo
+	positions := make(map[string]int)
 	for _, skill := range builtInSkills() {
+		positions[skill.Name] = len(out)
 		out = append(out, skill.SkillInfo)
 	}
 	rows, err := db.QueryContext(ctx, "SELECT name,description FROM installed_skills ORDER BY name")
@@ -174,7 +185,11 @@ func listSkills(ctx context.Context, db queryer) ([]SkillInfo, error) {
 		if err := rows.Scan(&skill.Name, &skill.Description); err != nil {
 			return nil, err
 		}
-		out = append(out, skill)
+		if index, exists := positions[skill.Name]; exists {
+			out[index] = skill
+		} else {
+			out = append(out, skill)
+		}
 	}
 	return out, rows.Err()
 }
@@ -198,17 +213,20 @@ func SkillCommand(text string) (name, arguments string) {
 }
 
 func skillInstructions(ctx context.Context, db queryer, name string) (string, error) {
+	var instructions string
+	err := db.QueryRowContext(ctx, "SELECT instructions FROM installed_skills WHERE name=?", name).Scan(&instructions)
+	if err == nil {
+		return instructions, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
 	for _, skill := range builtInSkills() {
 		if skill.Name == name {
 			return skill.Instructions, nil
 		}
 	}
-	var instructions string
-	err := db.QueryRowContext(ctx, "SELECT instructions FROM installed_skills WHERE name=?", name).Scan(&instructions)
-	if errors.Is(err, sql.ErrNoRows) {
-		err = nil
-	}
-	return instructions, err
+	return "", nil
 }
 
 func bindSkill(ctx context.Context, tx *sql.Tx, id, text, selected string) error {

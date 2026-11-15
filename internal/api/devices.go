@@ -64,6 +64,9 @@ func deviceRoutes(owner *http.ServeMux, store *tasks.Store) http.Handler {
 				claim = store.ReserveLegacyExecutionWork
 				if r.URL.Query().Get("automation_scope") == automationScopeVersion {
 					claim = store.ReserveExecutionWork
+					if r.URL.Query().Get("model_profiles") == "1" {
+						claim = store.ReserveModelProfileWork
+					}
 				}
 			}
 			job, err := claim(r.Context(), id, pool, edits)
@@ -224,7 +227,7 @@ func (c *Client) ClaimDeviceJob(ctx context.Context, id string) (*tasks.DeviceJo
 
 func (c *Client) ClaimDeviceWork(ctx context.Context, id string, pool, edits bool) (*tasks.DeviceJob, error) {
 	var job *tasks.DeviceJob
-	path := "/v1/worker/" + url.PathEscape(id) + "/claim?attachments=1&delivery=1&skills=1&execution=1&automation_scope=" + automationScopeVersion
+	path := "/v1/worker/" + url.PathEscape(id) + "/claim?attachments=1&delivery=1&skills=1&execution=1&model_profiles=1&automation_scope=" + automationScopeVersion
 	if pool {
 		path += "&pool=1"
 		if edits {

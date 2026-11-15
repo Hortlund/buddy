@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -41,7 +42,7 @@ type githubThread struct {
 	Merged       bool                      `json:"merged"`
 	ChangedFiles int                       `json:"changed_files"`
 	Head         struct{ Ref, SHA string } `json:"head"`
-	Base         struct{ Ref string }      `json:"base"`
+	Base         struct{ Ref, SHA string } `json:"base"`
 }
 
 func (t githubThread) item(repoURL, kind string) tasks.GitHubItem {
@@ -63,8 +64,10 @@ func (t githubThread) item(repoURL, kind string) tasks.GitHubItem {
 }
 
 func (s *Service) ReadGitHub(ctx context.Context, query tasks.GitHubQuery) (tasks.GitHubResult, error) {
-	if !tasks.ValidGitHubRepo(query.Repo) || len(query.Ref) > 250 ||
-		((query.Kind == "pull" || query.Kind == "issue") && query.Number < 1) {
+	if !tasks.ValidGitHubRepo(query.Repo) || len(query.Ref) > 250 || len(query.BaseRef) > 250 ||
+		query.Page < 0 || query.Page > 150 || len(query.Path) > 1000 ||
+		(query.Path != "" && !fs.ValidPath(query.Path)) ||
+		((query.Kind == "pull" || query.Kind == "issue" || query.Kind == "pull_files" || query.Kind == "pull_file" || query.Kind == "comments" || query.Kind == "review_comments") && query.Number < 1) {
 		return tasks.GitHubResult{}, &tasks.InputError{Message: "Give me the repository and the PR or issue number you want me to check."}
 	}
 	c, err := s.activeConnection(ctx, query.ConnectionID)
@@ -87,6 +90,8 @@ func (s *Service) ReadGitHub(ctx context.Context, query tasks.GitHubQuery) (task
 	}
 	result := tasks.GitHubResult{Repo: query.Repo, URL: web}
 	switch query.Kind {
+	case "pull_files", "pull_file", "comments", "review_comments", "file", "jobs":
+		return s.readDeveloperGitHub(query, get, web)
 	case "repo":
 		var repo struct {
 			Description   string `json:"description"`
@@ -104,25 +109,24 @@ func (s *Service) ReadGitHub(ctx context.Context, query tasks.GitHubQuery) (task
 		}
 		result.Items = []tasks.GitHubItem{{Title: "Default branch", Detail: cleanHeading(repo.DefaultBranch, 160) + " · " + visibility}}
 	case "pulls", "issues":
-		path, itemPath, page := "pulls", "pull", githubPreviewRows+1
+		path, itemPath, page := "pulls", "pull", max(1, query.Page)
 		result.Heading = "Open pull requests"
 		if query.Kind == "issues" {
-			path, itemPath, page = "issues", "issues", 30
+			path, itemPath = "issues", "issues"
 			result.Heading = "Open issues"
 		}
 		var entries []githubThread
-		if err := get(fmt.Sprintf("/%s?state=open&per_page=%d", path, page), &entries); err != nil {
+		if err := get(fmt.Sprintf("/%s?state=open&per_page=20&page=%d", path, page), &entries); err != nil {
 			return result, err
 		}
 		result.URL += "/" + path
-		result.More = len(entries) >= page
+		result.More = len(entries) == 20 && page < 150
+		if result.More {
+			result.NextPage = page + 1
+		}
 		for _, entry := range entries {
 			if entry.Number < 1 || entry.PullRequest != nil {
 				continue
-			}
-			if len(result.Items) == githubPreviewRows {
-				result.More = true
-				break
 			}
 			result.Items = append(result.Items, entry.item(web, itemPath))
 		}
@@ -145,6 +149,8 @@ func (s *Service) ReadGitHub(ctx context.Context, query tasks.GitHubQuery) (task
 		item := entry.item(web, itemPath)
 		result.Heading, result.URL, result.Detail = item.Title, item.URL, item.Detail
 		if query.Kind == "pull" {
+			result.HeadSHA = entry.Head.SHA
+			result.BaseSHA = entry.Base.SHA
 			result.Detail += fmt.Sprintf("\n\n%s → %s · %d changed files",
 				cleanHeading(entry.Head.Ref, 130), cleanHeading(entry.Base.Ref, 130), entry.ChangedFiles)
 			if gitCommit.MatchString(entry.Head.SHA) {
@@ -157,7 +163,8 @@ func (s *Service) ReadGitHub(ctx context.Context, query tasks.GitHubQuery) (task
 		}
 	case "checks":
 		result.Heading, result.URL = "Recent workflow runs", web+"/actions"
-		params := url.Values{"per_page": {"7"}}
+		page := max(1, query.Page)
+		params := url.Values{"per_page": {"20"}, "page": {fmt.Sprint(page)}}
 		if query.Ref != "" {
 			if gitCommit.MatchString(query.Ref) {
 				params.Set("head_sha", query.Ref)
@@ -176,7 +183,7 @@ func (s *Service) ReadGitHub(ctx context.Context, query tasks.GitHubQuery) (task
 		if err := get("/actions/runs?"+params.Encode(), &runs); err != nil {
 			return result, err
 		}
-		for _, run := range runs.Items[:min(len(runs.Items), githubPreviewRows)] {
+		for _, run := range runs.Items {
 			if run.ID < 1 {
 				continue
 			}
@@ -189,7 +196,10 @@ func (s *Service) ReadGitHub(ctx context.Context, query tasks.GitHubQuery) (task
 				URL: fmt.Sprintf("%s/actions/runs/%d", web, run.ID),
 			})
 		}
-		result.More = runs.Total > githubPreviewRows || len(runs.Items) > githubPreviewRows
+		result.More = runs.Total > page*20 && len(runs.Items) == 20 && page < 150
+		if result.More {
+			result.NextPage = page + 1
+		}
 		if len(result.Items) == 0 {
 			result.Items = []tasks.GitHubItem{{Title: "No workflow runs found"}}
 		}

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -199,7 +200,7 @@ func touchDevice(ctx context.Context, tx *sql.Tx, id string, now time.Time) erro
 }
 
 func (s *Store) ClaimDeviceJob(ctx context.Context, id string) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, false, false, false, false, false, false)
+	return s.claimDeviceJob(ctx, id, false, false, false, false, false, false, false)
 }
 
 func (s *Store) ReserveDeviceJob(ctx context.Context, id string) (*DeviceJob, error) {
@@ -207,22 +208,26 @@ func (s *Store) ReserveDeviceJob(ctx context.Context, id string) (*DeviceJob, er
 }
 
 func (s *Store) ReserveDeviceWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, false, false, false)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, false, false, false, false)
 }
 
 func (s *Store) ReserveDeviceSkillWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, true, false, false)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, false, false, false)
 }
 
 func (s *Store) ReserveExecutionWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, true)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, true, false)
 }
 
 func (s *Store) ReserveLegacyExecutionWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, false)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, false, false)
 }
 
-func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, pool, edits, supportsSkills, supportsExecution, scopesAutomation bool) (*DeviceJob, error) {
+func (s *Store) ReserveModelProfileWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, true, true)
+}
+
+func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, pool, edits, supportsSkills, supportsExecution, scopesAutomation, supportsProfiles bool) (*DeviceJob, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -275,6 +280,24 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 		return nil, err
 	}
 	for _, item := range queued {
+		var rawPreferences string
+		var preferences *ModelPreferences
+		err := tx.QueryRowContext(ctx, "SELECT preferences FROM turn_model_preferences WHERE task_id=?", item.id).Scan(&rawPreferences)
+		if err == nil {
+			err = json.Unmarshal([]byte(rawPreferences), &preferences)
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if preferences.configured() && !supportsProfiles {
+			if !item.unassigned {
+				const message = "Update buddyworker on this device to use task model profiles."
+				if _, err := tx.ExecContext(ctx, "UPDATE tasks SET summary=? WHERE id=? AND summary<>?", message, item.id, message); err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
 		plan, err := readExecutionPlan(ctx, tx, item.id)
 		if err != nil {
 			return nil, err
@@ -346,6 +369,7 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 		}
 		job := &DeviceJob{ExecutionPlan: plan, Workspace: workspace, ID: item.id, Lease: rand.Text(), NeedsStart: reserveDelivery && (len(files) != 0 || skill != nil),
 			Attachments: files, CanRequestInput: reserveDelivery, CommandProgress: true, CommandBatches: true, Skill: skill}
+		job.Agent.ModelPreferences = preferences
 		var conversation string
 		if err := tx.QueryRowContext(ctx, `
 			SELECT t.timeout,td.agent_id,ct.agent_name,ct.instructions,ct.allow_edits,tm.model,td.agent_role,td.title,td.brief,(SELECT chat FROM language_preferences WHERE id=1),ct.conversation_id

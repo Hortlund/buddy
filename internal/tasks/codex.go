@@ -170,6 +170,10 @@ func (r *CodexRuntime) Run(ctx context.Context, turn Turn, emit Emit) (string, e
 			}
 		}
 	}
+	turn, err = r.selectTaskModel(ctx, turn, emit)
+	if err != nil {
+		return "", err
+	}
 	guard, closeGuard, err := r.startAutomationGuard(ctx, turn)
 	if err != nil {
 		return "", err
@@ -764,6 +768,7 @@ func (r *CodexRuntime) runPrompt(ctx context.Context, dir string, turn Turn, rea
 	args := []string{r.path, "-a", "never", "exec", "--ephemeral", "--ignore-user-config",
 		"--json", "--skip-git-repo-check", "--model=" + turn.Agent.Model, "-C", dir}
 	args = append(args, flags...)
+	args = append(args, modelConfigFlags(turn.Agent.ModelPreferences)...)
 	args = append(args, "-c", `cli_auth_credentials_store="auto"`)
 	if output := turn.outputSchema(); output != "" {
 		configDir, err := os.MkdirTemp("", "buddy-output-")
@@ -948,17 +953,23 @@ const managementActionSchema = `{"type":"object","additionalProperties":false,"r
 	"target_id":{"type":"string"},"text":{"type":"string"},"members":{"type":"array","items":{"type":"string"}},"evidence":{"type":"string"}
 }}`
 
-const githubReadSchema = `{"type":"object","additionalProperties":false,"required":["connection_id","repo","kind","number","ref"],
-	"properties":{"connection_id":{"type":"string"},"repo":{"type":"string"},"kind":{"type":"string","enum":["repo","pulls","pull","issues","issue","checks"]},
-	"number":{"type":"integer"},"ref":{"type":"string"}}}`
+const githubReadSchema = `{"type":"object","additionalProperties":false,"required":["connection_id","repo","kind","number","ref","base_ref","path","page","run_id"],
+	"properties":{"connection_id":{"type":"string"},"repo":{"type":"string"},"kind":{"type":"string","enum":["repo","pulls","pull","pull_files","pull_file","comments","review_comments","file","issues","issue","checks","jobs"]},
+	"number":{"type":"integer"},"ref":{"type":"string","description":"Branch or commit for file/check reads. For pull_files, pass the prior head_sha to detect a changed PR."},
+	"base_ref":{"type":"string","description":"Recorded base_sha for PR patch reads; empty on the first lookup or when unused."},
+	"path":{"type":"string","description":"Exact repository file path for kind file or pull_file. Empty otherwise."},
+	"page":{"type":"integer","minimum":0,"description":"Page from next_page. Zero starts at the first page."},
+	"run_id":{"type":"integer","minimum":0,"description":"Actions run ID for kind jobs. Zero otherwise."}}}`
 
 const connectionReadSchema = `{"type":"object","additionalProperties":false,
-	"required":["source","connection_id","kind","query","item_id"],"properties":{
+	"required":["source","connection_id","kind","query","item_id","page","page_token"],"properties":{
 	"source":{"type":"string","enum":["github_ci","gmail_label","grafana_alerts","prometheus_alerts"]},
 	"connection_id":{"type":"string","description":"Exact ID from connected_services. Empty selects the sole connected account for this source."},
-	"kind":{"type":"string","enum":["search","message","alerts","dashboards","query","card"]},
+	"kind":{"type":"string","enum":["search","message","thread","alerts","dashboards","query","card"]},
 	"query":{"type":"string","description":"Gmail search query, Grafana dashboard title filter, or instant PromQL expression. Empty when unused."},
-	"item_id":{"type":"string","description":"Exact Gmail message ID from a search, or the connection_reference_id for a saved card. Empty when unused."}}}`
+	"item_id":{"type":"string","description":"Exact Gmail message ID, thread_id for kind thread, or connection_reference_id for a saved card. Empty when unused."},
+	"page":{"type":"integer","minimum":0,"description":"Page from next_page for a Gmail thread. Zero starts at the first page."},
+	"page_token":{"type":"string","description":"Opaque next_page_token from a Gmail search. Empty for the first page or other kinds."}}}`
 
 const companionSchema = `{
 	"type":"object","additionalProperties":false,"required":["reply","clarification","reaction","handoff","handoffs","routines","card","read_file","save_file","run_code","read_code_result","generate_image","bud_proposal","bud_clarification","github_read","github_write","connection_read","watch_create","manage","management_choices","ask_peer","learning"],
@@ -1149,8 +1160,13 @@ func (r *CodexRuntime) Models(ctx context.Context) ([]Model, error) {
 		for {
 			var page struct {
 				Data []struct {
-					ID   string `json:"model"`
-					Name string `json:"displayName"`
+					ID            string `json:"model"`
+					Name          string `json:"displayName"`
+					DefaultEffort string `json:"defaultReasoningEffort"`
+					Efforts       []struct {
+						Effort string `json:"reasoningEffort"`
+					} `json:"supportedReasoningEfforts"`
+					Speeds []ModelSpeed `json:"serviceTiers"`
 				} `json:"data"`
 				Next string `json:"nextCursor"`
 			}
@@ -1159,7 +1175,11 @@ func (r *CodexRuntime) Models(ctx context.Context) ([]Model, error) {
 			}
 			for _, m := range page.Data {
 				if validModel(m.ID) {
-					models = append(models, Model{ID: m.ID, Name: m.Name})
+					model := Model{ID: m.ID, Name: m.Name, DefaultEffort: m.DefaultEffort, Speeds: m.Speeds}
+					for _, effort := range m.Efforts {
+						model.Efforts = append(model.Efforts, effort.Effort)
+					}
+					models = append(models, model)
 				}
 			}
 			if page.Next == "" || params["cursor"] == page.Next {

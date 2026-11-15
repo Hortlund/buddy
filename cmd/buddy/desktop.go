@@ -425,6 +425,9 @@ func (a *desktop) saveAgent() {
 	a.saving, a.editErr = true, ""
 	win, profile, creating, back := a.window, copyAgent(a.edit), a.creatingAgent, a.editReturn
 	profile.ConfirmWorkspace = profile.WorkspaceNeedsReview
+	if strings.TrimSpace(profile.Model) == "" {
+		profile.Model = tasks.DefaultCodexModel
+	}
 	if path := profile.Workspace; !a.remoteHost && strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			profile.Workspace = filepath.Join(home, path[2:])
@@ -456,6 +459,7 @@ func (a *desktop) saveAgent() {
 }
 
 func copyAgent(agent tasks.Agent) tasks.Agent {
+	agent.ModelPreferences = agent.ModelPreferences.Clone()
 	look := avatarAppearance(agent)
 	agent.Avatar = &look
 	return agent

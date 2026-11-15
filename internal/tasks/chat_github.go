@@ -30,16 +30,23 @@ type GitHubQuery struct {
 	Kind         string `json:"kind"`
 	Number       int    `json:"number"`
 	Ref          string `json:"ref"`
+	BaseRef      string `json:"base_ref,omitempty"`
+	Path         string `json:"path,omitempty"`
+	Page         int    `json:"page,omitempty"`
+	RunID        int64  `json:"run_id,omitempty"`
 }
 
 type GitHubResult struct {
-	Repo    string       `json:"repo"`
-	Heading string       `json:"heading"`
-	URL     string       `json:"url"`
-	Detail  string       `json:"detail,omitempty"`
-	Items   []GitHubItem `json:"items,omitempty"`
-	Patch   string       `json:"patch,omitempty"`
-	More    bool         `json:"more,omitempty"`
+	Repo     string       `json:"repo"`
+	Heading  string       `json:"heading"`
+	URL      string       `json:"url"`
+	Detail   string       `json:"detail,omitempty"`
+	Items    []GitHubItem `json:"items,omitempty"`
+	Patch    string       `json:"patch,omitempty"`
+	More     bool         `json:"more,omitempty"`
+	NextPage int          `json:"next_page,omitempty"`
+	HeadSHA  string       `json:"head_sha,omitempty"`
+	BaseSHA  string       `json:"base_sha,omitempty"`
 }
 
 type GitHubItem struct {

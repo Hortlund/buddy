@@ -190,6 +190,12 @@ func enqueueTurn(ctx context.Context, tx *sql.Tx, kind, key, conversation string
 	if _, err := tx.ExecContext(ctx, "INSERT INTO turn_models VALUES (?,?)", t.ID, agent.Model); err != nil {
 		return Task{}, err
 	}
+	if agent.ModelPreferences != nil {
+		raw, _ := json.Marshal(agent.ModelPreferences)
+		if _, err := tx.ExecContext(ctx, "INSERT INTO turn_model_preferences VALUES (?,?)", t.ID, string(raw)); err != nil {
+			return Task{}, err
+		}
+	}
 	_, err := tx.ExecContext(ctx, "INSERT INTO turn_details VALUES (?,?,?,?,?,?,NULLIF(?,''),NULLIF(?,''))",
 		t.ID, agent.ID, agent.Role, request.origin, request.title, request.brief, request.parent, request.routine)
 	if err == nil {

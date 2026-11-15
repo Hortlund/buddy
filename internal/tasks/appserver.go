@@ -37,17 +37,18 @@ type appSession struct {
 	nextID   int
 	events   codexEvents
 
-	threadID        string
-	turn            appTurn
-	outputSchema    string
-	background      bool
-	deviceExecution bool
-	messageID       string
-	messageDraft    string
-	messageSent     time.Time
-	chatTools       map[string]chatTool
-	chatToolResults map[string]chatToolText
-	toolDefinitions []any
+	threadID         string
+	turn             appTurn
+	outputSchema     string
+	background       bool
+	deviceExecution  bool
+	messageID        string
+	messageDraft     string
+	messageSent      time.Time
+	chatTools        map[string]chatTool
+	chatToolResults  map[string]chatToolText
+	toolDefinitions  []any
+	modelPreferences *ModelPreferences
 }
 
 func (s *appSession) send(frame map[string]any) error {
@@ -367,6 +368,14 @@ func (s *appSession) startTurn(ctx context.Context, prompt string, images []stri
 		input = append(input, map[string]string{"type": "localImage", "path": path})
 	}
 	params := map[string]any{"threadId": s.threadID, "input": input}
+	if p := s.modelPreferences; p != nil {
+		if p.Effort != "" {
+			params["effort"] = p.Effort
+		}
+		if p.Speed != "" {
+			params["serviceTierForTurn"] = p.Speed
+		}
+	}
 	if s.outputSchema != "" {
 		params["outputSchema"] = json.RawMessage(s.outputSchema)
 	}
@@ -553,6 +562,7 @@ func runAppServer(ctx context.Context, binary, dir, home, key string, flags, pro
 	var authError bool
 	err := withAppSession(ctx, binary, dir, home, key, flags, turn.DeviceExecution, emit, func(s *appSession) error {
 		s.outputSchema, s.background, s.deviceExecution = turn.outputSchema(), turn.Brief != "", turn.DeviceExecution
+		s.modelPreferences = turn.Agent.ModelPreferences
 		s.events.structured = s.outputSchema != ""
 		if s.background && turn.WatchSignal == nil {
 			s.events.commandRuns = make(map[string]*commandRun)
