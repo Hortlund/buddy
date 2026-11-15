@@ -86,11 +86,11 @@ microphone or model sessions.
 
 Chat, verified command output, quick decisions, and background work in one place.
 
-![Buddy desktop chat with command output, a native choice card, routines, and an active code review](docs/screenshots/desktop-chat.png)
+![Buddy desktop chat with command output, a native choice card, routines, and an active code review](docs/screenshots/desktop-chat-2026-11-15.png)
 
 Inspect a job’s result, rendered code, and progress in Work.
 
-![Buddy Work view showing a completed Go health endpoint, its project worktree, verification results, and an active review](docs/screenshots/desktop-work.png)
+![Buddy Work view showing a completed Go health endpoint, its project worktree, verification results, and an active review](docs/screenshots/desktop-work-2026-11-15.png)
 
 ### iPhone
 
@@ -98,8 +98,8 @@ Connect to the same Buddy home to chat, make decisions, and check work on the go
 Choose Light, Dark, or your system appearance in Settings.
 
 <p>
-  <img src="docs/screenshots/iphone-chats.png" width="270" alt="Buddy for iPhone showing Buds and group chats">
-  <img src="docs/screenshots/iphone-chat.png" width="270" alt="Buddy for iPhone in Dark appearance with verified command output and a native choice card">
+  <img src="docs/screenshots/iphone-chats-2026-11-15.png" width="270" alt="Buddy for iPhone showing Buds and group chats">
+  <img src="docs/screenshots/iphone-chat-2026-11-15.png" width="270" alt="Buddy for iPhone in Dark appearance with verified command output and a native choice card">
 </p>
 
 ## Voice calls
@@ -115,10 +115,10 @@ hang up.
 
 The desktop call room with Buddy, Ada, Scout, and the caller.
 
-![Buddy desktop group voice call with Buddy, Ada, Scout, shared captions, and call controls](docs/screenshots/desktop-call.png)
+![Buddy desktop group voice call with Buddy, Ada, Scout, shared captions, and call controls](docs/screenshots/desktop-call-2026-11-15.png)
 
 <p>
-  <img src="docs/screenshots/iphone-call.png" width="340" alt="Live iPhone group voice call with Buddy, Ada, Scout, and the caller, showing the Lead Bud and shared captions">
+  <img src="docs/screenshots/iphone-call-2026-11-15.png" width="340" alt="Live iPhone group voice call with Buddy, Ada, Scout, and the caller, showing the Lead Bud and shared captions">
 </p>
 
 Live voice requires an OpenAI API key with Realtime access on the Buddy server.
