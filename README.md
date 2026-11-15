@@ -14,7 +14,8 @@ around the clock.
 > [!IMPORTANT]
 > **Early development — expect rough edges.**
 > Buddy is evolving quickly. Interfaces, APIs, and data formats may change.
-> Build from source to try it today, and back up your Buddy home before updating.
+> Back up your Buddy home before updating. Release downloads appear when the first
+> signed release is published; until then, use the source build below.
 
 **macOS desktop · iPhone companion · Go server for macOS and Linux**
 
@@ -127,6 +128,21 @@ See the [voice setup guide](docs/guide.md#live-voice-calls).
 ## Install and run
 
 ### macOS desktop
+
+1. Download [Buddy.dmg](https://github.com/Hortlund/buddy/releases/latest/download/Buddy.dmg)
+   from the latest release (macOS 12+, Intel or Apple Silicon).
+2. Open it and drag **Buddy** onto **Applications**. Eject the disk image, then
+   open Buddy from Applications.
+3. Choose **Start on this Mac** or connect to an existing Buddy home. Configure
+   the model runtime in **Menu → Connections → Runtimes**. Install and authenticate
+   Codex on the server's host when using Codex.
+
+The app includes the local server; installing the desktop needs no Go toolchain
+or source checkout. A separately hosted server keeps running independently.
+Use **Settings → About → Check for updates…** for later desktop updates. See
+[releases and updates](docs/releases.md) for server updates and release setup.
+
+#### Build from source
 
 Install Git, Go **1.27.4 or later**, Xcode Command Line Tools, and the Codex CLI.
 The server installer pins Codex CLI **0.169.0**; use that version or newer for the

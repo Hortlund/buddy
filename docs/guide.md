@@ -24,6 +24,20 @@ Run shell commands from the repository root unless a section says otherwise.
 
 ## Run on macOS
 
+Download [Buddy.dmg](https://github.com/Hortlund/buddy/releases/latest/download/Buddy.dmg)
+from the latest published release, open it, and drag Buddy onto Applications.
+Eject the image and open Buddy from Applications. The universal app supports
+macOS 12 and later on Intel and Apple Silicon, with a local server included.
+Choose **Start on this Mac** or connect to a Buddy home hosted elsewhere.
+Desktop installation does not require Go or a source checkout. Install and
+authenticate Codex on the machine running the model runtime when using Codex.
+Use **Settings → About → Check for updates…** for future desktop releases.
+
+Before the first signed release is published, build from source using the steps
+below. The same steps work for development builds afterward.
+
+### Build from source
+
 Install Go 1.27.4+, Git, and a Codex CLI with named permission profiles.
 GPT-6.1 Terra requires Codex CLI 0.159.0 or later. [Codex models](https://learn.chatgpt.com/docs/models)
 

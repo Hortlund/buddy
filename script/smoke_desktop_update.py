@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise MyGo's real verifier and deferred bundle installer on a disposable Mac app."""
+"""Mount the Mac installer, then exercise MyGo updates on a disposable app."""
 import json
 import os
 from pathlib import Path
@@ -52,6 +52,45 @@ def run(*args, **kwargs):
     return subprocess.run(args, cwd=ROOT, check=True, **kwargs)
 
 
+def check_bundle_access(app):
+    # Check signature/ticket resources too: checking just the directory and
+    # executables misses files created privately by signing or stapling.
+    for path in [app, *app.rglob('*')]:
+        if path.is_symlink():
+            continue
+        mode = path.stat().st_mode
+        required = 0o444
+        if path.is_dir() or mode & 0o111:
+            required |= 0o111
+        assert mode & required == required, f'not accessible to other users: {path} ({mode & 0o777:o})'
+        assert mode & 0o022 == 0, f'writable by other users: {path}'
+
+
+def check_installer(candidate, folder):
+    image, mount = folder / 'Buddy.dmg', folder / 'mounted'
+    run('bash', 'script/package-installer.sh', candidate, image)
+    mount.mkdir()
+    run('hdiutil', 'attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount, image)
+    try:
+        assert os.statvfs(mount).f_flag & os.ST_RDONLY, 'installer must mount read-only'
+        assert (mount / 'Applications').readlink() == Path('/Applications')
+        assert (mount / 'How to install Buddy.txt').is_file()
+        # Simulate dragging the app out without touching the real Applications.
+        installed = folder / 'Applications' / 'Buddy.app'
+        run('ditto', mount / 'Buddy.app', installed)
+        run('codesign', '--verify', '--deep', '--strict', installed)
+        with (installed / 'Contents' / 'Info.plist').open('rb') as source:
+            assert plistlib.load(source)['CFBundleShortVersionString'] == '0.2.0'
+        helper = installed / 'Contents' / 'Helpers' / 'buddyd'
+        assert run(helper, '-version', capture_output=True, text=True).stdout.strip() == '0.2.0'
+        check_bundle_access(installed)
+    finally:
+        try:
+            run('hdiutil', 'detach', mount)
+        except subprocess.CalledProcessError:
+            run('hdiutil', 'detach', '-force', mount)
+
+
 def main():
     if sys.platform != 'darwin':
         raise SystemExit('Run the desktop update smoke test on macOS.')
@@ -65,6 +104,8 @@ def main():
                    MYGO_UPDATER_PRIVATE_KEY=keys['private'], BUDDY_UPDATE_FEED='https://github.com/Hortlund/buddy/releases/latest/download/update-darwin-universal.json')
         run('bash', 'script/package-desktop.sh', env=env)
         candidate = folder / 'candidate' / 'Buddy.app'
+        check_bundle_access(candidate)
+        check_installer(candidate, folder)
         archive, manifest = folder / 'buddy-0.2.0-darwin-universal.tar.gz', folder / 'update-darwin-universal.json'
         with tarfile.open(archive, 'w:gz') as bundle:
             bundle.add(candidate, arcname='Buddy.app')
@@ -96,7 +137,8 @@ def main():
         run('codesign', '--verify', '--deep', '--strict', installed)
         architectures = run('lipo', '-archs', executable, capture_output=True, text=True).stdout.split()
         assert set(architectures) == {'arm64', 'x86_64'}, architectures
-        print('Verified: MyGo signed manifest, corruption rejection, bundle replacement after exit, code signature, universal desktop, and bundled server.')
+        check_bundle_access(installed)
+        print('Verified: read-only DMG, Applications install, code signature, bundled server, MyGo signed manifest, corruption rejection, bundle replacement after exit, and universal desktop.')
 
 
 if __name__ == '__main__':

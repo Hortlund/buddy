@@ -35,6 +35,7 @@ __pycache__/
 *.tar.gz
 *.tgz
 *.zip
+*.dmg
 
 # Credentials and per-device connection files
 .env

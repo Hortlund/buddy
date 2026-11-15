@@ -111,6 +111,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 PLIST
 
 /usr/bin/codesign --force --entitlements "$ROOT_DIR/deploy/desktop.entitlements" "${sign_args[@]}" "$APP_BUNDLE"
+# Signing creates signature resources under our private umask. Normalize after
+# signing so every distributed file remains readable in a shared app install.
+chmod -R a+rX,go-w "$APP_BUNDLE"
 /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
 plutil -lint "$APP_BUNDLE/Contents/Info.plist"
 echo "Built $APP_BUNDLE"

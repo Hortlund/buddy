@@ -7,6 +7,19 @@ The desktop remains a MyGo app; its built-in native updater plugin handles the
 signed update flow with no separate framework or native bridge. iPhone
 distribution is separate from this workflow.
 
+## Installing the desktop
+
+Download [Buddy.dmg](https://github.com/Hortlund/buddy/releases/latest/download/Buddy.dmg),
+open it, and drag Buddy onto Applications. Eject the disk image before opening
+Buddy from Applications, so it can save and install future MyGo updates.
+For a manual reinstall, quit Buddy before replacing the app. The same download
+works on Intel and Apple Silicon Macs running macOS 12 or newer.
+
+The app includes the local server. First launch lets you start on this Mac or
+connect to a separately hosted home; model runtime setup remains on its host.
+The DMG needs no installer scripts or additional installer signing certificate.
+The download becomes available when the first signed release is published.
+
 ## Updating an installation
 
 | Installation | Update |
@@ -122,6 +135,8 @@ stable releases, then runs the same CI as pull requests. CI checks formatting,
 vet, race tests on Linux and macOS, release/update tests, a desktop package, and
 a Linux installer smoke test. Release jobs build:
 
+- `Buddy.dmg`: universal desktop with a drag-to-Applications link and install
+  instructions; signed with Developer ID, notarized, and stapled.
 - `Buddy_vX.Y.Z_universal.zip`: Intel + Apple Silicon desktop and bundled server,
   signed with Developer ID, notarized, stapled, with the matching signed archive for MyGo updates.
 - `buddy-server_vX.Y.Z_{linux,darwin}_{amd64,arm64}.tar.gz`: static Go server and
@@ -135,12 +150,26 @@ replace the public update feed with an incomplete release. A failed publish can
 be rerun against its draft. Published tags and assets must not be rewritten;
 fix a released issue with a higher version. Local unsigned packages remain
 available through `script/package-desktop.sh`, without touching running apps or
-services.
+services. To create a local disk image on macOS:
+
+```sh
+./script/package-desktop.sh
+./script/package-installer.sh
+```
+
+This writes `dist/releases/Buddy.dmg`. Local builds use ad-hoc app signing by
+default and are for testing on the build Mac. Production releases use the
+configured Developer ID Application identity to sign both app and DMG, submit
+the DMG once to Apple, then staple the image and the original app. ZIP and MyGo
+update archives are made from that stapled app. This follows MyGo's distribution
+flow and uses the same signing credentials already required for desktop releases.
 
 CI exercises MyGo's real signature verifier and bundle installer with disposable
 keys, including corruption rejection and the bundled server, using
-`python3 script/smoke_desktop_update.py`. The Linux smoke test exercises an actual
-server release update and chat after the restart. Apple signing and notarization
+`python3 script/smoke_desktop_update.py`. It also builds and mounts the read-only
+DMG, copies Buddy into a temporary Applications folder, and verifies the copied
+app's signature, bundled server, and access permissions. The Linux smoke test
+exercises an actual server release update and chat after the restart. Apple signing and notarization
 require real account credentials. Before the first public release, test two
 Developer ID builds and relaunch on a clean Mac using the production feed.
 Verify phone access and worker reconnection against a disposable hosted home.

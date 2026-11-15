@@ -40,7 +40,7 @@ jobs:
       - name: Build the MyGo desktop bundle
         if: runner.os == 'macOS'
         run: ./script/package-desktop.sh
-      - name: Verify MyGo desktop updates
+      - name: Verify desktop installer and MyGo updates
         if: runner.os == 'macOS'
         run: python3 script/smoke_desktop_update.py
 

@@ -31,9 +31,17 @@ export CGO_LDFLAGS=-mmacosx-version-min=12.0
 ./script/package-desktop.sh
 mkdir -p dist/releases
 archive="Buddy_v${version}_universal.zip"
-ditto -c -k --sequesterRsrc --keepParent dist/Buddy.app "$stage/notarize.zip"
-xcrun notarytool submit "$stage/notarize.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait --timeout 15m
+./script/package-installer.sh dist/Buddy.app dist/releases/Buddy.dmg
+# A single submission covers the image and its nested app (the same flow as
+# MyGo's bundler). Staple the original app too for ZIP downloads and updates.
+xcrun notarytool submit dist/releases/Buddy.dmg --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait --timeout 15m
+xcrun stapler staple dist/releases/Buddy.dmg
+xcrun stapler validate dist/releases/Buddy.dmg
+spctl --assess --type open --context context:primary-signature --verbose dist/releases/Buddy.dmg
 xcrun stapler staple dist/Buddy.app
+# Stapling may add ticket files under umask 077. Keep ZIP and MyGo updates
+# as accessible as the installer, including these final bundle resources.
+chmod -R a+rX,go-w dist/Buddy.app
 xcrun stapler validate dist/Buddy.app
 codesign --verify --deep --strict dist/Buddy.app
 spctl --assess --type execute --verbose dist/Buddy.app

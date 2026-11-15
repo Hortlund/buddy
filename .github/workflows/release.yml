@@ -83,7 +83,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
-      - name: Package, notarize and sign MyGo update
+      - name: Package installer, notarize and sign MyGo update
         env:
           BUDDY_VERSION: ${{ needs.validate.outputs.version }}
           BUDDY_BUILD_NUMBER: ${{ needs.validate.outputs.version }}
@@ -124,10 +124,11 @@ jobs:
           cd release
           test "$(find . -name 'buddy-server_*.tar.gz' | wc -l)" -eq 4
           test -s "Buddy_${RELEASE_TAG}_universal.zip"
+          test -s Buddy.dmg
           test -s update-darwin-universal.json
           test -s "buddy-${RELEASE_TAG#v}-darwin-universal.tar.gz"
           cp ../script/install-server.sh .
-          sha256sum *.tar.gz *.zip update-*.json install-server.sh > checksums.txt
+          sha256sum *.tar.gz *.zip *.dmg update-*.json install-server.sh > checksums.txt
           # Failed uploads leave a draft and never change the public update feed.
           if ! gh release view "$RELEASE_TAG" --json isDraft --jq 'select(.isDraft == true)' | grep -q true; then
             gh release create "$RELEASE_TAG" --verify-tag --draft --title "Buddy $RELEASE_TAG" --generate-notes
