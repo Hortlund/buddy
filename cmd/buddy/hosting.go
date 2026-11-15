@@ -234,7 +234,7 @@ func (a *desktop) hosting(c *ui.Context) {
 					if a.hasSavedHost || a.remoteHost {
 						ui.Button(c.Key("local-host"), "Use local server").Height(29).
 							Disabled(a.hostBusy || a.hostFile == "").OnClick(a.useLocalHost)
-					} else if a.online && a.localServer != nil && !a.protocolChecked.IsZero() && a.serverProtocol < api.DesktopProtocol && a.localServer.installed() {
+					} else if a.online && a.localServer != nil && !a.protocolChecked.IsZero() && localServerNeedsUpdate(a.serverVersion, a.serverProtocol) && a.localServer.installed() {
 						ui.Button(c.Key("update-local-host"), "Update local server").Height(29).
 							Disabled(a.hostBusy).OnClick(func() { a.startLocalHome(false, true) })
 					} else if !a.online && a.localServer != nil {

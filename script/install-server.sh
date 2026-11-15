@@ -13,7 +13,7 @@ verify() {
   [ "${actual%% *}" = "$2" ] || fail "Checksum failed for $(basename "$1")."
 }
 provider_check=0
-source_dir='' binary='' codex_binary='' ref=main use_tailscale=1
+source_dir='' binary='' codex_binary='' ref=main release_version=latest use_tailscale=1
 requested_port=7331 auto_port=1
 go_version=1.27.4
 codex_version=0.169.0
@@ -59,12 +59,12 @@ check_write() {
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --no-tailscale) use_tailscale=0; shift ;;
-    --source-dir|--binary|--codex|--ref|--port)
+    --source-dir|--binary|--codex|--ref|--release|--port)
       [ "$#" -ge 2 ] || fail "Missing value for $1"
-      case "$1" in --source-dir) source_dir=$2 ;; --binary) binary=$2 ;; --codex) codex_binary=$2 ;; --ref) ref=$2 ;; --port) requested_port=$2; auto_port=0 ;; esac
+      case "$1" in --source-dir) source_dir=$2; release_version='' ;; --binary) binary=$2; release_version='' ;; --codex) codex_binary=$2 ;; --ref) ref=$2; release_version='' ;; --release) release_version=$2 ;; --port) requested_port=$2; auto_port=0 ;; esac
       shift 2 ;;
     -h|--help)
-      printf 'Usage: install-server.sh [--no-tailscale] [--ref TAG_OR_COMMIT] [--port PORT]\n\nInstalls Buddy + Codex + Go, enables a managed service, and sets up private Tailscale access.\nLinux: systemd, dedicated buddy user. macOS: runs at login while the Mac stays awake.\nUse --source-dir PATH, --binary PATH, or --codex PATH for local/offline development.\nChecks dependencies, service support, free space, network access, and local ports.\nThe default port is selected automatically; --port requires that exact free port.\nRerunning preserves an existing installation and its data.\n'; exit 0 ;;
+      printf 'Usage: install-server.sh [--no-tailscale] [--release vX.Y.Z] [--port PORT]\n\nInstalls the latest verified stable Buddy release + Codex, enables a managed service, and sets up private Tailscale access.\nLinux: systemd, dedicated buddy user. macOS: runs at login while the Mac stays awake.\nUse --source-dir PATH, --binary PATH, or --codex PATH for local/offline development.\nChecks dependencies, service support, free space, network access, and local ports.\nThe default port is selected automatically; --port requires that exact free port.\nUse --ref TAG_OR_COMMIT to build from source with Go.\nRerunning refreshes management tools without restarting the server.\nUse buddy-server update on the server host to update its binaries.\n'; exit 0 ;;
     *) fail "Unknown option: $1" ;;
   esac
 done
@@ -130,6 +130,26 @@ esac
 [ -z "$binary" ] || [ -x "$binary" ] || fail 'The supplied Buddy binary is not executable.'
 [ -z "$codex_binary" ] || [ -x "$codex_binary" ] || fail 'The supplied Codex binary is not executable.'
 [ -w "$HOME" ] || fail 'Your home directory is not writable.'
+install_management() {
+  [ -f "$source_dir/script/buddy-server.sh" ] && [ -f "$source_dir/script/release.py" ] || fail 'Source checkout is missing the server management tools.'
+  local wrapper
+  wrapper=$(mktemp)
+  {
+    printf '#!/usr/bin/env bash\n'
+    for setting in host_os service_user service_home install_dir runtime_path server_port; do printf '%s=%q\n' "$setting" "${!setting}"; done
+    printf 'source "$install_dir/buddy-server.sh"\n'
+  } > "$wrapper"
+  if [ "$host_os" = linux ]; then
+    admin install -m 755 "$source_dir/script/buddy-server.sh" "$install_dir/buddy-server.sh"
+    admin install -m 755 "$source_dir/script/release.py" "$install_dir/release.py"
+    admin install -m 755 "$wrapper" "$command_file"
+  else
+    install -m 700 "$source_dir/script/buddy-server.sh" "$install_dir/buddy-server.sh"
+    install -m 700 "$source_dir/script/release.py" "$install_dir/release.py"
+    install -m 700 "$wrapper" "$command_file"
+  fi
+  rm -f "$wrapper"
+}
 info 'Checking this host'
 # Re-check the managed home rather than treating its live port as a conflict.
 if [ -e "$service_file" ] || [ -e "$install_dir" ] || [ -e "$command_file" ] || [ -L "$command_file" ]; then
@@ -140,11 +160,24 @@ if [ -e "$service_file" ] || [ -e "$install_dir" ] || [ -e "$command_file" ] || 
     [ "$requested_port" = "$stored_port" ] || fail 'This home already has a port. Keep it by omitting --port; changing it requires updating its service and client connections.'
   fi
   info 'Buddy is already installed. Keeping its binaries, service, and data.'
+  if [ -z "$source_dir" ]; then
+    scratch=$(mktemp -d)
+    trap 'rm -rf "$scratch"' EXIT
+    fetch "https://codeload.github.com/Hortlund/buddy/tar.gz/$ref" "$scratch/source.tar.gz"
+    mkdir "$scratch/source"
+    tar -xzf "$scratch/source.tar.gz" -C "$scratch/source" --strip-components=1
+    source_dir="$scratch/source"
+  fi
+  server_port=$(sed -n 's/^server_port=\([0-9][0-9]*\)$/\1/p' "$command_file")
+  server_port=${server_port:-7331}
+  runtime_path="$install_dir:$install_dir/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  install_management
   if [ "$host_os" = linux ] && [ -d "$install_dir/go" ] && [ ! -L "$install_dir/go" ]; then
     admin chmod -R a+rX,go-w "$install_dir/go"
   fi
   "$command_file" status || fail "The existing home is not ready. Run $command_file start, then $command_file logs if it still fails."
   "$command_file" connect
+  printf '\nManagement tools refreshed. To update the server, run: %s update\n' "$command_file"
   exit 0
 fi
 
@@ -167,8 +200,15 @@ if [ "$host_os" = linux ]; then
 else
   check_disk "$HOME" "$space_needed"
 fi
+if [ -n "$release_version" ]; then
+  if [ "$release_version" = latest ]; then
+    release_version=$(curl --connect-timeout 10 --max-time 30 --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://api.github.com/repos/Hortlund/buddy/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])') || fail 'No stable Buddy release could be found. For a development install, use --ref main.'
+  fi
+  [[ "$release_version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail 'Use --release vX.Y.Z for a stable release.'
+  ref=$release_version
+fi
 if [ -z "$source_dir" ]; then check_network 'Buddy source on GitHub' "https://codeload.github.com/Hortlund/buddy/tar.gz/$ref"; fi
-if [ -z "$binary" ]; then check_network 'Go downloads' "https://go.dev/dl/go$go_version.$host_os-$arch.tar.gz"; fi
+if [ -z "$binary" ] && [ -z "$release_version" ]; then check_network 'Go downloads' "https://go.dev/dl/go$go_version.$host_os-$arch.tar.gz"; fi
 asset="codex-$codex_arch-$codex_target"
 if [ -z "$codex_binary" ]; then
   check_network 'Codex downloads' "https://github.com/openai/codex/releases/download/rust-v$codex_version/$asset.tar.gz"
@@ -185,6 +225,11 @@ else
   source_dir=$(cd "$source_dir" && pwd -P)
 fi
 [ -f "$source_dir/script/buddy-server.sh" ] || fail 'Source checkout is missing script/buddy-server.sh.'
+if [ -n "$release_version" ]; then
+  info "Installing prebuilt Buddy $release_version"
+  python3 "$source_dir/script/release.py" download-server --version "$release_version" --output "$scratch/release"
+  binary="$scratch/release/buddyd"
+fi
 
 # A pinned toolchain makes installs independent of distro Go package versions.
 if [ -z "$binary" ]; then
@@ -248,13 +293,8 @@ else
   if [ -d "$scratch/go" ]; then mv "$scratch/go" "$install_dir/go"; fi
 fi
 runtime_path="$install_dir:$install_dir/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-{
-  printf '#!/usr/bin/env bash\n'
-  for setting in host_os service_user service_home install_dir runtime_path server_port; do printf '%s=%q\n' "$setting" "${!setting}"; done
-  cat "$source_dir/script/buddy-server.sh"
-} > "$scratch/buddy-server"
+install_management
 if [ "$host_os" = linux ]; then
-  admin install -m 755 "$scratch/buddy-server" "$command_file"
   cat > "$scratch/buddyd.service" <<UNIT
 [Unit]
 Description=Buddy home server
@@ -279,7 +319,6 @@ UNIT
   admin systemctl daemon-reload
   admin systemctl enable --now buddyd.service
 else
-  install -m 755 "$scratch/buddy-server" "$command_file"
   # XML-escape user paths, including homes with spaces or ampersands.
   xml() { printf '%s' "$1" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'; }
   cat > "$service_file" <<PLIST

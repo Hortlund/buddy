@@ -11,6 +11,7 @@ Run shell commands from the repository root unless a section says otherwise.
 - [Chats, work, and storage](#chats-work-and-storage)
 - [First launch](#first-launch-on-macos)
 - [Hosting a server](#host-buddy-on-another-machine)
+- [Updates and releases](releases.md)
 - [iPhone companion](#buddy-for-iphone)
 - [Worker devices](#run-work-on-another-device)
 - [Moving a server](#move-the-home-server)
@@ -208,6 +209,33 @@ docker pull docker.io/library/ruby@sha256:d7c312a48736dd291d7ce043c847f04dfde9bd
    the conversation. The sidebar shows the desktop version next to Buddy,
    and **Settings → About** shows the full version, channel, and build number.
 
+## Updating Buddy
+
+Release builds keep the Go/MyGo desktop and the server independently updatable.
+On macOS, open **Settings → About → Check for updates…**. MyGo checks, verifies,
+installs, and relaunches the desktop. It offers automatic update checking using
+its own preferences. Install the app in Applications before updating it.
+
+For an installer-managed server, run `buddy-server update` in a terminal on that
+server host, including when you connect to it remotely from your desktop. Use
+`buddy-server update v0.2.0` to choose a specific newer stable release. The updater
+preserves the server address, TLS identity, credentials, phone pairings, and
+workspaces. It refuses an upgrade while jobs are running or queued; finish them
+and retry. The desktop reconnects after the brief restart.
+
+**Settings → About** shows both versions and lets you copy the hosted update
+command. A local desktop-managed server uses **Update local server** after the
+desktop itself is updated. Update worker binaries on their own machines from the
+matching server archive, after their assigned work finishes, and restart them
+with their existing connection file and arguments. Update the server first,
+then clients and workers; features on older servers keep their existing protocol
+checks.
+
+Existing hosted installations need one installer rerun to gain the update command.
+That refreshes management tools while preserving the running daemon. Source
+builds keep using `./script/build_and_run.sh`; they do not enable desktop updates.
+See [releases and recovery](releases.md) for publishing and failed upgrades.
+
 ## Development builds
 
 Local builds default to `0.1.0-dev` with a UTC build timestamp as SemVer metadata.
@@ -339,8 +367,9 @@ Windows, run
 inside WSL2 with systemd enabled. The initial install needs internet access,
 `curl`, and admin access on Linux; it installs missing Linux build prerequisites.
 You can inspect [the installer](../script/install-server.sh) before running it.
-Buddy is still in early development: this installs the current `main` source.
-Use `--ref` with a release tag or commit to select another revision.
+The default installs the latest stable prebuilt release. Use `--release vX.Y.Z`
+to select a stable release, or `--ref main` (or a commit) for a source build.
+Until the first stable release is published, use `--ref main`.
 
 Setup checks the service manager, required commands and CA certificates, available
 disk space, writable install directories, and HTTPS access to its downloads before
@@ -366,8 +395,10 @@ firewall rules. Tailscale provides the private route; its own access policies an
 your sign-in still apply. An installed but stopped standard Linux Tailscale service
 is started when private networking is configured.
 
-The installer downloads checksum-verified Go and Codex binaries and builds the
-Buddy server. It creates a dedicated `buddy` service account on Linux and enables
+The installer downloads checksum-verified Buddy and Codex binaries. An explicit
+source build also installs the pinned Go toolchain and builds Buddy. Install
+project toolchains separately when agents need them on a prebuilt server.
+Setup creates a dedicated `buddy` service account on Linux and enables
 `buddyd.service` at boot. On Mac it creates a separate LaunchAgent, which runs
 while you stay signed in and awake. An existing home can keep running on
 its own port. This creates a **new home**; it does not migrate your desktop's

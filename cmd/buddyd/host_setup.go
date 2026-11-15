@@ -67,7 +67,7 @@ func hostStatus(ctx context.Context, dir, address string) error {
 	defer client.Close()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	version, err := client.DesktopProtocol(ctx)
+	info, err := client.ServerInfo(ctx)
 	if err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ func hostStatus(ctx context.Context, dir, address string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Buddy server healthy · protocol %d\n", version)
+	fmt.Printf("Buddy server %s healthy · protocol %d\n", info.Version, info.Protocol)
 	switch credential.State {
 	case "missing":
 		fmt.Fprintln(os.Stdout, "Codex executable is missing. Check the service's Codex path.")

@@ -6,6 +6,7 @@ Use --full-build --user-install to exercise sudo installation and the shared Go 
 The fixture starts/stops the generated unit; it does not simulate an OS reboot.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,11 @@ def smoke(folder, full_build=False, user_install=False, port=None):
     arch = {'aarch64': 'arm64', 'arm64': 'arm64', 'x86_64': 'amd64'}[arch]
     run('go', 'build', '-trimpath', '-o', str(folder / 'buddyd'), './cmd/buddyd',
         env=dict(os.environ, GOOS='linux', GOARCH=arch, CGO_ENABLED='0'))
+    releases = folder / 'releases'
+    run('bash', 'script/package-server.sh', env=dict(os.environ, GOOS='linux', GOARCH=arch,
+        BUDDY_VERSION='0.2.0', BUDDY_RELEASE_DIR=str(releases)))
+    archive = next(releases.glob('*.tar.gz'))
+    (releases / 'checksums.txt').write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\n')
     (folder / 'source/script').mkdir(parents=True)
     if full_build:
         paths = run('git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z', capture_output=True).stdout
@@ -37,7 +43,7 @@ def smoke(folder, full_build=False, user_install=False, port=None):
                 dest = folder / 'source' / relative
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(src.read_bytes())
-    for name in ('install-server.sh', 'buddy-server.sh'):
+    for name in ('install-server.sh', 'buddy-server.sh', 'release.py'):
         (folder / 'source/script' / name).write_bytes((ROOT / 'script' / name).read_bytes())
     (folder / 'codex').write_text('''#!/usr/bin/python3
 import json, sys
@@ -54,12 +60,17 @@ set -eu
 case "$1" in
  show-environment) [ "${BUDDY_SMOKE_NO_SYSTEMD:-0}" = 0 ]; exit $? ;;
  daemon-reload) exit 0 ;;
- show) echo loaded; exit 0 ;;
+ show)
+   if [[ "$*" == *MainPID* ]]; then
+     pid=$(cat /tmp/buddy-pid)
+     if kill -0 "$pid" 2>/dev/null; then echo "$pid"; else echo 0; fi
+   else echo loaded; fi
+   exit 0 ;;
  enable)
    if [[ "$*" == *tailscaled.service ]]; then touch /tmp/buddy-tailnet-started; exit 0; fi
    touch /tmp/buddy-enabled ;;
  start) : ;;
- stop) kill -TERM "$(cat /tmp/buddy-pid)"; exit 0 ;;
+ stop) kill -TERM "$(cat /tmp/buddy-pid)" 2>/dev/null || true; exit 0 ;;
  *) exit 2 ;;
 esac
 address=$(awk '{for(i=1;i<NF;i++) if($i=="-addr") {print $(i+1);exit}}' /etc/systemd/system/buddyd.service)
@@ -212,7 +223,7 @@ def check_chat():
     for _ in range(100):
         task = request('/v1/tasks/' + chat['id'])
         if task['status'] == 'succeeded': break
-        assert task['status'] not in ('failed', 'interrupted'), task
+        assert task['status'] not in ('failed', 'interrupted'), (task, request('/v1/tasks/' + chat['id'] + '/events'), request('/v1/conversations/conv_buddy')['messages'][-1])
         time.sleep(.1)
     else: raise AssertionError(f'chat did not finish: {task}')
     assert any(m['text'] == 'Installer smoke reply.' for m in request('/v1/conversations/conv_buddy')['messages'])
@@ -243,15 +254,50 @@ assert updated['server'] == f'https://100.80.1.3:{server_port}' and updated['tok
 assert updated['certificate'] == owner['certificate']
 paired = subprocess.run(['buddy-server', 'pair'], capture_output=True, text=True, check=True).stdout
 assert 'buddy-pair:' in paired and owner['token'] not in paired
+# Exercise a real release update through sudo, using local release transport.
+# Only fetch is replaced: extraction, digest checking, safe shutdown, snapshot,
+# schema preflight, binary installation, and pinned TLS readiness are real.
+release_tool = pathlib.Path('/opt/buddy/release.py')
+release_tool.write_text("import runpy, shutil, urllib.parse\\nmodule = runpy.run_path('/fixture/source/script/release.py')\\ndef fetch(url, output, limit):\\n    source = '/fixture/releases/' + urllib.parse.urlsplit(url).path.rsplit('/', 1)[-1]\\n    shutil.copyfile(source, output)\\nmodule['main'].__globals__['fetch'] = fetch\\nmodule['main']()\\n")
+release_tool.chmod(0o755)
+subprocess.run(INSTALL_PREFIX + ['buddy-server', 'update', 'v0.2.0'], check=True)
+assert request('/healthz')['version'] == '0.2.0'
+assert (p/'state/server.token').read_text().strip() == owner['token']
+assert (p/'state/server.crt').read_text() == owner['certificate']
+assert json.loads(owner_path.read_text()) == updated
+assert any(a['id'] == agent['id'] for a in request('/v1/workspace')['agents'])
+assert not (p/'state/.update-lock').exists()
+assert list((p/'.buddy-migration/updates').glob('*/buddy.db'))
+check_chat()
 stop_server()
+# Simulate a reboot after an interrupted update retained its maintenance marker.
+marker = p/'state/.update-lock'
+marker.mkdir(mode=0o700)
+os.chown(marker, (p/'state').stat().st_uid, (p/'state').stat().st_gid)
 subprocess.run(['buddy-server', 'start'], check=True)
 for _ in range(30):
     try:
+        assert request('/v1/maintenance/ready')['status'] == 'ready'
+        break
+    except Exception: time.sleep(.1)
+else: raise AssertionError('candidate database check did not become ready')
+for path in ('/readyz', '/v1/workspace'):
+    try: request(path)
+    except urllib.error.HTTPError as error: assert error.code == 503, (path, error.code)
+    else: raise AssertionError(f'maintenance server incorrectly accepted {path}')
+try:
+    urllib.request.urlopen(f'https://127.0.0.1:{server_port}/v1/maintenance/ready', context=ctx, timeout=5)
+except urllib.error.HTTPError as error: assert error.code == 401, error.code
+else: raise AssertionError('candidate check accepted a request without the owner token')
+marker.rmdir()
+for _ in range(30):
+    try:
+        assert request('/readyz')['status'] == 'ready'
         if any(a['id'] == agent['id'] for a in request('/v1/workspace')['agents']): break
     except Exception: pass
     time.sleep(.1)
 else: raise AssertionError('state lost on service restart')
-print('Verified: service chat reply, private TLS access, permission repair, idempotent install, phone pairing, and state across restart.')
+print('Verified: service chat reply, private TLS access, permission repair, idempotent install, release update through sudo, maintenance readiness after restart, phone pairing, and state across restart.')
 '''.replace('FULL_BUILD', repr(full_build)).replace('OWNER_HOME', '/home/installer' if user_install else '/root').replace('INSTALL_PREFIX', repr(['runuser', '-u', 'installer', '--'] if user_install else [])))
     install_flags = '' if full_build else '--binary /fixture/buddyd --codex /fixture/codex'
     install_prefix = 'runuser -u installer --' if user_install else ''

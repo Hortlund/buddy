@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"buddy/internal/api"
+	"buddy/internal/buildinfo"
 	"buddy/internal/localconfig"
 	"buddy/internal/tasks"
 )
@@ -48,7 +50,12 @@ func main() {
 	configFile := flag.String("config", "", "host-local execution JSON with projects and automation providers")
 	pool := flag.Bool("accept-pool", false, "claim portable jobs from the shared worker pool")
 	codex := flag.String("codex", "codex", "Codex CLI executable")
+	version := flag.Bool("version", false, "print the release version and exit")
 	flag.Parse()
+	if *version {
+		fmt.Println(buildinfo.Version)
+		return
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if *path == "" {

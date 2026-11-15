@@ -19,6 +19,44 @@ import (
 	"buddy/internal/tasks"
 )
 
+func TestUpdateReadinessRequiresOwnerAndChecksDatabase(t *testing.T) {
+	store, err := tasks.OpenStore(t.Context(), filepath.Join(t.TempDir(), "buddy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	worker := tasks.NewWorker(store, tasks.RunRepositoryCheck, nil)
+	handler := Handler("owner-token", store, worker, nil)
+	for _, test := range []struct {
+		token  string
+		status int
+	}{
+		{"", http.StatusUnauthorized},
+		{"worker-token", http.StatusUnauthorized},
+		{"owner-token", http.StatusOK},
+	} {
+		request := httptest.NewRequest(http.MethodGet, UpdateReadinessPath, nil)
+		if test.token != "" {
+			request.Header.Set("Authorization", "Bearer "+test.token)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != test.status {
+			t.Fatalf("token %q: status %d, want %d", test.token, response.Code, test.status)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, UpdateReadinessPath, nil)
+	request.Header.Set("Authorization", "Bearer owner-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatal("an unavailable database passed the candidate readiness check")
+	}
+}
+
 func TestExplicitBudApprovalDoesNotFallBackToLegacyCreate(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := testToken(t, dir); err != nil {

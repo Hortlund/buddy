@@ -56,34 +56,7 @@ if [[ "$MODE" == --stop-server ]]; then
   fi
   exit 0
 fi
-
-VERSION="${BUDDY_VERSION:-0.1.0-dev+$(date -u +%Y%m%dT%H%M%SZ)}"
-BUILD_NUMBER="${BUDDY_BUILD_NUMBER:-2}"
-semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?(\+([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?$'
-version_without_metadata="${VERSION%%+*}"
-if [[ ! "$VERSION" =~ $semver ]] || [[ "${version_without_metadata#*-}" =~ (^|\.)0[0-9]+($|\.) ]]; then
-  echo "BUDDY_VERSION must be a semantic version, such as 0.1.0-beta.1." >&2
-  exit 2
-fi
-if [[ ! "$BUILD_NUMBER" =~ ^[1-9][0-9]{0,3}$ ]]; then
-  echo "BUDDY_BUILD_NUMBER must be a positive integer of up to four digits." >&2
-  exit 2
-fi
-SHORT_VERSION="${version_without_metadata%%-*}"
-app_ldflags="-X main.buildVersion=$VERSION -X main.buildNumber=$BUILD_NUMBER"
-
-# Only a public Desktop OAuth client belongs in the distributed bundle.
-gmail_client_path="${BUDDY_GMAIL_DESKTOP_CLIENT:-}"
-if [[ -n "$gmail_client_path" ]]; then
-  if [[ ! -f "$gmail_client_path" ]] ||
-    ! gmail_client_id="$(/usr/bin/plutil -extract installed.client_id raw -expect string -o - "$gmail_client_path" 2>/dev/null)" ||
-    ! gmail_client_secret="$(/usr/bin/plutil -extract installed.client_secret raw -expect string -o - "$gmail_client_path" 2>/dev/null)" ||
-    [[ ! "$gmail_client_id" =~ ^[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com$ || ${#gmail_client_id} -gt 256 ||
-       ! "$gmail_client_secret" =~ ^[a-zA-Z0-9_-]+$ || ${#gmail_client_secret} -gt 1024 ]]; then
-    echo "BUDDY_GMAIL_DESKTOP_CLIENT must point to a Google Desktop app OAuth client JSON file." >&2
-    exit 2
-  fi
-fi
+BUDDY_BUNDLE_ID="$BUNDLE_ID" "$ROOT_DIR/script/package-desktop.sh" --validate
 
 server_health() {
   [[ -r "$CERT_FILE" ]] || return 1
@@ -179,44 +152,7 @@ while read -r PID; do
   fi
 done < <(pgrep -x "$APP_NAME" || true)
 
-mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$APP_BUNDLE/Contents/Helpers"
-go build -o "$APP_BUNDLE/Contents/Helpers/buddyd" ./cmd/buddyd
-/usr/bin/codesign --force --sign - "$APP_BUNDLE/Contents/Helpers/buddyd"
-helper_sha="$(/usr/bin/shasum -a 256 "$APP_BUNDLE/Contents/Helpers/buddyd" | cut -d ' ' -f 1)"
-app_ldflags+=" -X main.bundledDaemonSHA256=$helper_sha"
-cp "$ROOT_DIR/cmd/buddy/assets/Buddy.icns" "$APP_BUNDLE/Contents/Resources/"
-gmail_resource="$APP_BUNDLE/Contents/Resources/GmailDesktopClient.json"
-if [[ -n "$gmail_client_path" ]]; then
-  printf '{"installed":{"client_id":"%s","client_secret":"%s"}}\n' "$gmail_client_id" "$gmail_client_secret" > "$gmail_resource"
-else
-  rm -f -- "$gmail_resource"
-fi
-if [[ -n "${BUDDY_AUTOMATION_SOCKET:-}" ]]; then
-  go build -tags e2e -ldflags "$app_ldflags" -o "$APP_BINARY" ./cmd/buddy
-else
-  go build -ldflags "$app_ldflags" -o "$APP_BINARY" ./cmd/buddy
-fi
-cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key><string>$APP_NAME</string>
-  <key>CFBundleName</key><string>Buddy</string>
-  <key>CFBundleDisplayName</key><string>Buddy</string>
-  <key>CFBundleIconFile</key><string>Buddy.icns</string>
-  <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>$SHORT_VERSION</string>
-  <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
-  <key>LSMinimumSystemVersion</key><string>12.0</string>
-  <key>NSMicrophoneUsageDescription</key><string>Buddy uses your microphone to test audio and talk to your Buds in live calls.</string>
-  <key>NSPrincipalClass</key><string>NSApplication</string>
-</dict>
-</plist>
-PLIST
-
-/usr/bin/codesign --force --sign - "$APP_BUNDLE"
+BUDDY_BUNDLE_ID="$BUNDLE_ID" "$ROOT_DIR/script/package-desktop.sh"
 
 APP_ARGS=(-server "$URL" -token-file "$TOKEN_FILE" -repo "$START_REPO" -local-source-dir "$ROOT_DIR" -local-path "$PATH")
 if cli="$(type -P codex)"; then

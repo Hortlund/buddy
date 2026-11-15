@@ -14,6 +14,8 @@ import (
 	"buddy/internal/localconfig"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/updater"
+	"github.com/egoist/mygo/plugins/updater/native"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -80,6 +82,8 @@ func main() {
 			app.moveArchive = localconfig.MoveArchivePath(filepath.Dir(hostFile))
 		}
 	}
+	mygo.App.SetVersion(buildVersion)
+	mygo.Use(native.New(updater.Options{Icon: appIcon}))
 	mygo.App.WhenReady(func() {
 		if err := mygo.App.Dock.SetIcon(appIcon); err != nil {
 			log.Printf("set Buddy app icon: %v", err)

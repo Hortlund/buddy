@@ -90,18 +90,27 @@ func (c *Client) OwnerProfile(server string) (localconfig.Connection, error) {
 
 func (c *Client) Close() { c.http.CloseIdleConnections() }
 
-func (c *Client) DesktopProtocol(ctx context.Context) (int, error) {
-	var health struct {
-		Service  string `json:"service"`
-		Protocol int    `json:"desktop_protocol"`
-	}
+type ServerInfo struct {
+	Service  string `json:"service"`
+	Protocol int    `json:"desktop_protocol"`
+	Version  string `json:"version"`
+	Commit   string `json:"commit"`
+}
+
+func (c *Client) ServerInfo(ctx context.Context) (ServerInfo, error) {
+	var health ServerInfo
 	if err := c.call(ctx, http.MethodGet, "/healthz", "", nil, &health); err != nil {
-		return 0, err
+		return health, err
 	}
 	if health.Service != "buddy" {
-		return 0, fmt.Errorf("the endpoint is not a Buddy server")
+		return health, fmt.Errorf("the endpoint is not a Buddy server")
 	}
-	return health.Protocol, nil
+	return health, nil
+}
+
+func (c *Client) DesktopProtocol(ctx context.Context) (int, error) {
+	health, err := c.ServerInfo(ctx)
+	return health.Protocol, err
 }
 
 func (c *Client) Conversation(ctx context.Context, id string, before int64) (tasks.Conversation, error) {

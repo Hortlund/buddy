@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+# Never cancel a half-published release. Stable tags must increase in version.
+concurrency:
+  group: buddy-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Validate stable tag on main
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python3 script/release.py validate-version "$RELEASE_TAG")
+          git merge-base --is-ancestor HEAD origin/main
+          python3 - "$version" <<'PY'
+          import json, subprocess, sys
+          releases = json.loads(subprocess.check_output(['gh', 'api', 'repos/{owner}/{repo}/releases?per_page=100']))
+          target = tuple(map(int, sys.argv[1].split('.')))
+          for release in releases:
+              if release['draft'] or release['prerelease']:
+                  continue
+              current = tuple(map(int, release['tag_name'].removeprefix('v').split('.')))
+              if current >= target:
+                  sys.exit('Release version must be newer than every published stable release.')
+          PY
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+  checks:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
+  server:
+    needs: [validate, checks]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, darwin]
+        arch: [amd64, arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Build server and worker archive
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+          BUDDY_VERSION: ${{ needs.validate.outputs.version }}
+        run: ./script/package-server.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: server-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/releases/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  desktop:
+    needs: [validate, checks]
+    runs-on: macos-15
+    environment: release
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Package, notarize and sign MyGo update
+        env:
+          BUDDY_VERSION: ${{ needs.validate.outputs.version }}
+          BUDDY_BUILD_NUMBER: ${{ needs.validate.outputs.version }}
+          BUDDY_UNIVERSAL: '1'
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          BUDDY_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          BUDDY_UPDATE_PUBLIC_KEY: ${{ vars.MYGO_UPDATE_PUBLIC_KEY }}
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: ./script/release-desktop.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop
+          path: dist/releases/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [validate, server, desktop]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          path: release
+          merge-multiple: true
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd release
+          test "$(find . -name 'buddy-server_*.tar.gz' | wc -l)" -eq 4
+          test -s "Buddy_${RELEASE_TAG}_universal.zip"
+          test -s update-darwin-universal.json
+          test -s "buddy-${RELEASE_TAG#v}-darwin-universal.tar.gz"
+          cp ../script/install-server.sh .
+          sha256sum *.tar.gz *.zip update-*.json install-server.sh > checksums.txt
+          # Failed uploads leave a draft and never change the public update feed.
+          if ! gh release view "$RELEASE_TAG" --json isDraft --jq 'select(.isDraft == true)' | grep -q true; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Buddy $RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" ./* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

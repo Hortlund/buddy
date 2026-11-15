@@ -158,9 +158,9 @@ Paste this into a terminal on a Linux server, always-on PC, or Mac:
 curl -fsSL https://raw.githubusercontent.com/Hortlund/buddy/main/script/install-server.sh | bash
 ```
 
-The installer builds Buddy, installs Codex and Go, creates a managed service,
-checks dependencies, disk space, ports, and download access, and sets up private
-access through Tailscale. It installs missing Linux prerequisites and chooses a
+The installer downloads a verified stable Buddy release, installs Codex, and
+creates a managed service. It checks dependencies, disk space, ports, and
+download access, and sets up private access through Tailscale. It installs missing Linux prerequisites and chooses a
 free local port. Follow the Tailscale sign-in link,
 then run `buddy-server login` or add an API key from the desktop. Setup prints a
 private connection file for your desktop; `buddy-server pair` shows an iPhone QR.
@@ -169,7 +169,10 @@ Install Tailscale on your client devices using the same account.
 Linux starts at boot and runs under a dedicated `buddy` account. On macOS,
 Buddy starts at login; keep that Mac awake and signed in. Windows hosting uses
 WSL2 with systemd. Re-running the installer preserves the existing installation.
-See the guide for requirements, setup options, and maintenance commands.
+Update that host with `buddy-server update`; desktop updates run separately through
+**Settings → About → Check for updates…** in release builds. Existing connections
+and phone pairings stay valid. See the guide for requirements and setup options,
+and the [release guide](docs/releases.md) for CI, signing, updates, and recovery.
 
 - [Host a Buddy server](docs/guide.md#host-buddy-on-another-machine)
 - [Connect the iPhone app](docs/guide.md#buddy-for-iphone)
@@ -195,6 +198,11 @@ optional configuration.
 Bug reports, design feedback, and focused pull requests are welcome. For a bug,
 include the app version, operating system, steps to reproduce, and relevant logs
 with credentials and private conversation data removed.
+
+CI runs Go checks on Linux and macOS, release-tool tests, desktop packaging, and
+a Linux installer smoke test. Stable `vX.Y.Z` tags build and publish the desktop,
+server, worker, checksums, and desktop update feed after those checks pass.
+See [release setup](docs/releases.md) for the one-time signing configuration.
 
 Run the Go checks from the repository root.
 

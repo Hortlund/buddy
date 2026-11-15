@@ -7,6 +7,8 @@ import (
 	"buddy/internal/localconfig"
 	"buddy/internal/tasks"
 
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/updater"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -109,8 +111,27 @@ func (a *desktop) preferences(c *ui.Context) {
 				connectionDetail(c, buddyMark, "Buddy desktop", buildChannel()+" · Build "+buildNumber)
 				ui.Text(c.Key("full-build-version"), buildVersion).MinWidth(0).FontSize(12).
 					TextColor(c.Theme().TextMuted).Selectable()
+				ui.Button(c.Key("check-updates"), "Check for updates…").Disabled(!mygo.Updater.Enabled()).OnClick(updater.CheckForUpdates)
+			})
+			ui.Row(c).FillWidth().Padding(12).Gap(12).AlignItems(ui.Center).Children(func() {
+				version := a.serverVersion
+				if version == "" {
+					version = "Version unavailable"
+				}
+				connectionDetail(c, deviceMark, "Buddy server", version+" · "+a.endpoint)
+				if a.remoteHost || a.hasSavedHost {
+					ui.Button(c.Key("copy-server-update"), "Copy update command").OnClick(func() {
+						mygo.Clipboard.WriteText("buddy-server update")
+					})
+				} else if a.online && a.localServer != nil && a.localServer.installed() && localServerNeedsUpdate(a.serverVersion, a.serverProtocol) {
+					ui.Button(c.Key("settings-update-server"), "Update local server").Disabled(a.hostBusy).
+						OnClick(func() { a.startLocalHome(false, true) })
+				}
 			})
 		})
+		if a.remoteHost || a.hasSavedHost {
+			ui.Text(c, "Run buddy-server update on the server host. This desktop updates separately; your saved connection stays valid.").FontSize(12).TextColor(c.Theme().TextMuted)
+		}
 	})
 }
 

@@ -17,6 +17,7 @@ import (
 
 	"buddy/internal/api"
 	"buddy/internal/automations"
+	"buddy/internal/buildinfo"
 	"buddy/internal/localconfig"
 	"buddy/internal/tailnet"
 	"buddy/internal/tasks"
@@ -67,9 +68,34 @@ func main() {
 	hostInfo := flag.Bool("host-access", false, "refresh the private desktop access file for this server")
 	phonePair := flag.Bool("pair-phone", false, "print a one-time iPhone pairing QR code")
 	status := flag.Bool("host-status", false, "check the running home and model sign-in")
+	version := flag.Bool("version", false, "print the release version and exit")
+	stopPID := flag.Int("stop-idle-pid", 0, "stop a managed daemon PID only while its queue is idle")
+	checkUpgrade := flag.String("check-upgrade", "", "validate database migrations on a disposable database copy")
 	flag.Parse()
+	if *version {
+		fmt.Println(buildinfo.Version)
+		return
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *checkUpgrade != "" {
+		store, err := tasks.OpenStore(ctx, *checkUpgrade)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer store.Close()
+		if err := store.Ready(ctx); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if *stopPID != 0 {
+		if err := withIdleQueue(ctx, *dir, false, func() error { return stopIdlePID(ctx, *dir, *stopPID) }); err != nil {
+			log.Print(err)
+			os.Exit(stopErrorExitCode(err))
+		}
+		return
+	}
 	switch {
 	case *tailnetStatus:
 		if err := tailnet.Connected(ctx); err != nil {
@@ -290,15 +316,19 @@ func serve(ctx context.Context, addr, dir, codex, runtimeDir, sourceDir, workspa
 	integrationsDone := make(chan struct{})
 	go func() {
 		defer close(integrationsDone)
-		integrations.Run(workerCtx)
+		if waitForUpdate(workerCtx, dir) {
+			integrations.Run(workerCtx)
+		}
 	}()
 	go func() {
 		defer close(workerDone)
-		worker.Run(workerCtx)
+		if waitForUpdate(workerCtx, dir) {
+			worker.Run(workerCtx)
+		}
 	}()
 
 	server := &http.Server{
-		Handler:           api.Handler(token, store, worker, runtime, integrations),
+		Handler:           updateGate(dir, api.Handler(token, store, worker, runtime, integrations)),
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{identity}, MinVersion: tls.VersionTLS13},
 		ReadHeaderTimeout: 4 * time.Second, ReadTimeout: 10 * time.Second,

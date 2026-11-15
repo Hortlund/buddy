@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"buddy/internal/automations"
+	"buddy/internal/buildinfo"
 	"buddy/internal/localconfig"
 	"buddy/internal/tasks"
 )
@@ -35,6 +36,10 @@ const DesktopProtocol = AutomaticWorkerModelsProtocol
 const AttachmentProtocol = 11
 const attachmentTransferTimeout = 2 * time.Minute
 
+// UpdateReadinessPath checks the candidate database before maintenance ends.
+// It requires the owner token; public readiness remains unavailable until then.
+const UpdateReadinessPath = "/v1/maintenance/ready"
+
 func allowAttachmentTransfer(w http.ResponseWriter, upload bool) {
 	deadline := time.Now().Add(attachmentTransferTimeout)
 	controller := http.NewResponseController(w)
@@ -47,9 +52,9 @@ func allowAttachmentTransfer(w http.ResponseWriter, upload bool) {
 func Handler(token string, store *tasks.Store, worker *tasks.Worker, codex *tasks.CodexRuntime, services ...*automations.Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		write(w, http.StatusOK, map[string]any{"service": "buddy", "status": "ok", "desktop_protocol": DesktopProtocol})
+		write(w, http.StatusOK, map[string]any{"service": "buddy", "status": "ok", "desktop_protocol": DesktopProtocol, "version": buildinfo.Version, "commit": buildinfo.Commit})
 	})
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+	ready := func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := store.Ready(ctx); err != nil {
@@ -57,7 +62,9 @@ func Handler(token string, store *tasks.Store, worker *tasks.Worker, codex *task
 			return
 		}
 		write(w, http.StatusOK, map[string]string{"service": "buddy", "status": "ready"})
-	})
+	}
+	mux.HandleFunc("GET /readyz", ready)
+	mux.HandleFunc("GET "+UpdateReadinessPath, ready)
 	var voiceInUse atomic.Bool
 	workspaceRoutes(mux, store, &voiceInUse)
 	historyRoutes(mux, store, &voiceInUse)

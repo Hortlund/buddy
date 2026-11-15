@@ -86,6 +86,7 @@ type desktop struct {
 	nextPoll        time.Time
 	online          bool
 	serverProtocol  int
+	serverVersion   string
 	protocolChecked time.Time
 	loaded          bool
 	serverErr       error
@@ -212,10 +213,10 @@ func (a *desktop) refresh(c *ui.Context) {
 			}
 		}
 		chat, err := a.client.ConversationWithReactions(a.ctx, id, 0, reactionsAfter)
-		var protocol int
+		var serverInfo api.ServerInfo
 		var protocolErr error
 		if err == nil && checkProtocol {
-			protocol, protocolErr = a.client.DesktopProtocol(a.ctx)
+			serverInfo, protocolErr = a.client.ServerInfo(a.ctx)
 		}
 		var workspace tasks.Workspace
 		var workspaceErr string
@@ -250,7 +251,7 @@ func (a *desktop) refresh(c *ui.Context) {
 				return
 			}
 			if checkProtocol && protocolErr == nil {
-				a.serverProtocol, a.protocolChecked = protocol, time.Now()
+				a.serverProtocol, a.serverVersion, a.protocolChecked = serverInfo.Protocol, serverInfo.Version, time.Now()
 			}
 			if startup && directoryErr == nil {
 				a.conversationID = id
