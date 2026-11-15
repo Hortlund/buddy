@@ -62,6 +62,7 @@ func (a *desktop) view(c *ui.Context) {
 			if a.section != "" {
 				a.pageNavigation(c, header)
 			}
+			a.media.view(c)
 			switch a.section {
 			case "history":
 				a.historyPage(c)
@@ -324,9 +325,13 @@ func (a *desktop) reply(c *ui.Context, message tasks.Message, active *tasks.Acti
 		}
 		bubble := ui.Column(c.Key("reply-bubble")).MinWidth(0).MaxWidth(610).MinHeight(36).
 			Justify(ui.Center).Padding(8, 12).Background(replySurface(c)).Radius(15)
-		if a.canReact(message) {
-			bubble.ContextMenu(func(menu *ui.Menu) { a.reactionMenu(message, menu) })
-		}
+		bubble.ContextMenu(func(menu *ui.Menu) {
+			if a.canReact(message) {
+				a.reactionMenu(message, menu)
+				menu.Separator()
+			}
+			a.media.menu(menu, a.window, a.ctx, exportDocument{title: name, text: message.Text, dark: c.Theme().Dark})
+		})
 		bubble.Gap(5).Children(func() {
 			if message.Origin == "routine" {
 				author := ""

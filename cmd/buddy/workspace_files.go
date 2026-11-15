@@ -31,6 +31,8 @@ type workspaceFilesPane struct {
 	artifactJob   string
 	item          tasks.WorkspaceItem
 	source        editor.State
+	changes       bool
+	diff          editor.DiffState
 	image         *ui.Bitmap
 	request       uint64
 	cancelLoad    context.CancelFunc
@@ -355,6 +357,7 @@ func (b *workspaceFilesPane) load(profile tasks.Agent, relative string) {
 	}
 	if !same {
 		b.preview = renderedFile(relative)
+		b.changes = false
 	}
 	b.request++
 	request := b.request
@@ -438,6 +441,9 @@ func (b *workspaceFilesPane) save() {
 				return
 			}
 			b.item.Revision, b.item.Text = saved, text
+			if b.source.DiffBase != nil {
+				b.source.DiffBase.Reset(text)
+			}
 			if b.source.Buffer.Version() == snapshot.Version() {
 				b.source.Buffer.MarkSaved()
 			}
@@ -456,6 +462,7 @@ func renderedFile(relative string) bool {
 }
 
 func (b *workspaceFilesPane) view(c *ui.Context) {
+	b.prepareEditor()
 	if c.Shortcut(ui.Cmd, ui.KeyS) {
 		b.save()
 	}
@@ -470,7 +477,10 @@ func (b *workspaceFilesPane) view(c *ui.Context) {
 		case b.item.Kind == "folder":
 			b.folder(c)
 		case b.item.Kind == "text":
-			if b.preview {
+			if b.changes {
+				b.editorToolbar(c)
+				editor.DiffView(c.Key("file-changes"), &b.diff).Fill().MinHeight(0).MinWidth(0)
+			} else if b.preview {
 				ui.Scroll(c.Key("file-preview")).Grow(1).MinHeight(0).FillWidth().Padding(22).Children(func() {
 					ui.Column(c).FillWidth().MaxWidth(760).AlignSelf(ui.Center).Children(func() {
 						b.app.referenceMarkdown(c.Key(b.request), b.source.Buffer.String(), b.profile.ID,
@@ -478,7 +488,7 @@ func (b *workspaceFilesPane) view(c *ui.Context) {
 					})
 				})
 			} else {
-				b.source.ReadOnly = b.saving || b.item.ReadOnly
+				b.editorToolbar(c)
 				editor.View(c.Key(b.request), &b.source).Fill().MinHeight(0).MinWidth(0)
 			}
 		case b.item.Kind == "image" && b.image != nil:
@@ -524,6 +534,10 @@ func (b *workspaceFilesPane) toolbar(c *ui.Context) {
 		}
 		btn := ui.ButtonBase(c.Key("file-actions")).Size(26, 26).Shrink(0).Radius(6).Label("File actions").
 			Tooltip("File actions").Disabled(busy).PopoverMenuButton(func(menu *ui.Menu) {
+			if b.item.Kind == "text" && b.source.Buffer != nil {
+				b.app.media.menu(menu, b.app.window, b.app.ctx, exportDocument{title: path.Base(b.relative), text: b.exportText(), dark: t.Dark})
+				menu.Separator()
+			}
 			if b.artifactID != "" {
 				if menu.Item("Reload deliverable").Chosen() {
 					b.app.openWorkArtifact(b.artifactJob, b.artifactID)
@@ -556,15 +570,20 @@ func (b *workspaceFilesPane) toolbar(c *ui.Context) {
 }
 
 func (b *workspaceFilesPane) fileEditingControls(c *ui.Context, busy bool) {
-	if renderedFile(b.relative) {
+	if b.source.Buffer != nil {
 		ui.Row(c).Shrink(0).Gap(2).Padding(2).Radius(7).Background(c.Theme().SurfaceHover).
 			Border(1, c.Theme().Border).Children(func() {
 			label := "Edit"
 			if b.item.ReadOnly {
 				label = "Source"
 			}
-			fileMode(c.Key("file-preview-mode"), "Preview", b.preview, func() { b.preview = true })
-			fileMode(c.Key("file-edit-mode"), label, !b.preview, func() { b.preview = false })
+			if renderedFile(b.relative) {
+				fileMode(c.Key("file-preview-mode"), "Preview", b.preview && !b.changes, func() { b.preview, b.changes = true, false })
+			}
+			fileMode(c.Key("file-edit-mode"), label, !b.preview && !b.changes, func() { b.preview, b.changes = false, false })
+			if !b.item.ReadOnly {
+				fileMode(c.Key("file-changes-mode"), "Changes", b.changes, func() { b.preview, b.changes = false, true })
+			}
 		})
 	}
 	if b.item.ReadOnly {
@@ -581,7 +600,7 @@ func (b *workspaceFilesPane) fileEditingControls(c *ui.Context, busy bool) {
 func fileMode(c *ui.Context, title string, selected bool, action func()) {
 	t := c.Theme()
 	color := t.TextMuted
-	btn := ui.ButtonBase(c).Label(title).Selected(selected).Height(24).Padding(0, 8).Radius(5).OnClick(action)
+	btn := ui.ButtonBase(c).Role(ui.RoleToggleButton).Label(title).Selected(selected).Height(24).Padding(0, 8).Radius(5).OnClick(action)
 	if selected || btn.Hovered() {
 		color = t.Text
 		btn.Background(t.SurfacePressed)

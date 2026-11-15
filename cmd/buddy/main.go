@@ -94,12 +94,7 @@ func main() {
 			Width:                1120, Height: 750, MinWidth: 820, MinHeight: 590,
 			Content: ui.View(app.view),
 		})
-		app.window.OnClose(func(e *mygo.CloseEvent) {
-			if app.hasWorkspaceEdits() {
-				e.PreventDefault()
-				app.afterWorkspaceDiscard(app.window.Close)
-			}
-		})
+		app.bindMainWindowLifecycle()
 		app.window.Invalidate()
 	})
 	mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
@@ -116,4 +111,15 @@ func main() {
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func (a *desktop) bindMainWindowLifecycle() {
+	window := a.window
+	window.OnClose(func(e *mygo.CloseEvent) {
+		if a.hasWorkspaceEdits() {
+			e.PreventDefault()
+			a.afterWorkspaceDiscard(window.Close)
+		}
+	})
+	window.OnClosed(closePatchReviews)
 }

@@ -40,7 +40,9 @@ around the clock.
   effort, and speed for each assignment using their host's Codex catalog. Keep
   **Let Bud decide**, or choose fixed settings in Edit Bud.
 - **A workspace for each Bud.** Open files beside the chat, preview Markdown and
-  code, inspect diffs, and edit text in the desktop app. Follow file and job links
+  code, make quick fixes with the native editor, and review changes side by side.
+  Open GitHub patches in a dedicated review window and export text as PNG or MP4.
+  Follow file and job links
   in messages, with native file previews on iPhone too.
 - **Routines and watches.** Schedule recurring tasks or ask Buds to watch specific
   activity in connected services.

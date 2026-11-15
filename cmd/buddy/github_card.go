@@ -43,6 +43,7 @@ func githubCard(c *ui.Context, result *tasks.GitHubResult) {
 				ui.Button(c.Key("github-link"), label).OnClick(func() { services.OpenURL(result.URL) })
 			}
 			if result.Patch != "" {
+				ui.Button(c.Key("github-review"), "Review changes…").OnClick(func() { openPatchReview(*result, c.Theme().Dark) })
 				label := "Show diff preview"
 				if *showPatch {
 					label = "Hide diff preview"

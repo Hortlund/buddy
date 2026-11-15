@@ -77,15 +77,15 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
                 raise RuntimeError(result["error"])
             return result["result"]
 
-    def tree_has(text):
-        return any(text in n.get(field, "") for n in ui("tree")["nodes"]
+    def tree_has(text, window=0):
+        return any(text in n.get(field, "") for n in ui("tree", window=window)["nodes"]
                    for field in ("label", "description", "value", "placeholder"))
 
-    def node(key):
-        return next((n for n in ui("tree")["nodes"] if n.get("key") == key), None)
+    def node(key, window=0):
+        return next((n for n in ui("tree", window=window)["nodes"] if n.get("key") == key), None)
 
-    def press(key):
-        ui("act", key=key, action="press")
+    def press(key, window=0):
+        ui("act", window=window, key=key, action="press")
 
     def navigate(key):
         press("nav-menu")
@@ -388,6 +388,15 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         file_press("file-edit-mode")
         field = wait_for("file editor", lambda: next((n for n in ui("tree")["nodes"] if n.get("label") == "File editor"), None))
         ui("act", id=field["id"], action="setValue", text="# Saved heading\n\nOriginal paragraph\n")
+        file_press("file-changes-mode")
+        wait_for("saved-file diff", lambda: tree_has("Against saved file") and tree_has("Saved heading"))
+        file_press("changes-split")
+        wait_for("side-by-side file review", lambda: "checked" in (node("changes-split") or {}).get("states", []))
+        file_press("file-edit-mode")
+        file_press("editor-find")
+        wait_for("native find input", lambda: any(n.get("role") == "textField" and n.get("label") == "Find"
+                 for n in ui("tree")["nodes"]))
+        ui("input", events=[dict(type="key", key="Escape")])
         conversation_tab("Chat")
         wait_for("return to chat", lambda: node("chat-input") and not node("file-save"))
         other = api("agents", {"name": "Files fixture"})
@@ -521,6 +530,10 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
             db.execute("INSERT INTO choice_cards VALUES (?,?,?,NULL,NULL)", (turn, "How should I proceed?", '["Run tests","Review logs"]'))
             db.execute("INSERT INTO choice_card_details VALUES (?,?,?)",
                        (turn, "**One check** should be enough.", '["Run the Go suite.","Read the previous output."]'))
+            db.execute("INSERT INTO github_chat_results(task_id,result) VALUES (?,?)", (turn, json.dumps({
+                "repo": "example/buddy", "heading": "#7 Quick fix", "url": "https://github.com/example/buddy/pull/7",
+                "patch": patch, "head_sha": "2" * 40, "base_sha": "1" * 40,
+            })))
             db.execute("INSERT INTO work_artifacts VALUES (?,?,?,?,?,?)",
                        ("fixture-deliverable", job, "deliverable.png", "image/png",
                         (ROOT / "cmd/buddy/assets/Buddy.png").read_bytes(), now))
@@ -564,6 +577,17 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         wait_for("linked job in draft", lambda: tree_has("About Inspect the build") and tree_has("What’s the latest on this job?"))
         wait_for("formatted diff and choice card", lambda: all(tree_has(label) for label in
                  ("Git diff", "main.go", "How should I proceed?", "Run the Go suite.")))
+        press("github-review")
+        review = wait_for("separate native review window", lambda: next((w for w in ui("windows")["windows"]
+                          if w["title"].startswith("#7 Quick fix")), None))
+        wait_for("review version identity", lambda: tree_has("Base 111111111111", review["id"]) and
+                 tree_has("Head 222222222222", review["id"]))
+        press("review-split", review["id"])
+        wait_for("split review selected", lambda: "checked" in
+                 (node("review-split", review["id"]) or {}).get("states", []))
+        ui("menu", window=review["id"], path=["File", "Close Window"])
+        wait_for("review closed with chat still open", lambda: node("chat-input") and not node("review-files"))
+        print("Native editor search, editable split diff, and separate PR review with base/head commits worked.", flush=True)
         open_details("activity")
         wait_for("active job in conversation details", lambda: node("open-work-" + active))
         capture(card_screenshot)

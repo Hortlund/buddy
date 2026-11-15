@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 
+	"buddy/internal/tasks"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 	"github.com/egoist/mygo/ui/markdown"
@@ -56,6 +58,32 @@ type patchDisplay struct {
 	source string
 	files  []editor.FilePatch
 	views  []editor.DiffState
+	split  bool
+}
+
+func parsePatchDisplay(source string) patchDisplay {
+	display := patchDisplay{source: source}
+	if files, err := editor.ParsePatch(source); err == nil {
+		display.files = files
+		display.views = make([]editor.DiffState, len(files))
+		for i, file := range files {
+			display.views[i].Layout = editor.DiffUnified
+			display.views[i].Indicators = editor.DiffClassic
+			display.views[i].SetPatch(file)
+		}
+	}
+	return display
+}
+
+func patchFileName(file editor.FilePatch) string {
+	name := file.NewName
+	if file.OldName != "" && name != "" && file.OldName != name {
+		return file.OldName + " → " + name
+	}
+	if name == "" {
+		return file.OldName
+	}
+	return name
 }
 
 func renderPatch(c *ui.Context, block *markdown.CodeBlockView) {
@@ -63,16 +91,7 @@ func renderPatch(c *ui.Context, block *markdown.CodeBlockView) {
 	cache := ui.Local(box, "patch", func() patchDisplay { return patchDisplay{} })
 	source := block.Code()
 	if cache.source != source {
-		*cache = patchDisplay{source: source}
-		if files, err := editor.ParsePatch(source); err == nil {
-			cache.files = files
-			cache.views = make([]editor.DiffState, len(files))
-			for i, file := range files {
-				cache.views[i].Layout = editor.DiffUnified
-				cache.views[i].Indicators = editor.DiffClassic
-				cache.views[i].SetPatch(file)
-			}
-		}
+		*cache = parsePatchDisplay(source)
 	}
 	if len(cache.files) == 0 {
 		// Bare +/- snippets and incomplete diffs remain readable code.
@@ -80,17 +99,16 @@ func renderPatch(c *ui.Context, block *markdown.CodeBlockView) {
 		return
 	}
 	box.Children(func() {
-		ui.Row(c).Padding(5, 9).Background(c.Theme().Surface).Children(func() {
+		ui.Row(c).Padding(5, 9).Gap(4).Wrap().Background(c.Theme().Surface).Children(func() {
 			ui.Text(c, "Git diff").FontSize(12).FontWeight(650).Grow(1)
+			ui.Button(c.Key("patch-review"), "Review…").Tooltip("Open this diff in a separate review window").
+				OnClick(func() { openPatchReview(tasks.GitHubResult{Heading: "Git diff", Patch: source}, c.Theme().Dark) })
+			fileMode(c.Key("patch-unified"), "Unified", !cache.split, func() { cache.split = false })
+			fileMode(c.Key("patch-split"), "Side by side", cache.split, func() { cache.split = true })
 			block.CopyButton(c)
 		})
 		for i, file := range cache.files {
-			name := file.NewName
-			if file.OldName != "" && name != "" && file.OldName != name {
-				name = file.OldName + " → " + name
-			} else if name == "" {
-				name = file.OldName
-			}
+			name := patchFileName(file)
 			ui.Column(c.Key(i)).FillWidth().MinWidth(0).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).Children(func() {
 				ui.Text(c, name).Role(ui.RoleHeading).SingleLine().Tooltip(name).Padding(7, 9).
 					FontSize(12).FontWeight(620).Background(c.Theme().SurfaceHover)
@@ -107,6 +125,10 @@ func renderPatch(c *ui.Context, block *markdown.CodeBlockView) {
 					lines += 1 + len(hunk.Lines)
 				}
 				view := &cache.views[i]
+				view.Layout = editor.DiffUnified
+				if cache.split {
+					view.Layout = editor.DiffSplit
+				}
 				view.FitContent = lines <= 16
 				display := editor.DiffView(c, view).FillWidth().MinWidth(0)
 				if !view.FitContent {

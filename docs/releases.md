@@ -106,7 +106,7 @@ Set the `MYGO_UPDATE_PUBLIC_KEY` **GitHub environment variable** to the contents
 of the matching `mygo-update.pub`. Create the pair once using the pinned MyGo CLI:
 
 ```sh
-go run github.com/egoist/mygo/cmd/mygo@v0.9.0 keygen -o /private/path/buddy-update-keys
+go run github.com/egoist/mygo/cmd/mygo@v0.9.1 keygen -o /private/path/buddy-update-keys
 ```
 
 Store the private file's contents as `MYGO_UPDATER_PRIVATE_KEY` and the public

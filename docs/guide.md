@@ -207,6 +207,17 @@ docker pull docker.io/library/ruby@sha256:d7c312a48736dd291d7ce043c847f04dfde9bd
    and WebP, and edits UTF-8 text and code up to 512 KB. Use **Save** or **⌘S**
    to write the file back to the server. If it changed on disk, Buddy keeps your
    draft and asks you to reload. Local files can still be revealed in Finder.
+   Use **Find**, **Replace**, **Go to line**, and **Wrap lines** for quick manual
+   fixes. **Changes** compares your edits with the last loaded or saved file,
+   with unified and side-by-side layouts; both modes edit the same draft.
+   This works through the server API, including when Buddy Home is elsewhere.
+   GitHub cards offer **Review changes…** in a separate window with file
+   navigation, change counts, search, and the base/head commits when available.
+   A partial patch is labeled as a preview and links to the complete GitHub view.
+   Right-click a reply to export its text as PNG or MP4. File actions can export
+   the selected text or whole file, and the review window can export patch text.
+   Images include the complete text; videos show pages for six seconds each.
+   Exports are saved on the desktop's Mac, with progress and cancellation.
    A dot next to another chat signals a new background result.
    Open **Work** to see jobs across chats. Select a job for its assignment,
    activity, and result, or choose **Ask about this job** to open a linked draft.
@@ -259,6 +270,27 @@ Set `BUDDY_VERSION` and `BUDDY_BUILD_NUMBER` to build a specific release.
 BUDDY_VERSION=0.1.0-beta.1 BUDDY_BUILD_NUMBER=3 ./script/build_and_run.sh
 BUDDY_VERSION=0.1.0-nightly.20261106 BUDDY_BUILD_NUMBER=4 ./script/build_and_run.sh
 ```
+
+### MyGo integrations
+
+Buddy uses MyGo 0.9.1's native UI, code editor, and diff viewer. The editor and
+diff viewer are core MyGo components, so no second editor engine is needed.
+
+| Integration | Use in Buddy |
+| --- | --- |
+| Render | PNG and native H.264 MP4 exports of reply, file, and patch text; no browser or external encoder on macOS |
+| Automation | Already enabled for `e2e` builds; `script/smoke_desktop.py --workbench-only` drives the real app, including editor, diff, save, and search controls |
+| Native updater | Signed desktop updates using the existing release feed |
+| PermissionFlow | A useful next addition for guided microphone or accessibility setup when those flows need it |
+| Terminal | Worth considering for manual commands; it needs a clear choice of local versus server host and an extra native library in the app bundle |
+
+Automation remains outside release builds, following MyGo's recommended setup.
+Render exports are snapshots of text selected when the export starts; editing or
+switching chats while rendering does not change the export. Oversized image/video
+exports report a limit instead of silently clipping content. Optional visual test
+artifacts can be saved with `BUDDY_UI_PROOF_DIR=/tmp/buddy-qa go test ./cmd/buddy`.
+On macOS this also renders `review-demo.mp4`, a six-second clip of the real review
+view switching layouts and files using fictional data, without opening a window.
 
 ### Google sign-in in distributed builds
 
