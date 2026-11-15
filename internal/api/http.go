@@ -30,7 +30,8 @@ const MobileProtocol = 42
 const ReferenceProtocol = 57
 const BackgroundComposerProtocol = 60
 const ModelProfilesProtocol = 86
-const DesktopProtocol = ModelProfilesProtocol
+const AutomaticWorkerModelsProtocol = 87
+const DesktopProtocol = AutomaticWorkerModelsProtocol
 const AttachmentProtocol = 11
 const attachmentTransferTimeout = 2 * time.Minute
 

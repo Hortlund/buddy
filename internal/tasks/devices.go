@@ -62,6 +62,7 @@ type DeviceCredential struct {
 
 type DeviceJob struct {
 	ExecutionPlan
+	ModelSelection    bool              `json:"model_selection,omitempty"`
 	Workspace         string            `json:"workspace,omitempty"`
 	ControlToken      string            `json:"control_token,omitempty"`
 	BuddyTeam         TeamContext       `json:"buddy_team"`
@@ -200,7 +201,7 @@ func touchDevice(ctx context.Context, tx *sql.Tx, id string, now time.Time) erro
 }
 
 func (s *Store) ClaimDeviceJob(ctx context.Context, id string) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, false, false, false, false, false, false, false)
+	return s.claimDeviceJob(ctx, id, false, false, false, false, false, false, false, false)
 }
 
 func (s *Store) ReserveDeviceJob(ctx context.Context, id string) (*DeviceJob, error) {
@@ -208,26 +209,30 @@ func (s *Store) ReserveDeviceJob(ctx context.Context, id string) (*DeviceJob, er
 }
 
 func (s *Store) ReserveDeviceWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, false, false, false, false)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, false, false, false, false, false)
 }
 
 func (s *Store) ReserveDeviceSkillWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, true, false, false, false)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, false, false, false, false)
 }
 
 func (s *Store) ReserveExecutionWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, true, false)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, true, false, false)
 }
 
 func (s *Store) ReserveLegacyExecutionWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, false, false)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, false, false, false)
 }
 
 func (s *Store) ReserveModelProfileWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
-	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, true, true)
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, true, true, false)
 }
 
-func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, pool, edits, supportsSkills, supportsExecution, scopesAutomation, supportsProfiles bool) (*DeviceJob, error) {
+func (s *Store) ReserveWorkerPlanningWork(ctx context.Context, id string, pool, edits bool) (*DeviceJob, error) {
+	return s.claimDeviceJob(ctx, id, true, pool, edits, true, true, true, true, true)
+}
+
+func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, pool, edits, supportsSkills, supportsExecution, scopesAutomation, supportsProfiles, supportsPlanning bool) (*DeviceJob, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -302,6 +307,18 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 		if err != nil {
 			return nil, err
 		}
+		plan, err = resumeExecutionPlan(ctx, tx, id, item.id, plan)
+		if err != nil {
+			return nil, err
+		}
+		if (plan.WorkspaceMode != "" || preferences != nil && preferences.Mode != "") && !supportsPlanning {
+			if !item.unassigned {
+				if _, err := tx.ExecContext(ctx, "UPDATE tasks SET summary=? WHERE id=?", "Update buddyworker on this device to use automatic settings and workspace planning.", item.id); err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
 		if !supportsExecution && (plan.ProjectID != "" || len(plan.Requirements) != 0 || plan.Environment != "") {
 			continue
 		}
@@ -367,7 +384,7 @@ func (s *Store) claimDeviceJob(ctx context.Context, id string, reserveDelivery, 
 			}
 			continue
 		}
-		job := &DeviceJob{ExecutionPlan: plan, Workspace: workspace, ID: item.id, Lease: rand.Text(), NeedsStart: reserveDelivery && (len(files) != 0 || skill != nil),
+		job := &DeviceJob{ModelSelection: supportsPlanning, ExecutionPlan: plan, Workspace: workspace, ID: item.id, Lease: rand.Text(), NeedsStart: reserveDelivery && (len(files) != 0 || skill != nil),
 			Attachments: files, CanRequestInput: reserveDelivery, CommandProgress: true, CommandBatches: true, Skill: skill}
 		job.Agent.ModelPreferences = preferences
 		var conversation string

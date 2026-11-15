@@ -11,6 +11,59 @@ import (
 	"testing"
 )
 
+func TestLegacyPreferenceSavePreservesWorkerMode(t *testing.T) {
+	for _, mode := range []string{"fixed", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, store := t.Context(), teamTestStore(t)
+			agent, err := store.Agent(ctx, DefaultAgentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			agent.ModelPreferences = &ModelPreferences{Mode: mode, Effort: "high", Speed: "default"}
+			agent, err = store.SaveAgent(ctx, agent.ID, agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Protocol-86 clients round-trip the other preference fields but
+			// have no mode field in their decoded Agent type.
+			data, err := json.Marshal(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatal(err)
+			}
+			payload["model_preferences"] = json.RawMessage(`{"effort":"high","speed":"default"}`)
+			data, err = json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var legacy Agent
+			if err := json.Unmarshal(data, &legacy); err != nil {
+				t.Fatal(err)
+			}
+			legacy.Name = "Renamed Bud"
+			saved, err := store.SaveAgent(ctx, agent.ID, legacy)
+			if err != nil || saved.ModelPreferences == nil || saved.ModelPreferences.Mode != mode {
+				t.Fatalf("legacy save changed worker mode: %+v, %v", saved.ModelPreferences, err)
+			}
+			if legacy.ModelPreferences.Mode != "" {
+				t.Fatal("saving mutated the caller's preferences")
+			}
+			explicit := "auto"
+			if mode == "auto" {
+				explicit = "fixed"
+			}
+			legacy.ModelPreferences.Mode = explicit
+			saved, err = store.SaveAgent(ctx, agent.ID, legacy)
+			if err != nil || saved.ModelPreferences.Mode != explicit {
+				t.Fatal("explicit mode change was ignored", err)
+			}
+		})
+	}
+}
+
 func TestTaskProfilesKeepQueuedSettingsAndModelDecision(t *testing.T) {
 	ctx, store := t.Context(), teamTestStore(t)
 	agent, err := store.Agent(ctx, DefaultAgentID)
@@ -21,10 +74,11 @@ func TestTaskProfilesKeepQueuedSettingsAndModelDecision(t *testing.T) {
 	if _, err := store.SaveAgent(ctx, agent.ID, agent); err != nil {
 		t.Fatal(err)
 	}
-	queued, _, err := store.Send(ctx, DefaultConversationID, "Please debug and test the API.", "")
+	jobs, err := store.QueueVoiceAssignments(ctx, DefaultConversationID, DefaultAgentID, "profile-call", "profile", []Handoff{{Title: "Debug API", Brief: "Please debug and test the API."}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	queued := jobs[0].Task
 	agent.ModelPreferences.Profiles[0].Model = "changed-model"
 	if _, err := store.SaveAgent(ctx, agent.ID, agent); err != nil {
 		t.Fatal(err)
@@ -45,12 +99,12 @@ func TestTaskProfilesKeepQueuedSettingsAndModelDecision(t *testing.T) {
 	calls := 0
 	classify := func(_ context.Context, route Turn, prompt string, _ Emit) (string, error) {
 		calls++
-		if !strings.Contains(route.isolatedSchema, `"coding"`) || strings.Contains(route.isolatedSchema, "review") || !strings.Contains(prompt, "debug and test") {
+		if !strings.Contains(route.isolatedSchema, `"strong-model"`) || !strings.Contains(route.isolatedSchema, `"high"`) || !strings.Contains(prompt, "debug and test") {
 			t.Fatal("router did not use configured choices and the request")
 		}
-		return `{"profile":"coding"}`, nil
+		return `{"model":"strong-model","effort":"high","speed":"priority","reason":"Build and verify the API."}`, nil
 	}
-	turn, err = runtime.selectTaskModelWith(ctx, turn, nil, classify)
+	turn, err = runtime.selectWorkerModelWith(ctx, turn, profileTestModels(), nil, classify)
 	if err != nil || calls != 1 || turn.Agent.Model != "strong-model" || turn.Agent.ModelPreferences.Effort != "high" || turn.Agent.ModelPreferences.Speed != "priority" {
 		t.Fatalf("wrong selection: %+v, %v", turn.Agent, err)
 	}
@@ -58,7 +112,7 @@ func TestTaskProfilesKeepQueuedSettingsAndModelDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumed, err = runtime.selectTaskModelWith(ctx, resumed, nil, classify)
+	resumed, err = runtime.selectWorkerModelWith(ctx, resumed, profileTestModels(), nil, classify)
 	if err != nil || calls != 1 || resumed.Agent.Model != "strong-model" {
 		t.Fatalf("resume rerouted saved work: %+v, %v", resumed.Agent, err)
 	}
@@ -108,9 +162,9 @@ func TestWatchTaskProfilesKeepModelDecisionAcrossResume(t *testing.T) {
 	classify := func(context.Context, Turn, string, Emit) (string, error) {
 		calls++
 		if calls > 1 {
-			return `{"profile":"default"}`, nil
+			return `{"model":"base-model","effort":"low","speed":"default","reason":"Would change the resumed job."}`, nil
 		}
-		return `{"profile":"coding"}`, nil
+		return `{"model":"strong-model","effort":"high","speed":"priority","reason":"Build and verify the API."}`, nil
 	}
 	checkProfile := func(stage string, task Task) {
 		t.Helper()
@@ -121,9 +175,9 @@ func TestWatchTaskProfilesKeepModelDecisionAcrossResume(t *testing.T) {
 		if turn.Origin != WatchOrigin || turn.WatchSignal == nil || turn.Agent.AllowEdits || turn.Agent.Workspace != "" {
 			t.Fatalf("%s lost read-only watch context: %+v", stage, turn)
 		}
-		turn, err = runtime.selectTaskModelWith(ctx, turn, nil, classify)
+		turn, err = runtime.selectWorkerModelWith(ctx, turn, profileTestModels(), nil, classify)
 		p := turn.Agent.ModelPreferences
-		if err != nil || calls != 1 || turn.Agent.Model != "strong-model" || p == nil || p.Selected != "coding" || p.Effort != "high" || p.Speed != "priority" {
+		if err != nil || calls != 1 || turn.Agent.Model != "strong-model" || p == nil || p.Selected != "automatic" || p.Effort != "high" || p.Speed != "priority" {
 			t.Fatalf("%s changed the selected watch profile: calls=%d agent=%+v preferences=%+v, %v", stage, calls, turn.Agent, p, err)
 		}
 	}
@@ -164,7 +218,7 @@ func TestWatchTaskProfilesKeepModelDecisionAcrossResume(t *testing.T) {
 func TestTaskProfilesFallbackAndValidation(t *testing.T) {
 	for _, response := range []string{`{"profile":"invented"}`, `bad JSON`, ``} {
 		turn := Turn{Agent: Agent{Model: "base", ModelPreferences: &ModelPreferences{Effort: "medium", Profiles: []TaskModelProfile{{Kind: "review", Model: "strong", Effort: "high"}}}}}
-		got, err := (&CodexRuntime{}).selectTaskModelWith(t.Context(), turn, nil, func(context.Context, Turn, string, Emit) (string, error) {
+		got, err := (&CodexRuntime{}).selectWorkerModelWith(t.Context(), turn, profileTestModels(), nil, func(context.Context, Turn, string, Emit) (string, error) {
 			if response == "" {
 				return response, errors.New("router unavailable")
 			}
@@ -280,5 +334,14 @@ func TestLookupSchemasDefineEveryRequiredProperty(t *testing.T) {
 				t.Fatalf("undefined required property %s", name)
 			}
 		}
+	}
+}
+
+func profileTestModels() []Model {
+	return []Model{
+		{ID: DefaultCodexModel, Efforts: []string{"low", "medium"}},
+		{ID: "base-model", Efforts: []string{"low", "medium"}},
+		{ID: "base", Efforts: []string{"medium"}},
+		{ID: "strong-model", Efforts: []string{"high"}, Speeds: []ModelSpeed{{ID: "priority", Name: "Fast"}}},
 	}
 }

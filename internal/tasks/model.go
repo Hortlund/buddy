@@ -20,6 +20,7 @@ type ModelSpeed struct {
 
 // Preferences are captured with the turn so changing a Bud cannot change queued work.
 type ModelPreferences struct {
+	Mode     string             `json:"mode,omitempty"`
 	Effort   string             `json:"effort,omitempty"`
 	Speed    string             `json:"speed,omitempty"`
 	Profiles []TaskModelProfile `json:"profiles,omitempty"`
@@ -39,7 +40,7 @@ func (p *ModelPreferences) validate() error {
 	if p == nil {
 		return nil
 	}
-	if !validModelOption(p.Effort) || !validModelOption(p.Speed) || len(p.Profiles) > len(TaskProfileKinds) {
+	if (p.Mode != "" && p.Mode != "auto" && p.Mode != "fixed") || !validModelOption(p.Effort) || !validModelOption(p.Speed) || len(p.Profiles) > len(TaskProfileKinds) {
 		return &InputError{"Choose valid effort and speed options, with at most five task profiles."}
 	}
 	seen := make(map[string]bool)
@@ -77,6 +78,9 @@ func validModel(id string) bool {
 func (p *ModelPreferences) configured() bool {
 	if p == nil {
 		return false
+	}
+	if p.Mode != "" {
+		return true
 	}
 	if p.Effort != "" || p.Speed != "" {
 		return true

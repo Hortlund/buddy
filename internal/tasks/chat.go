@@ -183,9 +183,10 @@ type Conversation struct {
 
 type Turn struct {
 	ExecutionPlan
-	ControlForward  func(context.Context, json.RawMessage) (json.RawMessage, error)
-	OutputDirectory string
-	Projects        []Project
+	RecordModelSelection func(context.Context, WorkerModelSelection) error
+	ControlForward       func(context.Context, json.RawMessage) (json.RawMessage, error)
+	OutputDirectory      string
+	Projects             []Project
 
 	Skill                   *SkillInvocation
 	Skills                  []SkillInfo
@@ -330,6 +331,12 @@ func (s *Store) saveAgentInTx(ctx context.Context, tx *sql.Tx, id string, a Agen
 		saved, err := scanAgent(tx.QueryRowContext(ctx, "SELECT "+agentFields+" FROM agents a"+agentSettings+" WHERE a.id=?", id))
 		if err != nil {
 			return Agent{}, err
+		}
+		if a.ModelPreferences != nil && a.ModelPreferences.Mode == "" && saved.ModelPreferences != nil {
+			// Older clients know the preference object but not its worker mode.
+			// An explicit auto/fixed value can still change it on current clients.
+			a.ModelPreferences = a.ModelPreferences.Clone()
+			a.ModelPreferences.Mode = saved.ModelPreferences.Mode
 		}
 		if saved.WorkspaceNeedsReview && !a.ConfirmWorkspace {
 			return Agent{}, &InputError{WorkspaceReviewMessage}
@@ -934,6 +941,9 @@ func (s *Store) turn(ctx context.Context, task Task) (Turn, error) {
 	var turn Turn
 	var planErr error
 	turn.ExecutionPlan, planErr = readExecutionPlan(ctx, s.db, task.ID)
+	if planErr == nil {
+		turn.ExecutionPlan, planErr = resumeExecutionPlan(ctx, s.db, "server", task.ID, turn.ExecutionPlan)
+	}
 	if planErr != nil {
 		return turn, planErr
 	}

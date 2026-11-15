@@ -10,106 +10,70 @@ import (
 )
 
 func (a *desktop) modelSettings(c *ui.Context) {
-	if !a.protocolChecked.IsZero() && a.serverProtocol < api.ModelProfilesProtocol {
+	if !a.protocolChecked.IsZero() && a.serverProtocol < api.AutomaticWorkerModelsProtocol {
 		ui.TextInput(c.Key("agent-model"), &a.edit.Model).Label("Codex model ID").Placeholder(tasks.DefaultCodexModel).Height(36)
-		ui.Text(c, "Update the Buddy server to configure model profiles.").FontSize(12).TextColor(c.Theme().TextMuted)
+		ui.Text(c, "Update the Buddy server for automatic worker settings.").FontSize(12).TextColor(c.Theme().TextMuted)
 		return
 	}
 	if a.edit.ModelPreferences == nil {
-		a.edit.ModelPreferences = &tasks.ModelPreferences{}
+		a.edit.ModelPreferences = &tasks.ModelPreferences{Mode: "auto"}
 	}
 	preferences := a.edit.ModelPreferences
-	for _, kind := range tasks.TaskProfileKinds {
-		index := -1
-		for i := range preferences.Profiles {
-			if preferences.Profiles[i].Kind == kind {
-				index = i
-				break
-			}
-		}
-		if index < 0 {
-			preferences.Profiles = append(preferences.Profiles, tasks.TaskModelProfile{Kind: kind})
-			index = len(preferences.Profiles) - 1
-		}
+	if preferences.Mode == "" {
+		preferences.Mode = "auto"
 	}
 	ui.Column(c).Gap(9).Children(func() {
-		ui.Text(c, "Codex · task profiles").FontWeight(650)
-		a.modelProfileFields(c, "Default", &a.edit.Model, &preferences.Effort, &preferences.Speed, false)
-		label := "Codex chooses a configured profile for each request. Empty profiles use your default."
-		if a.modelsLoading {
-			label = "Checking Codex models, effort levels and speed options…"
+		ui.Text(c, "Worker intelligence").FontWeight(650)
+		modelOption(c.Key("worker-model-mode"), &preferences.Mode, "Let Bud decide", "Worker settings", []tasks.ModelSpeed{
+			{ID: "auto", Name: "Let Bud decide"},
+			{ID: "fixed", Name: "Use fixed settings"},
+		})
+		if preferences.Mode == "auto" {
+			ui.Text(c, "Each worker chooses its model and effort for the task using the models available on its machine. Chat uses your default model.").FontSize(12).TextColor(c.Theme().TextMuted)
 		}
-		ui.Text(c, label).FontSize(12).TextColor(c.Theme().TextMuted)
-		for index := range preferences.Profiles {
-			profile := &preferences.Profiles[index]
-			kind := profile.Kind
-			name := strings.ToUpper(kind[:1]) + kind[1:]
-			a.modelProfileFields(c.Key("profile-"+kind), name, &profile.Model, &profile.Effort, &profile.Speed, true)
-		}
-		ui.Text(c, "Choose high effort for coding and review, and a lighter model for mail or research. Speed options depend on your Codex account and model.").FontSize(12).TextColor(c.Theme().TextMuted)
-	})
-}
-
-func (a *desktop) modelProfileFields(c *ui.Context, label string, model, effort, speed *string, inherit bool) {
-	prefix := strings.ToLower(label)
-	modelKey := prefix + "-model"
-	if !inherit {
-		modelKey = "agent-model"
-	}
-	ui.Column(c).Gap(5).Children(func() {
-		ui.Text(c, label).FontSize(12).FontWeight(600)
+		ui.Text(c, "Default model").FontSize(12).FontWeight(600)
 		ui.Row(c).Gap(7).Children(func() {
-			placeholder := tasks.DefaultCodexModel
-			if inherit {
-				placeholder = "Use default model"
-			}
-			input := ui.TextInput(c.Key(modelKey), model).Label(label + " model ID").Placeholder(placeholder).Height(33).Grow(1).MinWidth(0)
+			input := ui.TextInput(c.Key("agent-model"), &a.edit.Model).Label("Default model ID").Placeholder(tasks.DefaultCodexModel).Height(33).Grow(1).MinWidth(0)
 			if input.Changed() {
-				*effort, *speed = "", ""
+				preferences.Effort, preferences.Speed = "", ""
 			}
 			options := []tasks.ModelSpeed{}
-			if inherit {
-				options = append(options, tasks.ModelSpeed{ID: "", Name: "Use default"})
-			}
-			for _, choice := range a.models {
-				name := choice.Name
+			for _, model := range a.models {
+				name := model.Name
 				if name == "" {
-					name = choice.ID
+					name = model.ID
 				}
-				options = append(options, tasks.ModelSpeed{ID: choice.ID, Name: name})
+				options = append(options, tasks.ModelSpeed{ID: model.ID, Name: name})
 			}
-			if len(options) != 0 {
-				if modelOption(c.Key(prefix+"-model-picker"), model, "Choose model", label+" model", options) {
-					*effort, *speed = "", ""
-				}
+			if len(options) != 0 && modelOption(c.Key("default-model-picker"), &a.edit.Model, "Choose model", "Choose default model", options) {
+				preferences.Effort, preferences.Speed = "", ""
 			}
 		})
-		var efforts, speeds []tasks.ModelSpeed
-		efforts = append(efforts, tasks.ModelSpeed{ID: "", Name: "Model default"})
-		speeds = append(speeds, tasks.ModelSpeed{ID: "", Name: "Account default"})
-		selected := *model
-		if selected == "" {
-			selected = a.edit.Model
-		}
-		if selected == "" {
-			selected = tasks.DefaultCodexModel
-		}
-		for _, choice := range a.models {
-			if choice.ID != selected {
-				continue
+		if preferences.Mode == "fixed" {
+			efforts := []tasks.ModelSpeed{{ID: "", Name: "Model default"}}
+			speeds := []tasks.ModelSpeed{{ID: "", Name: "Account default"}}
+			selected := a.edit.Model
+			if selected == "" {
+				selected = tasks.DefaultCodexModel
 			}
-			for _, value := range choice.Efforts {
-				efforts = append(efforts, tasks.ModelSpeed{ID: value, Name: value})
+			for _, model := range a.models {
+				if model.ID != selected {
+					continue
+				}
+				for _, effort := range model.Efforts {
+					efforts = append(efforts, tasks.ModelSpeed{ID: effort, Name: effort})
+				}
+				speeds = append(speeds, model.Speeds...)
 			}
-			speeds = append(speeds, choice.Speeds...)
+			ui.Row(c).Gap(7).Children(func() {
+				modelOption(c.Key("default-effort"), &preferences.Effort, "Model default", "Default reasoning effort", efforts)
+				modelOption(c.Key("default-speed"), &preferences.Speed, "Account default", "Default speed", speeds)
+			})
+			ui.Text(c, "Chat and workers use these settings until you let the Bud decide again.").FontSize(12).TextColor(c.Theme().TextMuted)
 		}
-		ui.Row(c).Gap(7).Children(func() {
-			effortChanged := modelOption(c.Key(prefix+"-effort"), effort, "Model default", label+" reasoning effort", efforts)
-			speedChanged := modelOption(c.Key(prefix+"-speed"), speed, "Account default", label+" speed", speeds)
-			if inherit && *model == "" && (effortChanged || speedChanged) {
-				*model = selected
-			}
-		})
+		if a.modelsLoading {
+			ui.Text(c, "Checking available Codex models…").FontSize(12).TextColor(c.Theme().TextMuted)
+		}
 	})
 }
 

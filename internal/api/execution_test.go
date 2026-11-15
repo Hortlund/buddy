@@ -52,6 +52,13 @@ func TestRemoteExecutionControlPinsTLSAndRestrictsArtifacts(t *testing.T) {
 	}
 	worker := NewConnectionClient(localconfig.Connection{Server: server.URL, Certificate: certificate, Token: device.Token, DeviceID: device.ID})
 	defer worker.Close()
+	choice := tasks.WorkerModelSelection{Model: "worker-model", Effort: "high", Speed: "default", Reason: "Verify the assignment."}
+	if err := worker.ReportWorkerModel(ctx, device.ID, job.ID, "wrong-lease", choice); err == nil {
+		t.Fatal("model choice bypassed the assignment lease")
+	}
+	if err := worker.ReportWorkerModel(ctx, device.ID, job.ID, job.Lease, choice); err != nil {
+		t.Fatal("worker model choice did not cross pinned TLS", err)
+	}
 	response, err := worker.ForwardWorkControl(ctx, job.ID, job.ControlToken, json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"team_context","arguments":{}}}`))
 	if err != nil || !strings.Contains(string(response), "chat_lead_bud_id") {
 		t.Fatalf("scoped MCP did not cross pinned TLS: %s %v", response, err)

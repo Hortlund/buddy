@@ -85,7 +85,11 @@ func (r *CodexRuntime) ConfigureExecution(ctx context.Context, cfg ExecutionConf
 			if protected == "" {
 				continue
 			}
-			if overlap, err := WorkspacePathsOverlap(path, protected); err != nil || overlap {
+			overlap, err := WorkspacePathsOverlap(path, protected)
+			if errors.Is(err, os.ErrNotExist) && (protected == r.migrationDir || protected == r.snapshotDir) {
+				overlap, err = containsReservedAncestor(path, protected)
+			}
+			if err != nil || overlap {
 				return &InputError{"Keep project checkouts separate from Buddy's credentials and runtime files."}
 			}
 		}
@@ -131,6 +135,28 @@ func (r *CodexRuntime) ConfigureExecution(ctx context.Context, cfg ExecutionConf
 	r.execution = cfg
 	r.executionMu.Unlock()
 	return nil
+}
+
+// Optional protected directories need not exist yet. An existing project cannot
+// be inside a missing directory, but must not contain its future location.
+// Compare directory identities so aliases and case-insensitive paths stay safe.
+func containsReservedAncestor(workspace, reserved string) (bool, error) {
+	root, err := os.Stat(workspace)
+	if err != nil {
+		return false, err
+	}
+	for path := reserved; ; path = filepath.Dir(path) {
+		info, err := os.Stat(path)
+		if err == nil && os.SameFile(root, info) {
+			return true, nil
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+		if filepath.Dir(path) == path {
+			return false, nil
+		}
+	}
 }
 
 // An unavailable checkout or optional provider must not take the Buddy home
@@ -458,8 +484,18 @@ func (r *CodexRuntime) executionMCP(ctx context.Context, turn Turn) ([]MCPServer
 	return configs, roots, nil
 }
 
-func PrepareProjectWorkspace(ctx context.Context, workspace, job, project string, edits bool) (string, string, error) {
-	if project == "" || !edits {
+func PrepareProjectWorkspace(ctx context.Context, workspace, job, project string, edits bool, modes ...string) (string, string, error) {
+	mode := "auto"
+	if len(modes) > 0 && modes[0] != "" {
+		mode = modes[0]
+	}
+	if mode != "auto" && mode != "worktree" && mode != "checkout" {
+		return "", "", &InputError{"Invalid worker workspace mode."}
+	}
+	if project == "" {
+		if mode == "worktree" {
+			return "", "", &InputError{"Choose a registered project for an isolated worktree."}
+		}
 		return workspace, "", nil
 	}
 	if !mcpName.MatchString(job) || !mcpName.MatchString(project) {
@@ -472,30 +508,22 @@ func PrepareProjectWorkspace(ctx context.Context, workspace, job, project string
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if _, err := os.Stat(filepath.Join(workspace, ".git")); err != nil {
+	if mode == "checkout" {
 		return workspace, "", nil
 	}
-	if err := checkProjectGitHelpers(ctx, workspace); err != nil {
-		return "", "", err
-	}
-	status, err := projectGit(ctx, workspace, "status", "--porcelain").Output()
-	if err != nil {
-		return "", "", err
-	}
-	if len(status) != 0 {
-		return "", "", &InputError{"The project checkout has uncommitted changes. Commit or stash them before starting an isolated worker."}
-	}
 	base := filepath.Join(filepath.Dir(workspace), ".buddy-worktrees", project)
-	if err := os.MkdirAll(base, 0700); err != nil {
-		return "", "", err
-	}
-	real, err := filepath.EvalSymlinks(base)
-	if err != nil || real != base {
-		return "", "", &InputError{"The worker worktree directory changed."}
-	}
 	target := filepath.Join(base, job)
 	branch := "buddy/" + job
+	// Resuming work must keep its branch and unmerged changes, even when the
+	// caller has edited the original checkout while this job was paused.
 	if _, statErr := os.Lstat(target); statErr == nil {
+		realBase, err := filepath.EvalSymlinks(base)
+		if err != nil || realBase != base {
+			return "", "", &InputError{"The worker worktree directory changed."}
+		}
+		if err := checkProjectGitHelpers(ctx, workspace); err != nil {
+			return "", "", err
+		}
 		realTarget, resolveErr := filepath.EvalSymlinks(target)
 		actualBranch, branchErr := projectGit(ctx, target, "symbolic-ref", "--short", "HEAD").Output()
 		common, commonErr := projectGit(ctx, target, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
@@ -507,6 +535,37 @@ func PrepareProjectWorkspace(ctx context.Context, workspace, job, project string
 		return target, branch, nil
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return "", "", statErr
+	}
+	if !edits {
+		return workspace, "", nil
+	}
+	if _, err := os.Stat(filepath.Join(workspace, ".git")); err != nil {
+		if mode == "worktree" {
+			return "", "", &InputError{"This project is not a Git repository yet. Use checkout mode to initialize it."}
+		}
+		return workspace, "", nil
+	}
+	if err := checkProjectGitHelpers(ctx, workspace); err != nil {
+		return "", "", err
+	}
+	status, err := projectGit(ctx, workspace, "status", "--porcelain").Output()
+	if err != nil {
+		return "", "", err
+	}
+	if len(status) != 0 {
+		if mode == "worktree" {
+			return "", "", &InputError{"The project checkout has uncommitted changes. Use checkout mode to work with those changes, or commit or stash them before starting an isolated worktree."}
+		}
+		// Starting from HEAD here would hide the user's pending changes from
+		// the worker. Use the existing checkout and preserve its contents.
+		return workspace, "", nil
+	}
+	if err := os.MkdirAll(base, 0700); err != nil {
+		return "", "", err
+	}
+	real, err := filepath.EvalSymlinks(base)
+	if err != nil || real != base {
+		return "", "", &InputError{"The worker worktree directory changed."}
 	}
 	if err := projectGit(ctx, workspace, "worktree", "add", "-b", branch, target, "HEAD").Run(); err != nil {
 		return "", "", &InputError{"Couldn't create this worker's Git worktree. Check the project checkout and branch."}

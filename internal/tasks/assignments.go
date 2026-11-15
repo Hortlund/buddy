@@ -340,7 +340,7 @@ func identicalAssignment(ctx context.Context, tx *sql.Tx, chat string, agent Age
 		if plan.Role == "" {
 			plan.Role = "general"
 		}
-		if plan.ProjectID != want.ProjectID || plan.Role != want.Role || plan.Environment != want.Environment ||
+		if plan.ProjectID != want.ProjectID || plan.Role != want.Role || plan.Environment != want.Environment || plan.WorkspaceMode != want.WorkspaceMode ||
 			plan.AutomationWriteScope != want.AutomationWriteScope || plan.AutomationInspectionScope != want.AutomationInspectionScope ||
 			!slices.Equal(plan.Requirements, want.Requirements) {
 			continue

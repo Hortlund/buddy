@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS work_execution (
  task_id TEXT PRIMARY KEY REFERENCES tasks(id), project_id TEXT NOT NULL,
  role TEXT NOT NULL, requirements TEXT NOT NULL, environment TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS work_workspace_modes (
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id), mode TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS work_automation_permissions (
  task_id TEXT PRIMARY KEY REFERENCES tasks(id), scope TEXT NOT NULL
 );
@@ -89,6 +92,7 @@ type Project struct {
 }
 
 type ExecutionPlan struct {
+	WorkspaceMode             string   `json:"workspace_mode,omitempty"`
 	ProjectID                 string   `json:"project_id,omitempty"`
 	Role                      string   `json:"worker_role,omitempty"`
 	Requirements              []string `json:"requirements,omitempty"`
@@ -238,6 +242,12 @@ func (s *Store) ArchiveProject(ctx context.Context, id string) error {
 }
 
 func validateExecution(plan *ExecutionPlan) error {
+	if plan.WorkspaceMode == "auto" {
+		plan.WorkspaceMode = ""
+	}
+	if plan.WorkspaceMode != "" && plan.WorkspaceMode != "auto" && plan.WorkspaceMode != "worktree" && plan.WorkspaceMode != "checkout" {
+		return &InputError{"Choose auto, worktree or checkout for the worker workspace."}
+	}
 	if plan.Role == "" {
 		plan.Role = "general"
 	}
@@ -318,7 +328,37 @@ func readExecutionPlan(ctx context.Context, db queryer, job string) (ExecutionPl
 		return plan, err
 	}
 	err = json.Unmarshal([]byte(requirements), &plan.Requirements)
+	if err == nil {
+		modeErr := db.QueryRowContext(ctx, "SELECT mode FROM work_workspace_modes WHERE task_id=?", job).Scan(&plan.WorkspaceMode)
+		if modeErr != nil && !errors.Is(modeErr, sql.ErrNoRows) {
+			err = modeErr
+		}
+	}
 	return plan, err
+}
+
+// Resolve automatic placement from the previous session on this host without
+// changing the requested plan used for assignment deduplication and history.
+func resumeExecutionPlan(ctx context.Context, db queryer, host, job string, plan ExecutionPlan) (ExecutionPlan, error) {
+	if plan.ProjectID == "" || plan.WorkspaceMode != "" {
+		return plan, nil
+	}
+	var workspace, branch string
+	err := db.QueryRowContext(ctx, `SELECT workspace,branch FROM worker_sessions WHERE task_id=? AND host_id=?
+		ORDER BY started DESC LIMIT 1`, job, host).Scan(&workspace, &branch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return plan, nil
+	}
+	if err != nil {
+		return plan, err
+	}
+	if workspace != "" {
+		plan.WorkspaceMode = "checkout"
+		if branch != "" {
+			plan.WorkspaceMode = "worktree"
+		}
+	}
+	return plan, nil
 }
 
 func saveExecutionPlan(ctx context.Context, tx *sql.Tx, job string, plan ExecutionPlan) error {
@@ -327,6 +367,9 @@ func saveExecutionPlan(ctx context.Context, tx *sql.Tx, job string, plan Executi
 	}
 	data, _ := json.Marshal(plan.Requirements)
 	_, err := tx.ExecContext(ctx, "INSERT INTO work_execution VALUES (?,?,?,?,?)", job, plan.ProjectID, plan.Role, string(data), plan.Environment)
+	if err == nil && plan.WorkspaceMode != "" {
+		_, err = tx.ExecContext(ctx, "INSERT INTO work_workspace_modes VALUES (?,?)", job, plan.WorkspaceMode)
+	}
 	if err == nil && plan.AutomationWriteScope != "" {
 		_, err = tx.ExecContext(ctx, "INSERT INTO work_automation_permissions VALUES (?,?)", job, plan.AutomationWriteScope)
 	}
@@ -348,6 +391,19 @@ func (s *Store) StartWorkerSession(ctx context.Context, job, host, workspace, br
 	}
 	if status != Running {
 		return ErrInactive
+	}
+	if workspace != "" {
+		var edits bool
+		if err := tx.QueryRowContext(ctx, "SELECT allow_edits FROM chat_turns WHERE task_id=?", job).Scan(&edits); err != nil {
+			return err
+		}
+		busy, err := activeCheckoutOverlap(ctx, tx, host, job, workspace, edits)
+		if err != nil {
+			return err
+		}
+		if busy {
+			return &InputError{"Another worker is using this checkout. Let it finish or use an isolated worktree."}
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE worker_sessions SET ended=?,status='interrupted' WHERE task_id=? AND ended IS NULL`, time.Now().UnixMicro(), job); err != nil {
 		return err

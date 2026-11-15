@@ -151,7 +151,8 @@ func voiceTools(permission voicePermission) []object {
 		"required": []string{"title", "brief"}, "properties": object{
 			"title": text, "brief": text, "agent_id": text, "device_id": text,
 			"project_id": text, "worker_role": text, "environment": text, "requirements": object{"type": "array", "items": text},
-			"read_only": object{"type": "boolean"}, "after": object{"type": "array", "items": object{"type": "integer"}},
+			"workspace_mode": object{"type": "string", "enum": []string{"auto", "worktree", "checkout"}},
+			"read_only":      object{"type": "boolean"}, "after": object{"type": "array", "items": object{"type": "integer"}},
 		}}}
 	delegate := tool("delegate_work", "Start one or more background jobs now. Use one entry per assignment with a standalone title and brief. If asked for a test or random job, choose a harmless read-only task. Match named Buds to their IDs. Omit agent_id for your worker. Assign outside the call only when the caller explicitly names that Bud. Use one-based after for dependencies. Use project_id and capability requirements from buddy_context when needed. Leave device_id empty for automatic placement. Use device_id any only for portable work the caller allows on a pool worker. Set read_only for inspection without edits. Results appear in the call’s chat.", []string{"assignments"}, object{"assignments": assignments})
 	if permission == voiceNewBudWork {

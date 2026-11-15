@@ -196,6 +196,18 @@ func serveWorker(ctx context.Context, path, server, workspace, codex string, edi
 			}
 			run := func(jobCtx context.Context, turn tasks.Turn, emit tasks.Emit) (string, error) {
 				turn.ExecutionPlan = job.ExecutionPlan
+				if job.ModelSelection {
+					turn.RecordModelSelection = func(ctx context.Context, choice tasks.WorkerModelSelection) error {
+						return client.ReportWorkerModel(ctx, connection.DeviceID, job.ID, job.Lease, choice)
+					}
+				} else {
+					// Older homes cannot save a decision for retry. Keep their supplied settings.
+					turn.Agent.ModelPreferences = turn.Agent.ModelPreferences.Clone()
+					if turn.Agent.ModelPreferences == nil {
+						turn.Agent.ModelPreferences = &tasks.ModelPreferences{}
+					}
+					turn.Agent.ModelPreferences.Mode = "fixed"
+				}
 				if job.ControlToken != "" {
 					turn.ControlForward = func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 						return client.ForwardWorkControl(ctx, job.ID, job.ControlToken, raw)
@@ -214,7 +226,7 @@ func serveWorker(ctx context.Context, path, server, workspace, codex string, edi
 						return "", errors.New("The assigned project has no matching checkout in this worker's local configuration.")
 					}
 				}
-				dir, branch, err := tasks.PrepareProjectWorkspace(jobCtx, turn.Agent.Workspace, job.ID, job.ProjectID, turn.Agent.AllowEdits)
+				dir, branch, err := tasks.PrepareProjectWorkspace(jobCtx, turn.Agent.Workspace, job.ID, job.ProjectID, turn.Agent.AllowEdits, turn.WorkspaceMode)
 				if err != nil {
 					return "", err
 				}

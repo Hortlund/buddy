@@ -170,13 +170,13 @@ func TestProjectPreparationRejectsBranchConditionalHelpers(t *testing.T) {
 	}
 }
 
-func TestProjectPreparationRefusesDirtyBaseAndInitializedSubmodules(t *testing.T) {
+func TestProjectPreparationKeepsDirtyCheckoutAndRefusesInitializedSubmodules(t *testing.T) {
 	repo, git := projectGitFixture(t)
 	if err := os.WriteFile(filepath.Join(repo, "draft.txt"), []byte("draft"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := PrepareProjectWorkspace(t.Context(), repo, "tsk_dirty", "prj_dirty", true); err == nil || !strings.Contains(err.Error(), "uncommitted") {
-		t.Fatal("dirty base was accepted", err)
+	if dir, branch, err := PrepareProjectWorkspace(t.Context(), repo, "tsk_dirty", "prj_dirty", true); err != nil || dir != repo || branch != "" {
+		t.Fatal("pending changes were hidden from the worker", err)
 	}
 	if err := os.Remove(filepath.Join(repo, "draft.txt")); err != nil {
 		t.Fatal(err)

@@ -46,6 +46,32 @@ Swift, Ruby and build tools through Codex jobs. Use `/code` for implementation,
 `/debug` for reproduction and verification, and `/review` for a read-only review;
 these workflows are also discoverable by the model during ordinary chat.
 
+Buddy Home can run project work itself, including on a VPS. A connected Mac or
+Linux worker can run it instead when its capabilities or checkout are needed.
+Register a logical project in Connections and set its Buddy Home checkout there.
+On another worker, add the same project ID and that machine's absolute checkout
+path to its private `execution.json` (or the file passed to `buddyworker -config`),
+then restart the worker. Project paths are host-specific; Buddy does not copy a
+repository or credentials between machines. Keep the worker online and enable its
+shared pool if it should accept automatic placement; enable pool edits for writing.
+Explicitly named hosts can keep work queued while offline.
+
+Project assignments use `workspace_mode` to choose `auto`, `worktree` or `checkout`.
+Automatic edits in a clean registered Git project get an isolated worktree and
+branch. For a dirty checkout, automatic mode keeps its pending changes in place instead
+of hiding them in a worktree based on HEAD. Explicit checkout mode also works in
+the original directory, including its uncommitted changes. Workers preserve
+unrelated edits, and conflicting active checkout sessions are rejected, including
+overlapping parent and child directories. A resumed project job keeps its previous
+checkout or worktree choice even if the original checkout becomes clean or dirty.
+Dirty checkouts are never silently reset or stashed.
+Read-only jobs use the original checkout. A new repository can be initialized or
+cloned inside a worker's assigned writable workspace. Workers inspect repository
+instructions, build, run relevant tests and inspect their final diff before
+reporting results. Worktrees with unmerged work are retained for inspection.
+Use Git or explicit artifacts to transfer work between hosts; a remote checkout
+is not automatically synchronized with a local one.
+
 GitHub lookups support paginated open PRs and issues, changed-file lists,
 individual patch chunks, source files at a ref, discussion and inline review
 comments, workflow runs and their job steps. Reviews should record both head and
@@ -125,21 +151,22 @@ docker pull docker.io/library/ruby@sha256:d7c312a48736dd291d7ce043c847f04dfde9bd
    default model is GPT-6.1 Terra. Use **Remove** in Bud settings to take a
    Bud out of active chats and stop its routines. **Removed Buds** keeps
    its chat history and workspace files accessible.
-   In **Edit Bud → Codex · task profiles**, choose a default model and optional
-   coding, review, research, mail and everyday profiles. Each profile has its own
-   model, reasoning effort and speed. Choices come from the connected Codex
-   catalog; effort and speed depend on the model and account. Profile controls
-   use Codex CLI 0.169.0 or newer and Buddy server protocol 86. Configure coding
-   and review with your strongest available model and high effort; choose a
-   lighter model for mail and everyday tasks. Empty profiles use the default.
-   Choosing effort or speed on an empty profile enables it with the current
-   default model. With profiles configured, a separate bounded Codex pass chooses
-   the task category from the current request and recent context. If that pass
-   fails, the default settings apply. Tool and workflow decisions remain with the
-   working model. Queued work captures the preferences; local retries retain the
-   selected profile. Remote jobs carry the same configured preferences and need
-   an updated buddyworker. Chats from the phone and jobs requested in voice use
-   the server's configured profiles too. Realtime voice itself keeps its voice model.
+   In **Edit Bud → Worker intelligence**, keep **Let Bud decide** for automatic
+   worker models, reasoning effort and speed. At the start of an assignment, a
+   bounded Codex decision uses that machine's live model catalog and the actual
+   task, complexity and verification needs. Coding and review can use a stronger
+   model and higher effort while straightforward triage can use less. The selected
+   settings are validated against the chosen model and recorded before work starts;
+   local and remote retries keep the decision while its model and options remain
+   supported. Moving to a host with a different model catalog can trigger a new
+   decision. Catalog or decision failures fall
+   back to the Bud's default settings. Ordinary chat uses the default model without
+   an extra decision pass. **Use fixed settings** pins the default model, effort
+   and speed instead. Older saved task profiles remain compatible; in automatic
+   mode they are suggestions rather than fixed routing rules. These controls need
+   Buddy Home protocol 87 and an updated buddyworker. Realtime voice keeps its
+   voice model; jobs started from calls use the same worker planning.
+   Saving a Bud from an older client preserves its saved automatic or fixed mode.
 3. Use **+** next to **Group chats** to bring Buds into the same conversation.
    Buds receive the current team roster, roles, primary Bud, group lead, active
    assignments, dependencies, and recent joins or departures. They can coordinate
@@ -831,3 +858,6 @@ and can still be updated. Removing that custom definition restores the built-in.
 For automated checks, run `go test -race ./...`. With Codex CLI signed in,
 `python3 script/smoke_desktop.py` exercises real chat and background work
 through a separate native desktop instance and a temporary repository.
+Use `--buds-only` for the native settings flow or `--developer-only` to verify
+automatic worker settings, project placement, isolated worktree edits and a real
+Go test run in a temporary project.

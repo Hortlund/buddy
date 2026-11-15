@@ -248,7 +248,7 @@ func (w *Worker) execute(ctx context.Context, t Task, run *workerRun, emit Emit,
 	}
 	if t.Kind == BackgroundWork && turn.WatchSignal == nil {
 		var branch string
-		turn.Agent.Workspace, branch, err = PrepareProjectWorkspace(ctx, turn.Agent.Workspace, t.ID, turn.ProjectID, turn.Agent.AllowEdits)
+		turn.Agent.Workspace, branch, err = PrepareProjectWorkspace(ctx, turn.Agent.Workspace, t.ID, turn.ProjectID, turn.Agent.AllowEdits, turn.WorkspaceMode)
 		if err != nil {
 			return "", err
 		}

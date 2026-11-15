@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+import urllib.error
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN = ROOT / "script" / "build_and_run.sh"
@@ -37,7 +38,7 @@ def wait_for(label, fn, timeout=45):
 
 
 def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_screenshot, card_screenshot,
-        connections_only=False, buds_only=False, workbench_only=False):
+        connections_only=False, buds_only=False, workbench_only=False, developer_only=False):
     repo = directory / "sample repo "
     state = repo / "data"
     dist = repo / "dist"
@@ -121,17 +122,20 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
     server_url = f"https://127.0.0.1:{port}"
     server_state = state
 
-    def api(path, data=None):
+    def api(path, data=None, method=None, timeout=3):
         token = (server_state / "server.token").read_text().strip()
         request = urllib.request.Request(
             f"{server_url}/v1/{path}",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            data=json.dumps(data).encode() if data is not None else None,
+            data=json.dumps(data).encode() if data is not None else None, method=method,
         )
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         tls.load_verify_locations(cafile=str(server_state / "server.crt"))
-        with urllib.request.urlopen(request, timeout=3, context=tls) as response:
-            return json.load(response)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout, context=tls) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"{path}: HTTP {error.code}: {error.read().decode()}") from error
 
     def chat(chat_id="conv_buddy"):
         return api(f"conversations/{chat_id}")
@@ -249,17 +253,15 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         wait_for("selected Cloud shape", lambda: "checked" in (node("avatar-shape-cloud") or {}).get("states", []))
         capture(screenshot)
         ui("input", events=[dict(type="wheel", x=700, y=520, dy=480, precise=True)])
-        coding_model = wait_for("Coding task profile", lambda: next((n for n in ui("tree")["nodes"]
-                                  if n.get("label") == "Coding model ID"), None))
-        set_value(coding_model["key"], "gpt-6.1-terra")
+        wait_for("Automatic worker settings", lambda: next((n for n in ui("tree")["nodes"]
+                 if n.get("label") == "Worker settings"), None))
         if screenshot:
-            capture(screenshot.with_stem(screenshot.stem + "-profiles"))
+            capture(screenshot.with_stem(screenshot.stem + "-worker-settings"))
         press("agent-save")
         wait_for("return to Bud directory", lambda: node("edit-bud-" + forge["id"]))
         saved_profile = api("agents/" + forge["id"])
-        coding = next(p for p in saved_profile["model_preferences"]["profiles"] if p["kind"] == "coding")
-        if coding["model"] != "gpt-6.1-terra" or saved_profile["model"] != "gpt-6.1-terra":
-            raise RuntimeError("Task profile model did not save independently of the default")
+        if saved_profile["model_preferences"]["mode"] != "auto" or saved_profile["model"] != "gpt-6.1-terra":
+            raise RuntimeError("Automatic worker settings did not save")
         avatar = chat(forge["conversation_id"])["agent"]["avatar"]
         if avatar["color"] != "teal" or avatar["shape"] != "cloud":
             raise RuntimeError(f"Buddy did not save the new look: {avatar}")
@@ -603,9 +605,58 @@ def run(directory, screenshot, activity_screenshot, reply_screenshot, routine_sc
         print("Image deliverables reopened correctly after switching to Chat.", flush=True)
         print("Native build info, workspace file editing, dark theme, language settings, Markdown, diffs, choice cards, and linked job details worked.", flush=True)
 
+    def verify_developer_work():
+        launch()
+        checkout = directory / "calculator"
+        checkout.mkdir()
+        (checkout / "go.mod").write_text("module example.test/calculator\n\ngo 1.23\n")
+        (checkout / "sum.go").write_text("package calculator\n\nfunc Sum(a, b int) int { return a - b }\n")
+        (checkout / "sum_test.go").write_text(
+            'package calculator\n\nimport "testing"\n\n'
+            'func TestSum(t *testing.T) { if Sum(20,22) != 42 { t.Fatal("wrong sum") } }\n')
+        def git(*args):
+            return subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Buddy smoke",
+                                   "-c", "user.email=smoke@example.test", *args], check=True,
+                                  text=True, capture_output=True).stdout
+        git("init", "--quiet")
+        git("add", ".")
+        git("commit", "--quiet", "-m", "test: seed calculator")
+        project = api("projects", {"name": "Calculator", "description": "Developer smoke fixture"})
+        config = api("execution")
+        config["projects"] = [{"project_id": project["id"], "path": str(checkout)}]
+        api("execution", config, method="PUT", timeout=45)
+        agent = api("agents/agt_buddy")
+        agent["allow_edits"], agent["model_preferences"] = True, {"mode": "auto"}
+        api("agents/agt_buddy", agent, method="PUT")
+        api("conversations/conv_buddy/messages", {
+            "text": "Fix Sum in the registered Calculator project so it adds its arguments. "
+                    "Keep its API and existing tests. Build and run go test ./... to verify the fix. "
+                    "Use an isolated worktree. Do not commit or push. "
+                    "Include BUDDY_DEVELOPER_VERIFIED in the final result after verification passes.",
+            "background": True,
+        })
+        job = wait_for("developer assignment", lambda: next(iter(chat().get("work", [])), None), 120)
+        detail = wait_for("verified developer result", lambda: (
+            item if (item := api("work/" + job["id"]))["status"] in
+            ("succeeded", "failed", "needs_input", "interrupted") else None), 240)
+        if detail["status"] != "succeeded" or "BUDDY_DEVELOPER_VERIFIED" not in detail.get("result", ""):
+            raise RuntimeError(f"Developer job did not finish: {detail}")
+        session = detail["sessions"][0]
+        if session["workspace"] == str(checkout) or not session.get("branch"):
+            raise RuntimeError("Developer job did not use an isolated Git worktree")
+        subprocess.run(["go", "test", "./..."], cwd=session["workspace"], check=True)
+        if git("status", "--porcelain"):
+            raise RuntimeError("Developer job modified the original checkout")
+        if not any("Worker settings:" in event["text"] for event in detail.get("events", [])):
+            raise RuntimeError("Developer job did not record an automatic model decision")
+        print("Automatic model selection, project routing, isolated worktree edits, and actual Go verification passed.", flush=True)
+
     worker = None
     restored_server = None
     try:
+        if developer_only:
+            verify_developer_work()
+            return
         if workbench_only:
             verify_workbench()
             return
@@ -1006,6 +1057,7 @@ if __name__ == "__main__":
     scope.add_argument("--connections-only", action="store_true")
     scope.add_argument("--buds-only", action="store_true")
     scope.add_argument("--workbench-only", action="store_true")
+    scope.add_argument("--developer-only", action="store_true")
     parser.add_argument("--screenshot", type=Path)
     parser.add_argument("--activity-screenshot", type=Path)
     parser.add_argument("--reply-screenshot", type=Path)
@@ -1014,4 +1066,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="buddy-smoke-", dir="/tmp") as tmp:
         run(Path(tmp).resolve(), args.screenshot, args.activity_screenshot, args.reply_screenshot,
-            args.routine_screenshot, args.card_screenshot, args.connections_only, args.buds_only, args.workbench_only)
+            args.routine_screenshot, args.card_screenshot, args.connections_only, args.buds_only, args.workbench_only, args.developer_only)

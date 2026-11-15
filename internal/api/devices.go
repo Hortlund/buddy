@@ -66,6 +66,9 @@ func deviceRoutes(owner *http.ServeMux, store *tasks.Store) http.Handler {
 					claim = store.ReserveExecutionWork
 					if r.URL.Query().Get("model_profiles") == "1" {
 						claim = store.ReserveModelProfileWork
+						if r.URL.Query().Get("worker_planning") == "1" {
+							claim = store.ReserveWorkerPlanningWork
+						}
 					}
 				}
 			}
@@ -141,6 +144,17 @@ func deviceRoutes(owner *http.ServeMux, store *tasks.Store) http.Handler {
 			err = store.StartWorkerSession(r.Context(), r.PathValue("job"), id, input.Workspace, input.Branch)
 		}
 		result(w, http.StatusOK, nil, err)
+	}))
+	worker.HandleFunc("POST /v1/worker/{device}/jobs/{job}/model", requireDevice(func(w http.ResponseWriter, r *http.Request, id string) {
+		var input struct {
+			Lease     string                     `json:"lease"`
+			Selection tasks.WorkerModelSelection `json:"selection"`
+		}
+		if err := decode(w, r, &input, 4096); err != nil {
+			result(w, 0, nil, err)
+			return
+		}
+		result(w, http.StatusOK, nil, store.RecordDeviceModelSelection(r.Context(), id, r.PathValue("job"), input.Lease, input.Selection))
 	}))
 
 	worker.HandleFunc("POST /v1/worker/{device}/jobs/{job}/frame", requireDevice(func(w http.ResponseWriter, r *http.Request, id string) {
@@ -227,7 +241,7 @@ func (c *Client) ClaimDeviceJob(ctx context.Context, id string) (*tasks.DeviceJo
 
 func (c *Client) ClaimDeviceWork(ctx context.Context, id string, pool, edits bool) (*tasks.DeviceJob, error) {
 	var job *tasks.DeviceJob
-	path := "/v1/worker/" + url.PathEscape(id) + "/claim?attachments=1&delivery=1&skills=1&execution=1&model_profiles=1&automation_scope=" + automationScopeVersion
+	path := "/v1/worker/" + url.PathEscape(id) + "/claim?attachments=1&delivery=1&skills=1&execution=1&model_profiles=1&worker_planning=1&automation_scope=" + automationScopeVersion
 	if pool {
 		path += "&pool=1"
 		if edits {
@@ -260,6 +274,13 @@ func (c *Client) ReportHostProfile(ctx context.Context, id string, profile tasks
 }
 func (c *Client) ReportWorkerSession(ctx context.Context, id, job, lease, workspace, branch string) error {
 	return c.call(ctx, http.MethodPost, "/v1/worker/"+url.PathEscape(id)+"/jobs/"+url.PathEscape(job)+"/session", "", map[string]string{"lease": lease, "workspace": workspace, "branch": branch}, nil)
+}
+
+func (c *Client) ReportWorkerModel(ctx context.Context, id, job, lease string, selection tasks.WorkerModelSelection) error {
+	return c.call(ctx, http.MethodPost, "/v1/worker/"+url.PathEscape(id)+"/jobs/"+url.PathEscape(job)+"/model", "", struct {
+		Lease     string                     `json:"lease"`
+		Selection tasks.WorkerModelSelection `json:"selection"`
+	}{lease, selection}, nil)
 }
 func (c *Client) UploadWorkArtifact(ctx context.Context, id, job, lease string, artifact tasks.WorkArtifact) error {
 	return c.callWithTimeout(ctx, attachmentTransferTimeout, http.MethodPost, "/v1/worker/"+url.PathEscape(id)+"/jobs/"+url.PathEscape(job)+"/artifacts", "", map[string]any{"lease": lease, "artifact": artifact}, nil)

@@ -7,50 +7,62 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-func TestTaskProfileChoicesStayWithTheirTask(t *testing.T) {
+func TestAutomaticWorkerSettingsAndFixedOverride(t *testing.T) {
 	a := &desktop{edit: tasks.Agent{Model: "default-model"}, models: []tasks.Model{
 		{ID: "default-model", Name: "Default model", Efforts: []string{"low", "high"}},
 		{ID: "strong-model", Name: "Strong model", Efforts: []string{"high", "xhigh"}, Speeds: []tasks.ModelSpeed{{ID: "priority", Name: "Fast"}}},
 	}}
 	view := ui.NewTester(a.modelSettings, 800, 1200)
-	if err := view.Click("Coding model"); err != nil {
+	if a.edit.ModelPreferences == nil || a.edit.ModelPreferences.Mode != "auto" {
+		t.Fatal("workers should choose settings by default")
+	}
+	if err := view.Click("Worker settings"); err != nil {
+		t.Fatal(err)
+	}
+	if err := view.Click("Use fixed settings"); err != nil {
+		t.Fatal(err)
+	}
+	if err := view.Click("Choose default model"); err != nil {
 		t.Fatal(err)
 	}
 	if err := view.Click("Strong model"); err != nil {
 		t.Fatal(err)
 	}
-	if err := view.Click("Coding reasoning effort"); err != nil {
+	if err := view.Click("Default reasoning effort"); err != nil {
 		t.Fatal(err)
 	}
 	if err := view.Click("xhigh"); err != nil {
 		t.Fatal(err)
 	}
-	if err := view.Click("Coding speed"); err != nil {
+	if err := view.Click("Default speed"); err != nil {
 		t.Fatal(err)
 	}
 	if err := view.Click("Fast"); err != nil {
 		t.Fatal(err)
 	}
-	var coding tasks.TaskModelProfile
-	for _, profile := range a.edit.ModelPreferences.Profiles {
-		if profile.Kind == "coding" {
-			coding = profile
-		} else if profile.Model != "" {
-			t.Fatalf("selection changed another task: %+v", profile)
-		}
+	p := a.edit.ModelPreferences
+	if p.Mode != "fixed" || p.Effort != "xhigh" || p.Speed != "priority" || a.edit.Model != "strong-model" {
+		t.Fatalf("fixed settings: %+v", p)
 	}
-	if coding.Model != "strong-model" || coding.Effort != "xhigh" || coding.Speed != "priority" || a.edit.Model != "default-model" {
-		t.Fatalf("profile choices: %+v", a.edit.ModelPreferences)
-	}
-	if err := view.Click("Coding model"); err != nil {
+	if err := view.Click("Choose default model"); err != nil {
 		t.Fatal(err)
 	}
 	if err := view.Click("Default model"); err != nil {
 		t.Fatal(err)
 	}
-	for _, profile := range a.edit.ModelPreferences.Profiles {
-		if profile.Kind == "coding" && (profile.Effort != "" || profile.Speed != "") {
-			t.Fatal("changing the model retained potentially unsupported options")
-		}
+	if p.Effort != "" || p.Speed != "" {
+		t.Fatal("model change retained unsupported options")
+	}
+	if err := view.Click("Worker settings"); err != nil {
+		t.Fatal(err)
+	}
+	if err := view.Click("Let Bud decide"); err != nil {
+		t.Fatal(err)
+	}
+	if p.Mode != "auto" {
+		t.Fatal("automatic mode was not restored")
+	}
+	if err := view.Click("Default reasoning effort"); err == nil {
+		t.Fatal("automatic mode still shows a fixed effort control")
 	}
 }
